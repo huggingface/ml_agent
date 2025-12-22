@@ -20,7 +20,6 @@ class Config(BaseModel):
 
     model_name: str
     tools: list[Tool] = []
-    system_prompt_path: str = ""
     mcpServers: dict[str, MCPServerConfig] = {}
 
 

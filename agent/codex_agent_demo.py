@@ -201,7 +201,7 @@ class Session:
     """
 
     def __init__(self, event_queue: asyncio.Queue):
-        self.context_manager = ContextManager()
+        self.context_manager = ContextManager(tool_specs=[])
         self.event_queue = event_queue
         self.is_running = True
         self.current_task: Optional[asyncio.Task] = None

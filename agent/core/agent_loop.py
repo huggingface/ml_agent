@@ -5,8 +5,7 @@ Main agent implementation with integrated tool system and MCP support
 import asyncio
 import json
 
-from litellm import (ChatCompletionMessageToolCall, Message, ModelResponse,
-                     acompletion)
+from litellm import ChatCompletionMessageToolCall, Message, ModelResponse, acompletion
 from lmnr import observe
 
 from agent.config import Config
@@ -68,8 +67,7 @@ class Handlers:
                 # If no tool calls, add assistant message and we're done
                 if not tool_calls:
                     if content:
-                        assistant_msg = Message(
-                            role="assistant", content=content)
+                        assistant_msg = Message(role="assistant", content=content)
                         session.context_manager.add_message(assistant_msg, token_count)
                         await session.send_event(
                             Event(
@@ -247,9 +245,8 @@ async def submission_loop(
     This is the core of the agent (like submission_loop in codex.rs:1259-1340)
     """
 
-    # Create session and assign tool router
-    session = Session(event_queue, config=config)
-    session.tool_router = tool_router
+    # Create session with tool router
+    session = Session(event_queue, config=config, tool_router=tool_router)
     print("🤖 Agent loop started")
 
     # Main processing loop

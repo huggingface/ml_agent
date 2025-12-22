@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
+from litellm import get_max_tokens
+
 from agent.config import Config
 from agent.context_manager.manager import ContextManager
 
@@ -33,18 +35,24 @@ class Session:
         self,
         event_queue: asyncio.Queue,
         config: Config | None = None,
+        tool_router=None,
     ):
-        self.context_manager = ContextManager(max_context=180_000, compact_size=0.1, untouched_messages=5)
+        self.tool_router = tool_router
+        tool_specs = tool_router.get_tool_specs_for_llm() if tool_router else []
+        self.context_manager = ContextManager(
+            max_context=get_max_tokens(config.model_name),
+            compact_size=0.1,
+            untouched_messages=5,
+            tool_specs=tool_specs,
+        )
         self.event_queue = event_queue
         self.session_id = str(uuid.uuid4())
         self.config = config or Config(
             model_name="anthropic/claude-sonnet-4-5-20250929",
             tools=[],
-            system_prompt_path="",
         )
         self.is_running = True
         self.current_task: asyncio.Task | None = None
-        self.tool_router = None  # Set by submission_loop
 
     async def send_event(self, event: Event) -> None:
         """Send event back to client"""

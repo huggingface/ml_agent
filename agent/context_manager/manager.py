@@ -2,8 +2,11 @@
 Context management for conversation history
 """
 
-import asyncio
+from pathlib import Path
+from typing import Any
 
+import yaml
+from jinja2 import Template
 from litellm import Message, acompletion
 
 
@@ -15,19 +18,28 @@ class ContextManager:
         max_context: int = 180_000,
         compact_size: float = 0.1,
         untouched_messages: int = 5,
+        tool_specs: list[dict[str, Any]] | None = None,
     ):
-        self.system_prompt = self._load_system_prompt()
+        self.system_prompt = self._load_system_prompt(tool_specs or [])
         self.max_context = max_context
         self.compact_size = int(max_context * compact_size)
         self.context_length = len(self.system_prompt) // 4
         self.untouched_messages = untouched_messages
         self.items: list[Message] = [Message(role="system", content=self.system_prompt)]
 
-    def _load_system_prompt(self):
-        """Load the system prompt"""
+    def _load_system_prompt(self, tool_specs: list[dict[str, Any]]):
+        """Load and render the system prompt from YAML file with Jinja2"""
+        prompt_file = Path(__file__).parent.parent / "prompts" / "system_prompt.yaml"
 
-        # TODO: get system prompt from jinja template
-        return "You are a helpful assistant, primarly for ML. Do the task you are asked to as efficiently as possible. Don't invent tasks."
+        with open(prompt_file, "r") as f:
+            prompt_data = yaml.safe_load(f)
+            template_str = prompt_data.get("system_prompt", "")
+
+        template = Template(template_str)
+        return template.render(
+            tools=tool_specs,
+            num_tools=len(tool_specs),
+        )
 
     def add_message(self, message: Message, token_count: int = None) -> None:
         """Add a message to the history"""
