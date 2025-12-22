@@ -3,7 +3,6 @@ Tool system for the agent
 Provides ToolSpec and ToolRouter for managing both built-in and MCP tools
 """
 
-import subprocess
 import warnings
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
@@ -13,11 +12,14 @@ from lmnr import observe
 from mcp.types import EmbeddedResource, ImageContent, TextContent
 
 from agent.config import MCPServerConfig
+from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC, hf_jobs_handler
 
 # Suppress aiohttp deprecation warning
 warnings.filterwarnings(
     "ignore", category=DeprecationWarning, module="aiohttp.connector"
 )
+
+NOT_ALLOWED_TOOL_NAMES = ["hf_jobs"]
 
 
 def convert_mcp_content_to_string(content: list) -> str:
@@ -104,6 +106,10 @@ class ToolRouter:
     async def register_mcp_tools(self) -> None:
         tools = await self.mcp_client.list_tools()
         for tool in tools:
+            if tool.name in NOT_ALLOWED_TOOL_NAMES:
+                print(f"Skipping not MCP allowed tool: {tool.name}")
+                continue
+            print(f"MCP Tool: {tool.name}")
             self.register_tool(
                 ToolSpec(
                     name=tool.name,
@@ -173,93 +179,14 @@ class ToolRouter:
 # ============================================================================
 
 
-async def bash_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
-    """Execute bash command"""
-    try:
-        command = arguments.get("command", "")
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=30
-        )
-        output = result.stdout if result.returncode == 0 else result.stderr
-        success = result.returncode == 0
-        return output, success
-    except Exception as e:
-        return f"Error: {str(e)}", False
-
-
-async def read_file_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
-    """Read file contents"""
-    try:
-        path = arguments.get("path", "")
-        with open(path, "r") as f:
-            content = f.read()
-        return content, True
-    except Exception as e:
-        return f"Error reading file: {str(e)}", False
-
-
-async def write_file_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
-    """Write to file"""
-    try:
-        path = arguments.get("path", "")
-        content = arguments.get("content", "")
-        with open(path, "w") as f:
-            f.write(content)
-        return f"Successfully wrote to {path}", True
-    except Exception as e:
-        return f"Error writing file: {str(e)}", False
-
-
 def create_builtin_tools() -> list[ToolSpec]:
     """Create built-in tool specifications"""
+    print(f"Creating built-in tools: {HF_JOBS_TOOL_SPEC['name']}")
     return [
         ToolSpec(
-            name="bash",
-            description="Execute a bash command and return its output",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The bash command to execute",
-                    }
-                },
-                "required": ["command"],
-            },
-            handler=bash_handler,
-        ),
-        ToolSpec(
-            name="read_file",
-            description="Read the contents of a file",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the file to read",
-                    }
-                },
-                "required": ["path"],
-            },
-            handler=read_file_handler,
-        ),
-        ToolSpec(
-            name="write_file",
-            description="Write content to a file",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the file to write",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content to write to the file",
-                    },
-                },
-                "required": ["path", "content"],
-            },
-            handler=write_file_handler,
+            name=HF_JOBS_TOOL_SPEC["name"],
+            description=HF_JOBS_TOOL_SPEC["description"],
+            parameters=HF_JOBS_TOOL_SPEC["parameters"],
+            handler=hf_jobs_handler,
         ),
     ]

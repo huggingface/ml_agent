@@ -3,6 +3,7 @@ Interactive CLI chat with the agent
 """
 
 import asyncio
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,8 +65,11 @@ async def event_listener(
                     print(f"\n🤖 Assistant: {content}")
             elif event.event_type == "tool_call":
                 tool_name = event.data.get("tool", "") if event.data else ""
+                arguments = event.data.get("arguments", {}) if event.data else {}
                 if tool_name:
-                    print(f"🔧 Calling tool: {tool_name}")
+                    print(
+                        f"🔧 Calling tool: {tool_name} with arguments: {json.dumps(arguments)[:100]}..."
+                    )
             elif event.event_type == "tool_output":
                 output = event.data.get("output", "") if event.data else ""
                 success = event.data.get("success", False) if event.data else False

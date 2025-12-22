@@ -19,4 +19,5 @@ dependencies = [
     "lmnr[all]>=0.7.23",
     "transformers>=2.3.0",
     "torch>=2.9.1",
+    "pytest>=9.0.2",
 ]
