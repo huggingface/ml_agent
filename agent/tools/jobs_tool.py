@@ -40,6 +40,20 @@ GPU_FLAVORS = [
     "h100",
     "h100x8",
 ]
+
+# Detailed specs for display (vCPU/RAM/GPU VRAM)
+CPU_FLAVORS_DESC = (
+    "cpu-basic(2vCPU/16GB), cpu-upgrade(8vCPU/32GB), cpu-performance, cpu-xl"
+)
+GPU_FLAVORS_DESC = (
+    "t4-small(4vCPU/15GB/GPU 16GB), t4-medium(8vCPU/30GB/GPU 16GB), "
+    "l4x1(8vCPU/30GB/GPU 24GB), l4x4(48vCPU/186GB/GPU 96GB), "
+    "l40sx1(8vCPU/62GB/GPU 48GB), l40sx4(48vCPU/382GB/GPU 192GB), l40sx8(192vCPU/1534GB/GPU 384GB), "
+    "a10g-small(4vCPU/14GB/GPU 24GB), a10g-large(12vCPU/46GB/GPU 24GB), "
+    "a10g-largex2(24vCPU/92GB/GPU 48GB), a10g-largex4(48vCPU/184GB/GPU 96GB), "
+    "a100-large(12vCPU/142GB/GPU 80GB), h100(23vCPU/240GB/GPU 80GB), h100x8(184vCPU/1920GB/GPU 640GB), "
+    "zero-a10g(dynamic alloc)"
+)
 SPECIALIZED_FLAVORS = ["inf2x6"]
 ALL_FLAVORS = CPU_FLAVORS + GPU_FLAVORS + SPECIALIZED_FLAVORS
 
@@ -741,12 +755,12 @@ HF_JOBS_TOOL_SPEC = {
         "1. **Python mode:** Provide 'script' + 'dependencies' → auto-handles pip install\n"
         "2. **Docker mode:** Provide 'image' + 'command' → full control\n"
         "(script and command are mutually exclusive)\n\n"
-        "## Hardware:\n"
-        "CPU: cpu-basic (default), cpu-upgrade, cpu-performance, cpu-xl\n"
-        "GPU: t4-small, t4-medium, l4x1, a10g-small, a10g-large, a100-large, h100\n\n"
+        "## Available Hardware (vCPU/RAM/GPU):\n"
+        f"CPU: {CPU_FLAVORS_DESC}\n"
+        f"GPU: {GPU_FLAVORS_DESC}\n"
         "## Examples:\n\n"
         "**Fine-tune LLM and push to Hub:**\n"
-        "{'operation': 'run', 'script': 'from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer\\nmodel = AutoModelForCausalLM.from_pretrained(\"gpt2\")\\n# ... training code ...\\nmodel.push_to_hub(\"user-name/my-finetuned-model\")', 'dependencies': ['transformers', 'torch', 'datasets'], 'hardware_flavor': 'a10g-large', 'timeout': '4h', 'env': {'CUSTOM_VAR': 'value'}}\n\n"
+        "{'operation': 'run', 'script': 'from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer\\nmodel = AutoModelForCausalLM.from_pretrained(\"Qwen/Qwen3-4B-Thinking-2507\")\\n# ... training code ...\\nmodel.push_to_hub(\"user-name/my-finetuned-model\")', 'dependencies': ['transformers', 'torch', 'datasets'], 'hardware_flavor': 'a10g-large', 'timeout': '4h', 'env': {'CUSTOM_VAR': 'value'}}\n\n"
         "**Generate dataset daily and upload:**\n"
         "{'operation': 'scheduled run', 'script': 'from datasets import Dataset\\nimport pandas as pd\\n# scrape/generate data\\ndf = pd.DataFrame(data)\\nds = Dataset.from_pandas(df)\\nds.push_to_hub(\"user-name/daily-dataset\")', 'dependencies': ['datasets', 'pandas'], 'schedule': '@daily'}\n\n"
         "**Run custom training with Docker:**\n"
@@ -807,7 +821,7 @@ HF_JOBS_TOOL_SPEC = {
             # Hardware and environment
             "hardware_flavor": {
                 "type": "string",
-                "description": "Hardware type. CPU: cpu-basic (default), cpu-upgrade, cpu-performance, cpu-xl. GPU: t4-small, t4-medium, l4x1, a10g-small, a10g-large, a100-large, h100. Use with 'run'/'scheduled run'.",
+                "description": f"Hardware type. Available CPU flavors: {CPU_FLAVORS}. Available GPU flavors: {GPU_FLAVORS}. Use with 'run'/'scheduled run'.",
             },
             "timeout": {
                 "type": "string",

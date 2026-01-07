@@ -2,8 +2,10 @@
 Utility functions for Hugging Face tools
 
 Ported from: hf-mcp-server/packages/mcp/src/jobs/formatters.ts
+Includes GPU memory validation for job submissions
 """
 
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -126,7 +128,6 @@ def format_scheduled_jobs_table(jobs: List[Dict[str, Any]]) -> str:
 
 def format_job_details(jobs: Any) -> str:
     """Format job details as JSON in a markdown code block"""
-    import json
 
     job_array = jobs if isinstance(jobs, list) else [jobs]
     json_str = json.dumps(job_array, indent=2)
@@ -135,7 +136,6 @@ def format_job_details(jobs: Any) -> str:
 
 def format_scheduled_job_details(jobs: Any) -> str:
     """Format scheduled job details as JSON in a markdown code block"""
-    import json
 
     job_array = jobs if isinstance(jobs, list) else [jobs]
     json_str = json.dumps(job_array, indent=2)

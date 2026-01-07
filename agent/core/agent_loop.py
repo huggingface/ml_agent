@@ -25,9 +25,15 @@ def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
     args = tool_args.get("args", {})
     # Sometimes LLM passes args as string instead of dict
     if isinstance(args, str):
-        return False, f"Tool call error: 'args' must be a JSON object, not a string. You passed: {repr(args)}"
+        return (
+            False,
+            f"Tool call error: 'args' must be a JSON object, not a string. You passed: {repr(args)}",
+        )
     if not isinstance(args, dict) and args is not None:
-        return False, f"Tool call error: 'args' must be a JSON object. You passed type: {type(args).__name__}"
+        return (
+            False,
+            f"Tool call error: 'args' must be a JSON object. You passed type: {type(args).__name__}",
+        )
     return True, None
 
 
@@ -37,8 +43,6 @@ def _needs_approval(tool_name: str, tool_args: dict) -> bool:
     args_valid, _ = _validate_tool_args(tool_args)
     if not args_valid:
         return False
-
-    args = tool_args.get("args", {})
 
     if tool_name == "hf_jobs":
         # Check if it's a run or uv operation

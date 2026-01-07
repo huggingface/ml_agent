@@ -4,14 +4,9 @@ Utils Tools - General utility operations
 Provides system information like current date/time with timezone support.
 """
 
-import asyncio
+import zoneinfo
 from datetime import datetime
-from typing import Any, Dict, Literal, Optional
-
-try:
-    import zoneinfo
-except ImportError:
-    from backports import zoneinfo
+from typing import Any, Dict, Literal
 
 from agent.tools.types import ToolResult
 
@@ -123,7 +118,9 @@ Common timezones: Europe/Paris, America/New_York, America/Los_Angeles, Asia/Toky
             date_str = now.strftime("%d-%m-%Y")
 
             # Format time as HH:MM:SS.mmm
-            time_str = now.strftime("%H:%M:%S.%f")[:-3]  # Remove last 3 digits to keep only milliseconds
+            time_str = now.strftime("%H:%M:%S.%f")[
+                :-3
+            ]  # Remove last 3 digits to keep only milliseconds
 
             # Get timezone abbreviation/offset
             tz_offset = now.strftime("%z")

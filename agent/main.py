@@ -222,11 +222,15 @@ async def event_listener(
 
                             # Build repo URL
                             type_path = "" if repo_type == "model" else f"{repo_type}s"
-                            repo_url = f"https://huggingface.co/{type_path}/{repo_id}".replace("//", "/")
+                            repo_url = (
+                                f"https://huggingface.co/{type_path}/{repo_id}".replace(
+                                    "//", "/"
+                                )
+                            )
 
                             print(f"Repository: {repo_id}")
                             print(f"Type: {repo_type}")
-                            print(f"Private: Yes")
+                            print("Private: Yes")
                             print(f"URL: {repo_url}")
 
                             # Show file preview for upload_file operation
@@ -237,9 +241,9 @@ async def event_listener(
 
                                 if isinstance(file_content, str):
                                     # Calculate metrics
-                                    all_lines = file_content.split('\n')
+                                    all_lines = file_content.split("\n")
                                     line_count = len(all_lines)
-                                    size_bytes = len(file_content.encode('utf-8'))
+                                    size_bytes = len(file_content.encode("utf-8"))
                                     size_kb = size_bytes / 1024
                                     size_mb = size_kb / 1024
 
@@ -251,8 +255,10 @@ async def event_listener(
 
                                     # Show preview
                                     preview_lines = all_lines[:5]
-                                    preview = '\n'.join(preview_lines)
-                                    print(f"Content preview (first 5 lines):\n{preview}")
+                                    preview = "\n".join(preview_lines)
+                                    print(
+                                        f"Content preview (first 5 lines):\n{preview}"
+                                    )
                                     if len(all_lines) > 5:
                                         print("...")
 

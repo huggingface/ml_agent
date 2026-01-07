@@ -23,4 +23,8 @@ dependencies = [
     "prompt-toolkit>=3.0.0",
     "ipykernel>=7.1.0",
     "ipywidgets>=8.1.8",
+    "thefuzz>=0.22.1",
+    "nbconvert>=7.16.6",
+    "nbformat>=5.10.4",
+    "markitdown[all,docx,outlook,pdf,pptx,xls,xlsx]>=0.1.4",
 ]

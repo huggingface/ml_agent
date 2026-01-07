@@ -2,6 +2,8 @@
 Context management for conversation history
 """
 
+import zoneinfo
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +44,20 @@ class ContextManager:
             prompt_data = yaml.safe_load(f)
             template_str = prompt_data.get("system_prompt", "")
 
+        # Get current date and time
+        tz = zoneinfo.ZoneInfo("Europe/Paris")
+        now = datetime.now(tz)
+        current_date = now.strftime("%d-%m-%Y")
+        current_time = now.strftime("%H:%M:%S.%f")[:-3]
+        current_timezone = f"{now.strftime('%Z')} (UTC{now.strftime('%z')[:3]}:{now.strftime('%z')[3:]})"
+
         template = Template(template_str)
         return template.render(
             tools=tool_specs,
             num_tools=len(tool_specs),
+            current_date=current_date,
+            current_time=current_time,
+            current_timezone=current_timezone,
         )
 
     def add_message(self, message: Message, token_count: int = None) -> None:

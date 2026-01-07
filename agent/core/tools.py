@@ -19,13 +19,27 @@ from agent.tools.docs_tools import (
     explore_hf_docs_handler,
     hf_docs_fetch_handler,
 )
+from agent.tools.github_find_examples import (
+    GITHUB_FIND_EXAMPLES_TOOL_SPEC,
+    github_find_examples_handler,
+)
+from agent.tools.github_list_repos import (
+    GITHUB_LIST_REPOS_TOOL_SPEC,
+    github_list_repos_handler,
+)
+from agent.tools.github_read_file import (
+    GITHUB_READ_FILE_TOOL_SPEC,
+    github_read_file_handler,
+)
 from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC, hf_jobs_handler
 from agent.tools.plan_tool import PLAN_TOOL_SPEC, plan_tool_handler
 from agent.tools.private_hf_repo_tools import (
     PRIVATE_HF_REPO_TOOL_SPEC,
     private_hf_repo_handler,
 )
-from agent.tools.utils_tools import UTILS_TOOL_SPEC, utils_handler
+
+# NOTE: Utils tool disabled - date/time now loaded into system prompt at initialization
+# from agent.tools.utils_tools import UTILS_TOOL_SPEC, utils_handler
 
 # Suppress aiohttp deprecation warning
 warnings.filterwarnings(
@@ -224,7 +238,7 @@ class ToolRouter:
 def create_builtin_tools() -> list[ToolSpec]:
     """Create built-in tool specifications"""
     print(
-        f"Creating built-in tools: {EXPLORE_HF_DOCS_TOOL_SPEC['name']}, {HF_DOCS_FETCH_TOOL_SPEC['name']}, {PLAN_TOOL_SPEC['name']}, {HF_JOBS_TOOL_SPEC['name']}, {PRIVATE_HF_REPO_TOOL_SPEC['name']}, {UTILS_TOOL_SPEC['name']}"
+        f"Creating built-in tools: {EXPLORE_HF_DOCS_TOOL_SPEC['name']}, {HF_DOCS_FETCH_TOOL_SPEC['name']}, {PLAN_TOOL_SPEC['name']}, {HF_JOBS_TOOL_SPEC['name']}, {PRIVATE_HF_REPO_TOOL_SPEC['name']}, {GITHUB_FIND_EXAMPLES_TOOL_SPEC['name']}, {GITHUB_LIST_REPOS_TOOL_SPEC['name']}, {GITHUB_READ_FILE_TOOL_SPEC['name']}"
     )
     # in order of importance
     return [
@@ -260,10 +274,37 @@ def create_builtin_tools() -> list[ToolSpec]:
             parameters=PRIVATE_HF_REPO_TOOL_SPEC["parameters"],
             handler=private_hf_repo_handler,
         ),
+        # NOTE: Utils tool disabled - date/time now loaded into system prompt at initialization (less tool calls=more reliablity)
+        # ToolSpec(
+        #     name=UTILS_TOOL_SPEC["name"],
+        #     description=UTILS_TOOL_SPEC["description"],
+        #     parameters=UTILS_TOOL_SPEC["parameters"],
+        #     handler=utils_handler,
+        # ),
+        # GitHub tools
+        # NOTE: Github search code tool disabled - a bit buggy
+        # ToolSpec(
+        #     name=GITHUB_SEARCH_CODE_TOOL_SPEC["name"],
+        #     description=GITHUB_SEARCH_CODE_TOOL_SPEC["description"],
+        #     parameters=GITHUB_SEARCH_CODE_TOOL_SPEC["parameters"],
+        #     handler=github_search_code_handler,
+        # ),
         ToolSpec(
-            name=UTILS_TOOL_SPEC["name"],
-            description=UTILS_TOOL_SPEC["description"],
-            parameters=UTILS_TOOL_SPEC["parameters"],
-            handler=utils_handler,
+            name=GITHUB_FIND_EXAMPLES_TOOL_SPEC["name"],
+            description=GITHUB_FIND_EXAMPLES_TOOL_SPEC["description"],
+            parameters=GITHUB_FIND_EXAMPLES_TOOL_SPEC["parameters"],
+            handler=github_find_examples_handler,
+        ),
+        ToolSpec(
+            name=GITHUB_LIST_REPOS_TOOL_SPEC["name"],
+            description=GITHUB_LIST_REPOS_TOOL_SPEC["description"],
+            parameters=GITHUB_LIST_REPOS_TOOL_SPEC["parameters"],
+            handler=github_list_repos_handler,
+        ),
+        ToolSpec(
+            name=GITHUB_READ_FILE_TOOL_SPEC["name"],
+            description=GITHUB_READ_FILE_TOOL_SPEC["description"],
+            parameters=GITHUB_READ_FILE_TOOL_SPEC["parameters"],
+            handler=github_read_file_handler,
         ),
     ]
