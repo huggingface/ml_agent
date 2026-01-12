@@ -74,7 +74,20 @@ def get_current_plan() -> List[Dict[str, str]]:
 # Tool specification
 PLAN_TOOL_SPEC = {
     "name": "plan_tool",
-    "description": "Manage a plan with a list of todos. Each call replaces the entire plan with the provided todos list.",
+    "description": (
+        "Manage task planning and progress tracking with todo list (pending/in_progress/completed statuses). "
+        "⚠️ CRITICAL: ALWAYS use for multi-step tasks (3+ steps) and MUST update frequently to show progress. "
+        "**Use when:** (1) User provides multiple tasks, (2) Complex workflows (training, evaluation, data processing), "
+        "(3) Tasks requiring multiple tool calls, (4) Need to communicate progress clearly to user, "
+        "(5) Breaking down ambiguous requests into concrete steps. "
+        "**Pattern:** Create plan at start → Mark in_progress when starting task → Mark completed immediately after finishing → User sees clear progress. "
+        "Each call replaces entire plan (full list required). "
+        "**Critical for reliability:** Exactly ONE task in_progress at a time (not zero, not multiple). "
+        "Mark tasks completed IMMEDIATELY after finishing - don't batch completions. "
+        "**For long-running tasks:** Update plan after each major step to keep user informed. "
+        "**Only mark completed when:** Task fully accomplished, no errors, all requirements met. "
+        "Keep tasks pending if blocked/errors occur - create new task to resolve blockers."
+    ),
     "parameters": {
         "type": "object",
         "properties": {

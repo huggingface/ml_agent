@@ -509,10 +509,16 @@ async def hf_docs_fetch_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
 EXPLORE_HF_DOCS_TOOL_SPEC = {
     "name": "explore_hf_docs",
     "description": (
-        "Explore the Hugging Face documentation at a glance. "
-        "Select an endpoint from the available options and get a list of all documentation pages "
-        "with their titles, URLs, and a 300-character glimpse of each page. "
-        "Use this to discover what documentation is available before fetching specific pages."
+        "Explore Hugging Face documentation structure and discover available pages with 300-character previews. "
+        "⚠️ MANDATORY: ALWAYS use this BEFORE implementing any ML task (training, fine-tuning, data processing, inference). "
+        "Your training data may be outdated - current documentation is the source of truth. "
+        "**Use when:** (1) Starting any implementation task, (2) User asks 'how to' questions, "
+        "(3) Before writing training/processing code, (4) Researching library capabilities, "
+        "(5) Verifying API syntax and parameters. "
+        "**Pattern:** explore (discover structure) → fetch_hf_docs (get details) → implement with researched approach. "
+        "Returns: Sidebar navigation with titles, URLs, and glimpses of all pages in the selected documentation. "
+        "**Then:** Use fetch_hf_docs with specific URLs from results to get full content. "
+        "**Critical for reliability:** Never implement based on internal knowledge without checking current docs first - APIs change frequently."
     ),
     "parameters": {
         "type": "object",
@@ -645,10 +651,16 @@ EXPLORE_HF_DOCS_TOOL_SPEC = {
 HF_DOCS_FETCH_TOOL_SPEC = {
     "name": "fetch_hf_docs",
     "description": (
-        "Fetch the full content of a specific HF documentation page. "
-        "Provide the full URL to the doc page (e.g., from explore_hf_docs results). "
-        "Returns the complete markdown content of that page. "
-        "Use explore_hf_docs first to discover available pages."
+        "Fetch full markdown content of a specific HF documentation page. "
+        "⚠️ CRITICAL: Use this after explore_hf_docs to get detailed implementation guidance. "
+        "**Use when:** (1) Found relevant page in explore_hf_docs results, (2) Need complete API documentation, "
+        "(3) Need training method details (SFT/DPO/GRPO), (4) Need configuration examples, "
+        "(5) Need parameter descriptions and usage patterns. "
+        "**Pattern:** explore_hf_docs (find relevant page) → fetch_hf_docs (get full content) → implement using documented approach. "
+        "Provide full URL from explore_hf_docs results (e.g., 'https://huggingface.co/docs/trl/sft_trainer'). "
+        "Returns: Complete markdown documentation with examples, parameters, and usage patterns. "
+        "**For training tasks:** ALWAYS fetch trainer docs (SFTConfig, DPOConfig, etc.) before creating training scripts. "
+        "**Critical for reliability:** This ensures you use current APIs and best practices."
     ),
     "parameters": {
         "type": "object",
@@ -678,9 +690,15 @@ async def _get_api_search_tool_spec() -> dict[str, Any]:
     return {
         "name": "search_hf_api_endpoints",
         "description": (
-            "Search the HuggingFace OpenAPI specification by tag to find related API endpoints. "
-            "Returns all endpoints with the specified tag including curl examples showing how to use them. "
-            "Each result includes the endpoint path, summary, usage example with curl, and response information."
+            "Search HuggingFace OpenAPI specification by tag to find API endpoints with curl examples. "
+            "**Use when:** (1) Need to interact with HF Hub API directly, (2) Building scripts for repo operations, "
+            "(3) Need authentication patterns, (4) Understanding API parameters and responses, "
+            "(5) Need curl examples for HTTP requests. "
+            "Returns: Endpoint paths, methods, parameters, curl examples with authentication, and response schemas. "
+            "**Pattern:** search_hf_api_endpoints (find endpoint) → use curl pattern in implementation. "
+            "Tags group related operations: repos, models, datasets, inference, spaces, etc. "
+            "**Note:** Each result includes curl example with $HF_TOKEN placeholder for authentication. "
+            "**For tool building:** This provides the API foundation for creating Hub interaction scripts."
         ),
         "parameters": {
             "type": "object",

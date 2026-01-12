@@ -17,6 +17,7 @@ from agent.config import load_config
 from agent.core.agent_loop import submission_loop
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
+from agent.utils.reliability_checks import check_training_script_save_pattern
 from agent.utils.terminal_display import (
     format_error,
     format_header,
@@ -184,6 +185,11 @@ async def event_listener(
                                 print(f"Python version: {python_version}")
                             if script_args:
                                 print(f"Script args: {' '.join(script_args)}")
+
+                            # Run reliability checks on the full script (not truncated)
+                            check_message = check_training_script_save_pattern(script)
+                            if check_message:
+                                print(check_message)
                         elif command:
                             # Docker mode
                             image = arguments.get("image", "python:3.12")

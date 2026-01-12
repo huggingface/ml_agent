@@ -16,7 +16,9 @@ from huggingface_hub.utils import HfHubHTTPError
 from agent.tools.types import ToolResult
 
 # Operation names
-OperationType = Literal["upload_file", "create_repo", "check_repo", "list_files", "read_file"]
+OperationType = Literal[
+    "upload_file", "create_repo", "check_repo", "list_files", "read_file"
+]
 
 
 async def _async_call(func, *args, **kwargs):
@@ -33,7 +35,7 @@ def _build_repo_url(repo_id: str, repo_type: str = "dataset") -> str:
 def _content_to_bytes(content: str | bytes) -> bytes:
     """Convert string or bytes content to bytes."""
     if isinstance(content, str):
-        return content.encode('utf-8')
+        return content.encode("utf-8")
     return content
 
 
@@ -159,7 +161,20 @@ Call this tool with:
   }
 }
 ```
-Note: Repositories are always created as private.
+
+### Create a Space
+Call this tool with:
+```json
+{
+  "operation": "create_repo",
+  "args": {
+    "repo_id": "my-gradio-app",
+    "repo_type": "space",
+    "space_sdk": "gradio"
+  }
+}
+```
+Note: Repositories are always created as private. For spaces, `space_sdk` is required (gradio, streamlit, static, or docker).
 
 ### Check if a repository exists
 Call this tool with:
@@ -261,13 +276,15 @@ Call this tool with:
 
             # Create repo if needed
             if not repo_exists and create_if_missing:
-                await self._create_repo(
-                    {
-                        "repo_id": repo_id,
-                        "repo_type": repo_type,
-                        "private": True,
-                    }
-                )
+                create_args = {
+                    "repo_id": repo_id,
+                    "repo_type": repo_type,
+                    "private": True,
+                }
+                # Pass through space_sdk if provided (required for spaces)
+                if "space_sdk" in args:
+                    create_args["space_sdk"] = args["space_sdk"]
+                await self._create_repo(create_args)
             elif not repo_exists:
                 return {
                     "formatted": f"Repository {repo_id} does not exist. Set create_if_missing: true to create it.",
@@ -332,6 +349,7 @@ Call this tool with:
 
         repo_type = args.get("repo_type", "dataset")
         private = True  # Always create private repos
+        space_sdk = args.get("space_sdk")  # Required if repo_type is "space"
 
         try:
             # Check if repo already exists
@@ -347,14 +365,27 @@ Call this tool with:
                     "resultsShared": 1,
                 }
 
+            # Validate space_sdk for spaces
+            if repo_type == "space" and not space_sdk:
+                return {
+                    "formatted": "space_sdk is required when creating a space. Valid values: gradio, streamlit, static, docker",
+                    "totalResults": 0,
+                    "resultsShared": 0,
+                    "isError": True,
+                }
+
             # Create repository
-            repo_url = await _async_call(
-                self.api.create_repo,
-                repo_id=repo_id,
-                repo_type=repo_type,
-                private=private,
-                exist_ok=True,
-            )
+            create_kwargs = {
+                "repo_id": repo_id,
+                "repo_type": repo_type,
+                "private": private,
+                "exist_ok": True,
+            }
+            # Add space_sdk only for spaces
+            if repo_type == "space" and space_sdk:
+                create_kwargs["space_sdk"] = space_sdk
+
+            repo_url = await _async_call(self.api.create_repo, **create_kwargs)
 
             response = f"""✓ Repository created successfully!
 
@@ -565,18 +596,30 @@ To create it, call this tool with:
 PRIVATE_HF_REPO_TOOL_SPEC = {
     "name": "hf_private_repos",
     "description": (
-        "Manage private Hugging Face repositories. "
-        "PRIMARY USE: Store job outputs, scripts, and logs from HF Jobs (ephemeral results need persistent storage). "
-        "SECONDARY USE: Read back stored files and list repo contents. "
-        "Pass file content as strings/bytes (no filesystem needed). "
-        "Call with no operation for full usage instructions."
+        "Manage private HF repositories - create, upload, read, list files in models/datasets/spaces. "
+        "⚠️ PRIMARY USE: Store job outputs persistently (job storage is EPHEMERAL - everything deleted after completion). "
+        "**Use when:** (1) Job completes and need to store logs/scripts/results, (2) Creating repos for training outputs, "
+        "(3) Reading back stored files, (4) Managing Space files, (5) Organizing job artifacts by path. "
+        "**Pattern:** hf_jobs (ephemeral) → hf_private_repos upload_file (persistent) → can read_file later. "
+        "ALWAYS pass file_content as string/bytes (✓), never file paths (✗) - this is content-based, no filesystem access. "
+        "**Operations:** create_repo (new private repo), upload_file (store content), read_file (retrieve content), list_files (browse), check_repo (verify exists). "
+        "**Critical for reliability:** Jobs lose all files after completion - use this tool to preserve important outputs. "
+        "Repositories created are ALWAYS private by default (good for sensitive training data/models). "
+        "For Spaces: must provide space_sdk ('gradio', 'streamlit', 'static', 'docker') when creating. "
+        "**Then:** After uploading, provide user with repository URL for viewing/sharing."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["upload_file", "create_repo", "check_repo", "list_files", "read_file"],
+                "enum": [
+                    "upload_file",
+                    "create_repo",
+                    "check_repo",
+                    "list_files",
+                    "read_file",
+                ],
                 "description": (
                     "Operation to execute. Valid values: [upload_file, create_repo, check_repo, list_files, read_file]"
                 ),
@@ -586,7 +629,8 @@ PRIVATE_HF_REPO_TOOL_SPEC = {
                 "description": (
                     "Operation-specific arguments as a JSON object. "
                     "Write ops: file_content (string/bytes), path_in_repo (string), repo_id (string), "
-                    "repo_type (dataset/model/space), create_if_missing (boolean), commit_message (string). "
+                    "repo_type (dataset/model/space), create_if_missing (boolean), commit_message (string), "
+                    "space_sdk (gradio/streamlit/static/docker - required when repo_type=space). "
                     "Read ops: repo_id (string), path_in_repo (for read_file), repo_type (optional)."
                 ),
                 "additionalProperties": True,

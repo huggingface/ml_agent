@@ -163,10 +163,13 @@ Common timezones: Europe/Paris, America/New_York, America/Los_Angeles, Asia/Toky
 UTILS_TOOL_SPEC = {
     "name": "utils",
     "description": (
-        "Utility operations for system information. "
-        "Get current date (dd-mm-yyyy) and time (HH:MM:SS.mmm) with timezone support. "
-        "Default timezone: Paris (Europe/Paris). "
-        "Call with no operation for full usage instructions."
+        "System utility operations - currently provides date/time with timezone support. "
+        "**Use when:** (1) Need current date for logging/timestamps, (2) User asks 'what time is it', "
+        "(3) Need timezone-aware datetime for scheduling/coordination, (4) Creating timestamped filenames. "
+        "**Operation:** get_datetime with optional timezone parameter (default: Europe/Paris). "
+        "Returns: Date (dd-mm-yyyy), time (HH:MM:SS.mmm), timezone info, ISO format, Unix timestamp. "
+        "**Pattern:** utils get_datetime → use timestamp in filename/log → upload to hf_private_repos. "
+        "Supports IANA timezone names: 'Europe/Paris', 'America/New_York', 'Asia/Tokyo', 'UTC'."
     ),
     "parameters": {
         "type": "object",
