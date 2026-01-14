@@ -287,6 +287,95 @@ async def event_listener(
                                     if len(all_lines) > 5:
                                         print("...")
 
+                    elif tool_name == "hf_repo_files":
+                        # Handle repo files operations (upload, delete)
+                        repo_id = arguments.get("repo_id", "")
+                        repo_type = arguments.get("repo_type", "model")
+                        revision = arguments.get("revision", "main")
+
+                        # Build repo URL
+                        if repo_type == "model":
+                            repo_url = f"https://huggingface.co/{repo_id}"
+                        else:
+                            repo_url = f"https://huggingface.co/{repo_type}s/{repo_id}"
+
+                        print(f"Repository: {repo_id}")
+                        print(f"Type: {repo_type}")
+                        print(f"Branch: {revision}")
+                        print(f"URL: {repo_url}")
+
+                        if operation == "upload":
+                            path = arguments.get("path", "")
+                            content = arguments.get("content", "")
+                            create_pr = arguments.get("create_pr", False)
+
+                            print(f"File: {path}")
+                            if create_pr:
+                                print("Mode: Create PR")
+
+                            if isinstance(content, str):
+                                all_lines = content.split("\n")
+                                line_count = len(all_lines)
+                                size_bytes = len(content.encode("utf-8"))
+                                size_kb = size_bytes / 1024
+
+                                print(f"Lines: {line_count}")
+                                if size_kb < 1024:
+                                    print(f"Size: {size_kb:.2f} KB")
+                                else:
+                                    print(f"Size: {size_kb / 1024:.2f} MB")
+
+                                # Show full content
+                                print(f"Content:\n{content}")
+
+                        elif operation == "delete":
+                            patterns = arguments.get("patterns", [])
+                            if isinstance(patterns, str):
+                                patterns = [patterns]
+                            print(f"Patterns to delete: {', '.join(patterns)}")
+
+                    elif tool_name == "hf_repo_git":
+                        # Handle git operations (branches, tags, PRs, repo management)
+                        repo_id = arguments.get("repo_id", "")
+                        repo_type = arguments.get("repo_type", "model")
+
+                        # Build repo URL
+                        if repo_type == "model":
+                            repo_url = f"https://huggingface.co/{repo_id}"
+                        else:
+                            repo_url = f"https://huggingface.co/{repo_type}s/{repo_id}"
+
+                        print(f"Repository: {repo_id}")
+                        print(f"Type: {repo_type}")
+                        print(f"URL: {repo_url}")
+
+                        if operation == "delete_branch":
+                            branch = arguments.get("branch", "")
+                            print(f"Branch to delete: {branch}")
+
+                        elif operation == "delete_tag":
+                            tag = arguments.get("tag", "")
+                            print(f"Tag to delete: {tag}")
+
+                        elif operation == "merge_pr":
+                            pr_num = arguments.get("pr_num", "")
+                            print(f"PR to merge: #{pr_num}")
+
+                        elif operation == "create_repo":
+                            private = arguments.get("private", False)
+                            space_sdk = arguments.get("space_sdk")
+                            print(f"Private: {private}")
+                            if space_sdk:
+                                print(f"Space SDK: {space_sdk}")
+
+                        elif operation == "update_repo":
+                            private = arguments.get("private")
+                            gated = arguments.get("gated")
+                            if private is not None:
+                                print(f"Private: {private}")
+                            if gated is not None:
+                                print(f"Gated: {gated}")
+
                     # Get user decision for this item
                     response = await prompt_session.prompt_async(
                         f"Approve item {i}? (y=yes, yolo=approve all, n=no, or provide feedback): "

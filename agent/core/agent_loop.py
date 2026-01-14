@@ -76,7 +76,19 @@ def _needs_approval(tool_name: str, tool_args: dict, config: Config | None = Non
         # Other operations (create_repo, etc.) always require approval
         if operation in ["create_repo"]:
             return True
-    
+
+    # hf_repo_files: upload (can overwrite) and delete require approval
+    if tool_name == "hf_repo_files":
+        operation = tool_args.get("operation", "")
+        if operation in ["upload", "delete"]:
+            return True
+
+    # hf_repo_git: destructive operations require approval
+    if tool_name == "hf_repo_git":
+        operation = tool_args.get("operation", "")
+        if operation in ["delete_branch", "delete_tag", "merge_pr", "create_repo", "update_repo"]:
+            return True
+
     return False
 
 
