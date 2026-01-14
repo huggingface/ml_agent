@@ -57,6 +57,7 @@ _docs_cache: dict[str, list[dict[str, str]]] = {}
 _index_cache: dict[str, tuple[Any, MultifieldParser]] = {}
 _cache_lock = asyncio.Lock()
 _openapi_cache: dict[str, Any] | None = None
+_openapi_index_cache: tuple[Any, MultifieldParser, list[dict[str, Any]]] | None = None
 
 # ---------------------------------------------------------------------------
 # Gradio Documentation
@@ -441,6 +442,113 @@ def _extract_all_tags(spec: dict[str, Any]) -> list[str]:
     return sorted(tags)
 
 
+def _extract_all_endpoints(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract all endpoints from OpenAPI spec."""
+    servers = spec.get("servers", [])
+    base_url = (
+        servers[0].get("url", "https://huggingface.co")
+        if servers
+        else "https://huggingface.co"
+    )
+
+    endpoints = []
+    for path, path_item in spec.get("paths", {}).items():
+        for method, op in path_item.items():
+            if method not in ["get", "post", "put", "delete", "patch", "head", "options"]:
+                continue
+            endpoints.append({
+                "path": path,
+                "method": method.upper(),
+                "operationId": op.get("operationId", ""),
+                "summary": op.get("summary", ""),
+                "description": op.get("description", ""),
+                "tags": " ".join(op.get("tags", [])),
+                "parameters": op.get("parameters", []),
+                "request_body": op.get("requestBody", {}),
+                "responses": op.get("responses", {}),
+                "base_url": base_url,
+            })
+    return endpoints
+
+
+async def _build_openapi_index() -> tuple[Any, MultifieldParser, list[dict[str, Any]]]:
+    """Build or retrieve cached Whoosh index for OpenAPI endpoints."""
+    global _openapi_index_cache
+    async with _cache_lock:
+        if _openapi_index_cache is not None:
+            return _openapi_index_cache
+
+    spec = await _fetch_openapi_spec()
+    endpoints = _extract_all_endpoints(spec)
+
+    analyzer = StemmingAnalyzer()
+    schema = Schema(
+        path=ID(stored=True, unique=True),
+        method=ID(stored=True),
+        operationId=TEXT(stored=True, analyzer=analyzer),
+        summary=TEXT(stored=True, analyzer=analyzer),
+        description=TEXT(stored=True, analyzer=analyzer),
+        tags=TEXT(stored=True, analyzer=analyzer),
+        param_names=TEXT(stored=False, analyzer=analyzer),
+    )
+    storage = RamStorage()
+    index = storage.create_index(schema)
+    writer = index.writer()
+
+    for ep in endpoints:
+        param_names = " ".join(p.get("name", "") for p in ep.get("parameters", []))
+        writer.add_document(
+            path=ep["path"],
+            method=ep["method"],
+            operationId=ep.get("operationId", ""),
+            summary=ep.get("summary", ""),
+            description=ep.get("description", ""),
+            tags=ep.get("tags", ""),
+            param_names=param_names,
+        )
+    writer.commit()
+
+    parser = MultifieldParser(
+        ["summary", "description", "operationId", "tags", "param_names"],
+        schema=schema,
+        fieldboosts={"summary": 3.0, "operationId": 2.0, "description": 1.0, "tags": 1.5},
+        group=OrGroup,
+    )
+
+    async with _cache_lock:
+        _openapi_index_cache = (index, parser, endpoints)
+    return index, parser, endpoints
+
+
+async def _search_openapi(
+    query: str, tag: str | None, limit: int = 20
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Search OpenAPI endpoints using Whoosh. Returns (results, fallback_message)."""
+    index, parser, endpoints = await _build_openapi_index()
+
+    try:
+        query_obj = parser.parse(query)
+    except Exception:
+        return [], "Query contained unsupported syntax."
+
+    with index.searcher() as searcher:
+        results = searcher.search(query_obj, limit=limit * 2)  # Get extra for tag filtering
+        matches = []
+        for hit in results:
+            # Find full endpoint data
+            ep = next((e for e in endpoints if e["path"] == hit["path"] and e["method"] == hit["method"]), None)
+            if ep is None:
+                continue
+            # Filter by tag if provided
+            if tag and tag not in ep.get("tags", ""):
+                continue
+            matches.append({**ep, "score": round(hit.score, 2)})
+            if len(matches) >= limit:
+                break
+
+    return matches, None if matches else "No matches found for query."
+
+
 def _generate_curl_example(endpoint: dict[str, Any]) -> str:
     """Generate curl command example for an endpoint."""
     method = endpoint["method"]
@@ -535,25 +643,54 @@ def _format_response_info(responses: dict[str, Any]) -> str:
     return "\n".join(output)
 
 
-def _format_openapi_results(results: list[dict[str, Any]], tag: str) -> str:
+def _format_openapi_results(
+    results: list[dict[str, Any]],
+    tag: str | None = None,
+    query: str | None = None,
+    note: str | None = None,
+) -> str:
     """Format OpenAPI search results with curl examples."""
     if not results:
-        return f"No API endpoints found with tag '{tag}'"
+        if query and tag:
+            return f"No API endpoints found matching '{query}' in tag '{tag}'"
+        elif query:
+            return f"No API endpoints found matching '{query}'"
+        elif tag:
+            return f"No API endpoints found with tag '{tag}'"
+        return "No API endpoints found"
 
-    out = f"# API Endpoints for tag: `{tag}`\n\n"
-    out += f"Found {len(results)} endpoint(s)\n\n---\n\n"
+    # Build header
+    if query and tag:
+        out = f"# API Endpoints matching '{query}' (tag: `{tag}`)\n\n"
+    elif query:
+        out = f"# API Endpoints matching '{query}'\n\n"
+    elif tag:
+        out = f"# API Endpoints for tag: `{tag}`\n\n"
+    else:
+        out = "# API Endpoints\n\n"
+
+    out += f"Found {len(results)} endpoint(s)"
+    if note:
+        out += f" ({note})"
+    out += "\n\n---\n\n"
 
     for i, ep in enumerate(results, 1):
         out += f"## {i}. {ep['method']} {ep['path']}\n\n"
 
-        if ep["summary"]:
+        if query and "score" in ep:
+            out += f"**Relevance:** {ep['score']:.2f}\n\n"
+
+        if ep.get("summary"):
             out += f"**Summary:** {ep['summary']}\n\n"
 
-        if ep["description"]:
+        if ep.get("description"):
             desc = ep["description"][:300]
             if len(ep["description"]) > 300:
                 desc += "..."
             out += f"**Description:** {desc}\n\n"
+
+        if ep.get("tags"):
+            out += f"**Tags:** {ep['tags']}\n\n"
 
         params_info = _format_parameters(ep.get("parameters", []))
         if params_info:
@@ -571,52 +708,38 @@ def _format_openapi_results(results: list[dict[str, Any]], tag: str) -> str:
 
 
 async def search_openapi_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
-    """Search HuggingFace OpenAPI specification by tag."""
-    tag = arguments.get("tag", "")
-    if not tag:
-        return "Error: No tag provided", False
+    """Search HuggingFace OpenAPI specification by query and/or tag."""
+    tag = arguments.get("tag", "").strip() or None
+    query = arguments.get("query", "").strip() or None
+
+    if not tag and not query:
+        return "Error: Provide either 'query' (keyword search) or 'tag' (category filter), or both.", False
 
     try:
-        spec = await _fetch_openapi_spec()
-        paths = spec.get("paths", {})
-        servers = spec.get("servers", [])
-        base_url = (
-            servers[0].get("url", "https://huggingface.co")
-            if servers
-            else "https://huggingface.co"
-        )
+        note = None
 
-        results = []
-        for path, path_item in paths.items():
-            for method, op in path_item.items():
-                if method not in [
-                    "get",
-                    "post",
-                    "put",
-                    "delete",
-                    "patch",
-                    "head",
-                    "options",
-                ]:
-                    continue
-                if tag not in op.get("tags", []):
-                    continue
+        # If query provided, try Whoosh search first
+        if query:
+            results, search_note = await _search_openapi(query, tag, limit=20)
 
-                results.append(
-                    {
-                        "path": path,
-                        "method": method.upper(),
-                        "operationId": op.get("operationId", ""),
-                        "summary": op.get("summary", ""),
-                        "description": op.get("description", ""),
-                        "parameters": op.get("parameters", []),
-                        "request_body": op.get("requestBody", {}),
-                        "responses": op.get("responses", {}),
-                        "base_url": base_url,
-                    }
-                )
+            # If Whoosh found results, return them
+            if results:
+                return _format_openapi_results(results, tag=tag, query=query, note=search_note), True
 
-        return _format_openapi_results(results, tag), True
+            # Whoosh found nothing - fall back to tag-based if tag provided
+            if tag:
+                note = f"No matches for '{query}'; showing all endpoints in tag '{tag}'"
+            else:
+                # No tag to fall back to
+                return _format_openapi_results([], query=query), True
+
+        # Tag-based search (either as fallback or primary)
+        if tag:
+            _, _, endpoints = await _build_openapi_index()
+            results = [ep for ep in endpoints if tag in ep.get("tags", "")]
+            return _format_openapi_results(results, tag=tag, query=None, note=note), True
+
+        return "Error: No results found", False
 
     except httpx.HTTPStatusError as e:
         return f"HTTP error fetching OpenAPI spec: {e.response.status_code}", False
@@ -632,25 +755,42 @@ async def _get_api_search_tool_spec() -> dict[str, Any]:
     tags = _extract_all_tags(spec)
 
     return {
-        "name": "search_hf_api_endpoints",
+        "name": "find_hf_api",
         "description": (
-            "Search HuggingFace OpenAPI specification by tag to find API endpoints with curl examples. "
-            "**Use when:** (1) Need to interact with HF Hub API directly, (2) Building scripts for repo operations, "
-            "(3) Need authentication patterns, (4) Understanding API parameters and responses, "
-            "(5) Need curl examples for HTTP requests. "
-            "Returns: Endpoint paths, methods, parameters, curl examples with authentication, and response schemas. "
-            "Tags group related operations: repos, models, datasets, inference, spaces, etc."
+            "Find HuggingFace Hub REST API endpoints to make HTTP requests. Returns curl examples with authentication. "
+            "⚠️ USE THIS TOOL when you need to call the HF Hub API directly - for operations like: "
+            "uploading/downloading files, managing repos, listing models/datasets, getting user info, "
+            "managing webhooks, collections, discussions, or any Hub interaction not covered by other tools. "
+            "**Use cases:** (1) 'Stream Space logs' → query='space logs', "
+            "(2) 'Get Space metrics/Zero-GPU usage' → query='space metrics', "
+            "(3) 'List organization members' → query='organization members', "
+            "(4) 'Generate repo access token' → query='jwt token', "
+            "(5) 'Check repo security scan' → query='security scan'. "
+            "**Search modes:** Use 'query' for keyword search, 'tag' to browse a category, or both. "
+            "If query finds no results, falls back to showing all endpoints in the tag. "
+            "**Output:** Full endpoint details with method, path, parameters, curl command, and response schema."
         ),
         "parameters": {
             "type": "object",
             "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Keyword search across endpoint summaries, descriptions, and operation IDs. "
+                        "Examples: 'upload file', 'create repository', 'list user models', 'delete branch', "
+                        "'webhook', 'collection', 'discussion comments'. Supports stemming (upload/uploading both work)."
+                    ),
+                },
                 "tag": {
                     "type": "string",
                     "enum": tags,
-                    "description": "The API tag to search for. Each tag groups related API endpoints.",
+                    "description": (
+                        "Filter by API category. Use alone to browse all endpoints in a category, "
+                        "or combine with 'query' to search within a category."
+                    ),
                 },
             },
-            "required": ["tag"],
+            "required": [],
         },
     }
 

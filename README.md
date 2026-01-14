@@ -75,7 +75,7 @@ HF_NAMESPACE=<hf-namespace-to-use>
 │  │  │  │  │ ToolRouter                 │  │  │  │  │         │
 │  │  │  │  │  ├─ explore_hf_docs        │  │  │  │  │         │
 │  │  │  │  │  ├─ fetch_hf_docs          │  │  │  │  │         │
-│  │  │  │  │  ├─ search_hf_api_endpoints│  │  │  │  │         │
+│  │  │  │  │  ├─ find_hf_api            │  │  │  │  │         │
 │  │  │  │  │  ├─ plan_tool              │  │  │  │  │         │
 │  │  │  │  │  ├─ hf_jobs*               │  │  │  │  │         │
 │  │  │  │  │  ├─ hf_private_repos*      │  │  │  │  │         │

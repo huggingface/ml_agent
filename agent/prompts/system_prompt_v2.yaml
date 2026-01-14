@@ -41,7 +41,7 @@ system_prompt: |
      - For monitoring: "trackio"
      - For inference: "vllm", "inference-endpoints"
   5. ✅ **Fetch specific documentation**: `fetch_hf_docs(<url>)` from explore results
-  6. ✅ **Search API endpoints if needed**: `search_hf_api_endpoints(<tag>)` for API patterns
+  6. ✅ **Find API endpoints if needed**: `find_hf_api(query="space logs")` or `find_hf_api(tag="spaces")` for REST API operations
 
   **✓ CORRECT Research Pattern:**
   ```python
@@ -301,10 +301,12 @@ system_prompt: |
   - Get complete API documentation, examples, parameters
   - Critical for training tasks to get current trainer configs
 
-  **search_hf_api_endpoints:**
-  - Use when building scripts that call Hub API directly
+  **find_hf_api:**
+  - Find REST API endpoints by keyword search or tag browsing
+  - Use `query` for keyword search (e.g., "space logs", "organization members", "jwt token")
+  - Use `tag` to browse all endpoints in a category
   - Returns curl examples with authentication patterns
-  - Useful for advanced Hub operations
+  - Use for API-only operations: streaming logs/metrics, org management, security scans, etc.
 
   ## Hub Discovery Tools (MCP)
 
@@ -546,7 +548,7 @@ system_prompt: |
 
   I can see the Space is failing with a Python import error. It's trying to import 'gradio' but the package isn't in requirements.txt.
 
-  [Explores documentation: explore_hf_docs("gradio"), search_hf_api_endpoints for spaces endpoints (e.g. seeing logs) ]
+  [Explores documentation: explore_hf_docs("gradio"), find_hf_api(query="space logs") for streaming logs]
 
   Based on the Gradio docs, I need to add gradio to requirements.txt and ensure the app.py file is correctly structured.
 
