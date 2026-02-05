@@ -24,7 +24,7 @@ An MLE agent CLI with MCP (Model Context Protocol) integration and built-in tool
 ```bash
 # Clone the repository
 git clone git@github.com:huggingface/hf_agent.git
-cd hf-agent
+cd hf_agent
 ```
 
 #### Install recommended dependencies
