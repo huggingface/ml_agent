@@ -144,6 +144,13 @@ def _find_section(sections: list[dict], query: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
+def _clean_description(text: str) -> str:
+    """Strip HTML card artifacts and collapse whitespace from HF API descriptions."""
+    text = re.sub(r"[\t]+", " ", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
+
+
 def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
@@ -272,7 +279,7 @@ def _format_datasets(datasets: list, arxiv_id: str, sort: str) -> str:
         ds_id = ds.get("id", "unknown")
         downloads = ds.get("downloads", 0)
         likes = ds.get("likes", 0)
-        desc = _truncate(ds.get("description") or "", MAX_SUMMARY_LEN)
+        desc = _truncate(_clean_description(ds.get("description") or ""), MAX_SUMMARY_LEN)
         tags = ds.get("tags") or []
         interesting = [t for t in tags if not t.startswith(("arxiv:", "region:"))][:5]
 
@@ -550,7 +557,7 @@ async def _op_find_datasets(args: dict[str, Any], limit: int) -> ToolResult:
         resp = await client.get(
             f"{HF_API}/datasets",
             params={
-                "other": f"arxiv:{arxiv_id}",
+                "filter": f"arxiv:{arxiv_id}",
                 "limit": limit,
                 "sort": sort_key,
                 "direction": -1,
@@ -585,7 +592,7 @@ async def _op_find_models(args: dict[str, Any], limit: int) -> ToolResult:
         resp = await client.get(
             f"{HF_API}/models",
             params={
-                "other": f"arxiv:{arxiv_id}",
+                "filter": f"arxiv:{arxiv_id}",
                 "limit": limit,
                 "sort": sort_key,
                 "direction": -1,
@@ -645,7 +652,7 @@ async def _op_find_all_resources(args: dict[str, Any], limit: int) -> ToolResult
             client.get(
                 f"{HF_API}/datasets",
                 params={
-                    "other": f"arxiv:{arxiv_id}",
+                    "filter": f"arxiv:{arxiv_id}",
                     "limit": per_cat,
                     "sort": "downloads",
                     "direction": -1,
@@ -654,7 +661,7 @@ async def _op_find_all_resources(args: dict[str, Any], limit: int) -> ToolResult
             client.get(
                 f"{HF_API}/models",
                 params={
-                    "other": f"arxiv:{arxiv_id}",
+                    "filter": f"arxiv:{arxiv_id}",
                     "limit": per_cat,
                     "sort": "downloads",
                     "direction": -1,
