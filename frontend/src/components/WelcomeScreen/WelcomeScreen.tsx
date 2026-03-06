@@ -23,7 +23,7 @@ export default function WelcomeScreen() {
   const { setPlan, clearPanel, user } = useAgentStore();
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [joinedOrg, setJoinedOrg] = useState(false);
+  const [iframeJoined, setIframeJoined] = useState(false);
 
   const inIframe = isInIframe();
   const isAuthenticated = user?.authenticated;
@@ -96,12 +96,6 @@ export default function WelcomeScreen() {
     },
   };
 
-  // Which screen to show
-  const showJoinOrg = !isAuthenticated && !isDevUser && !inIframe && !joinedOrg;
-  const showSignin = !isAuthenticated && !isDevUser && !inIframe && joinedOrg;
-  const showIframe = !isAuthenticated && !isDevUser && inIframe;
-  const showReady = isAuthenticated || isDevUser;
-
   return (
     <Box
       sx={{
@@ -137,8 +131,8 @@ export default function WelcomeScreen() {
         HF Agent
       </Typography>
 
-      {/* ── Screen: Join org ─────────────────────────────────────── */}
-      {showJoinOrg && (
+      {/* ── Iframe: join org → then redirect to Space ────────────── */}
+      {inIframe && !iframeJoined && (
         <>
           <Typography
             variant="body1"
@@ -161,6 +155,8 @@ export default function WelcomeScreen() {
             size="large"
             component="a"
             href={ORG_JOIN_URL}
+            target="_blank"
+            rel="noopener noreferrer"
             startIcon={<GroupAddIcon />}
             sx={primaryBtnSx}
           >
@@ -170,7 +166,7 @@ export default function WelcomeScreen() {
           <Button
             variant="text"
             size="small"
-            onClick={() => setJoinedOrg(true)}
+            onClick={() => setIframeJoined(true)}
             sx={{
               mt: 2,
               color: 'var(--muted-text)',
@@ -184,66 +180,8 @@ export default function WelcomeScreen() {
         </>
       )}
 
-      {/* ── Screen: Sign in (after org join) ─────────────────────── */}
-      {showSignin && (
-        <>
-          <Typography
-            variant="body1"
-            sx={{
-              color: 'var(--muted-text)',
-              maxWidth: 480,
-              mb: 4,
-              lineHeight: 1.8,
-              fontSize: '0.95rem',
-              textAlign: 'center',
-              px: 2,
-            }}
-          >
-            Now sign in with your Hugging Face account to get started.
-          </Typography>
-
-          <Button
-            variant="contained"
-            size="large"
-            onClick={() => triggerLogin()}
-            sx={primaryBtnSx}
-          >
-            Sign in with Hugging Face
-          </Button>
-
-          <Typography
-            variant="caption"
-            sx={{
-              mt: 2.5,
-              color: 'var(--muted-text)',
-              fontSize: '0.78rem',
-              textAlign: 'center',
-              maxWidth: 360,
-              lineHeight: 1.6,
-            }}
-          >
-            Make sure to enable access to the <strong>ml-agent-explorers</strong> org when prompted.
-          </Typography>
-
-          <Button
-            variant="text"
-            size="small"
-            onClick={() => setJoinedOrg(false)}
-            sx={{
-              mt: 1.5,
-              color: 'var(--muted-text)',
-              textTransform: 'none',
-              fontSize: '0.85rem',
-              '&:hover': { color: 'var(--text)' },
-            }}
-          >
-            ← Back
-          </Button>
-        </>
-      )}
-
-      {/* ── Screen: Iframe (original) ────────────────────────────── */}
-      {showIframe && (
+      {/* ── Iframe: after joining → open Space ───────────────────── */}
+      {inIframe && iframeJoined && (
         <>
           <Typography
             variant="body1"
@@ -279,8 +217,55 @@ export default function WelcomeScreen() {
         </>
       )}
 
-      {/* ── Screen: Start session (authenticated) ────────────────── */}
-      {showReady && (
+      {/* ── Direct: not logged in → sign in ──────────────────────── */}
+      {!inIframe && !isAuthenticated && !isDevUser && (
+        <>
+          <Typography
+            variant="body1"
+            sx={{
+              color: 'var(--muted-text)',
+              maxWidth: 520,
+              mb: 5,
+              lineHeight: 1.8,
+              fontSize: '0.95rem',
+              textAlign: 'center',
+              px: 2,
+              '& strong': { color: 'var(--text)', fontWeight: 600 },
+            }}
+          >
+            A general-purpose AI agent for <strong>machine learning engineering</strong>.
+            It browses <strong>Hugging Face documentation</strong>, manages{' '}
+            <strong>repositories</strong>, launches <strong>training jobs</strong>,
+            and explores <strong>datasets</strong> — all through natural conversation.
+          </Typography>
+
+          <Button
+            variant="contained"
+            size="large"
+            onClick={() => triggerLogin()}
+            sx={primaryBtnSx}
+          >
+            Sign in with Hugging Face
+          </Button>
+
+          <Typography
+            variant="caption"
+            sx={{
+              mt: 2.5,
+              color: 'var(--muted-text)',
+              fontSize: '0.78rem',
+              textAlign: 'center',
+              maxWidth: 360,
+              lineHeight: 1.6,
+            }}
+          >
+            Make sure to enable access to the <strong>ml-agent-explorers</strong> org when prompted.
+          </Typography>
+        </>
+      )}
+
+      {/* ── Direct: authenticated → start session ────────────────── */}
+      {!inIframe && (isAuthenticated || isDevUser) && (
         <>
           <Typography
             variant="body1"
