@@ -221,10 +221,16 @@ export default function CodePanel() {
     return visibleSection.content;
   }, [visibleSection?.content, visibleSection?.language]);
 
+  // Auto-scroll only for live log streaming, not when opening panel
+  const hasAutoScrolled = useRef(false);
   useEffect(() => {
-    if (scrollRef.current && panelView === 'output') {
+    hasAutoScrolled.current = false;
+  }, [panelData]);
+  useEffect(() => {
+    if (scrollRef.current && panelView === 'output' && hasAutoScrolled.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
+    hasAutoScrolled.current = true;
   }, [displayContent, panelView]);
 
   // ── Syntax-highlighted code block (DRY) ────────────────────────
@@ -491,7 +497,7 @@ export default function CodePanel() {
               {/* Input / Output toggle */}
               {panelData?.input && panelView === 'output' && (
                 <Box sx={{ display: 'flex', gap: 0.5, mb: 1.5 }}>
-                  {['output', 'input'].map((tab) => (
+                  {['input', 'output'].map((tab) => (
                     <Typography
                       key={tab}
                       onClick={() => setShowInput(tab === 'input')}
