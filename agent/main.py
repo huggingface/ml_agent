@@ -5,12 +5,12 @@ Interactive CLI chat with the agent
 import asyncio
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 import litellm
-from lmnr import Laminar, LaminarLiteLLMCallback
 from prompt_toolkit import PromptSession
 
 from agent.config import load_config
@@ -31,6 +31,15 @@ from agent.utils.terminal_display import (
 
 litellm.drop_params = True
 
+# ── Available models (mirrors backend/routes/agent.py) ──────────────────
+AVAILABLE_MODELS = [
+    {"id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6"},
+    {"id": "huggingface/fireworks-ai/MiniMaxAI/MiniMax-M2.5", "label": "MiniMax M2.5"},
+    {"id": "huggingface/novita/moonshotai/kimi-k2.5", "label": "Kimi K2.5"},
+    {"id": "huggingface/novita/zai-org/glm-5", "label": "GLM 5"},
+]
+VALID_MODEL_IDS = {m["id"] for m in AVAILABLE_MODELS}
+
 
 def _safe_get_args(arguments: dict) -> dict:
     """Safely extract args dict from arguments, handling cases where LLM passes string."""
@@ -41,14 +50,20 @@ def _safe_get_args(arguments: dict) -> dict:
     return args if isinstance(args, dict) else {}
 
 
-lmnr_api_key = os.environ.get("LMNR_API_KEY")
-if lmnr_api_key:
+def _get_hf_token() -> str | None:
+    """Get HF token from environment or huggingface_hub login."""
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        return token
     try:
-        Laminar.initialize(project_api_key=lmnr_api_key)
-        litellm.callbacks = [LaminarLiteLLMCallback()]
-        print("Laminar initialized")
-    except Exception as e:
-        print(f"Failed to initialize Laminar: {e}")
+        from huggingface_hub import HfApi
+        api = HfApi()
+        token = api.token
+        if token:
+            return token
+    except Exception:
+        pass
+    return None
 
 
 @dataclass
@@ -112,6 +127,22 @@ async def event_listener(
                 if plan_display:
                     print(plan_display)
                 turn_complete_event.set()
+            elif event.event_type == "interrupted":
+                print("\n(interrupted)")
+                turn_complete_event.set()
+            elif event.event_type == "undo_complete":
+                print("Undo complete.")
+                turn_complete_event.set()
+            elif event.event_type == "tool_log":
+                tool = event.data.get("tool", "") if event.data else ""
+                log = event.data.get("log", "") if event.data else ""
+                if log:
+                    print(f"  [{tool}] {log}")
+            elif event.event_type == "tool_state_change":
+                tool = event.data.get("tool", "") if event.data else ""
+                state = event.data.get("state", "") if event.data else ""
+                if state in ("approved", "rejected", "running"):
+                    print(f"  {tool}: {state}")
             elif event.event_type == "error":
                 error = (
                     event.data.get("error", "Unknown error")
@@ -127,7 +158,7 @@ async def event_listener(
             elif event.event_type == "compacted":
                 old_tokens = event.data.get("old_tokens", 0) if event.data else 0
                 new_tokens = event.data.get("new_tokens", 0) if event.data else 0
-                print(f"Compacted context: {old_tokens} → {new_tokens} tokens")
+                print(f"Compacted context: {old_tokens} -> {new_tokens} tokens")
             elif event.event_type == "approval_required":
                 # Handle batch approval format
                 tools_data = event.data.get("tools", []) if event.data else []
@@ -143,7 +174,7 @@ async def event_listener(
                         }
                         for t in tools_data
                     ]
-                    print(f"\n⚡ YOLO MODE: Auto-approving {count} item(s)")
+                    print(f"\n YOLO MODE: Auto-approving {count} item(s)")
                     submission_id[0] += 1
                     approval_submission = Submission(
                         id=f"approval_{submission_id[0]}",
@@ -387,7 +418,7 @@ async def event_listener(
                     if response == "yolo":
                         config.yolo_mode = True
                         print(
-                            "⚡ YOLO MODE ACTIVATED - Auto-approving all future tool calls"
+                            "YOLO MODE ACTIVATED - Auto-approving all future tool calls"
                         )
                         # Auto-approve this item and all remaining
                         approvals.append(
@@ -444,6 +475,93 @@ async def get_user_input(prompt_session: PromptSession) -> str:
     return await prompt_session.prompt_async(HTML("\n<b><cyan>></cyan></b> "))
 
 
+# ── Slash command helpers ────────────────────────────────────────────────
+
+HELP_TEXT = """\
+Commands:
+  /help            Show this help
+  /undo            Undo last turn
+  /compact         Compact context window
+  /model [id]      Show available models or switch model
+  /yolo            Toggle auto-approve mode
+  /status          Show current model, turn count
+  /quit, /exit     Exit the CLI
+"""
+
+
+def _handle_slash_command(
+    cmd: str,
+    config,
+    session_holder: list,
+    submission_queue: asyncio.Queue,
+    submission_id: list[int],
+) -> Submission | None:
+    """
+    Handle a slash command. Returns a Submission to enqueue, or None if
+    the command was handled locally (caller should set turn_complete_event).
+    """
+    parts = cmd.strip().split(None, 1)
+    command = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if command == "/help":
+        print(HELP_TEXT)
+        return None
+
+    if command == "/undo":
+        submission_id[0] += 1
+        return Submission(
+            id=f"sub_{submission_id[0]}",
+            operation=Operation(op_type=OpType.UNDO),
+        )
+
+    if command == "/compact":
+        submission_id[0] += 1
+        return Submission(
+            id=f"sub_{submission_id[0]}",
+            operation=Operation(op_type=OpType.COMPACT),
+        )
+
+    if command == "/model":
+        if not arg:
+            print("Available models:")
+            session = session_holder[0] if session_holder else None
+            current = config.model_name if config else ""
+            for m in AVAILABLE_MODELS:
+                marker = " <-- current" if m["id"] == current else ""
+                print(f"  {m['id']}  ({m['label']}){marker}")
+            return None
+        if arg not in VALID_MODEL_IDS:
+            print(f"Unknown model: {arg}")
+            print(f"Valid: {', '.join(VALID_MODEL_IDS)}")
+            return None
+        session = session_holder[0] if session_holder else None
+        if session:
+            session.update_model(arg)
+            print(f"Model switched to {arg}")
+        else:
+            config.model_name = arg
+            print(f"Model set to {arg} (session not started yet)")
+        return None
+
+    if command == "/yolo":
+        config.yolo_mode = not config.yolo_mode
+        state = "ON" if config.yolo_mode else "OFF"
+        print(f"YOLO mode: {state}")
+        return None
+
+    if command == "/status":
+        session = session_holder[0] if session_holder else None
+        print(f"Model: {config.model_name}")
+        if session:
+            print(f"Turns: {session.turn_count}")
+            print(f"Context items: {len(session.context_manager.items)}")
+        return None
+
+    print(f"Unknown command: {command}. Type /help for available commands.")
+    return None
+
+
 async def main():
     """Interactive chat with the agent"""
     from agent.utils.terminal_display import Colors
@@ -452,20 +570,27 @@ async def main():
     os.system("clear" if os.name != "nt" else "cls")
 
     banner = r"""
-  _   _                   _               _____                   _                    _   
- | | | |_   _  __ _  __ _(_)_ __   __ _  |  ___|_ _  ___ ___     / \   __ _  ___ _ __ | |_ 
+  _   _                   _               _____                   _                    _
+ | | | |_   _  __ _  __ _(_)_ __   __ _  |  ___|_ _  ___ ___     / \   __ _  ___ _ __ | |_
  | |_| | | | |/ _` |/ _` | | '_ \ / _` | | |_ / _` |/ __/ _ \   / _ \ / _` |/ _ \ '_ \| __|
- |  _  | |_| | (_| | (_| | | | | | (_| | |  _| (_| | (_|  __/  / ___ \ (_| |  __/ | | | |_ 
+ |  _  | |_| | (_| | (_| | | | | | (_| | |  _| (_| | (_|  __/  / ___ \ (_| |  __/ | | | |_
  |_| |_|\__,_|\__, |\__, |_|_| |_|\__, | |_|  \__,_|\___\___| /_/   \_\__, |\___|_| |_|\__|
               |___/ |___/         |___/                               |___/
     """
 
     print(format_separator())
     print(f"{Colors.YELLOW} {banner}{Colors.RESET}")
-    print("Type your messages below. Type 'exit', 'quit', or '/quit' to end.\n")
+    print("Type your messages below. Type /help for commands, /quit to exit.\n")
     print(format_separator())
     # Wait for agent to initialize
     print("Initializing agent...")
+
+    # HF token
+    hf_token = _get_hf_token()
+    if hf_token:
+        print("HF token loaded")
+    else:
+        print("Warning: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.")
 
     # Create queues for communication
     submission_queue = asyncio.Queue()
@@ -480,12 +605,15 @@ async def main():
     config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
     config = load_config(config_path)
 
-    # Create tool router
+    # Create tool router with local mode
     print(f"Loading MCP servers: {', '.join(config.mcpServers.keys())}")
-    tool_router = ToolRouter(config.mcpServers)
+    tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
 
     # Create prompt session for input
     prompt_session = PromptSession()
+
+    # Session holder for interrupt/model/status access
+    session_holder = [None]
 
     agent_task = asyncio.create_task(
         submission_loop(
@@ -493,6 +621,8 @@ async def main():
             event_queue,
             config=config,
             tool_router=tool_router,
+            session_holder=session_holder,
+            hf_token=hf_token,
         )
     )
 
@@ -510,12 +640,16 @@ async def main():
 
     await ready_event.wait()
 
-    submission_id = 0
+    submission_id = [0]
+    last_interrupt_time = 0.0
 
     try:
         while True:
-            # Wait for previous turn to complete
-            await turn_complete_event.wait()
+            # Wait for previous turn to complete, with interrupt support
+            try:
+                await turn_complete_event.wait()
+            except asyncio.CancelledError:
+                break
             turn_complete_event.clear()
 
             # Get user input
@@ -523,6 +657,21 @@ async def main():
                 user_input = await get_user_input(prompt_session)
             except EOFError:
                 break
+            except KeyboardInterrupt:
+                now = time.monotonic()
+                if now - last_interrupt_time < 3.0:
+                    print("\nDouble Ctrl+C, exiting...")
+                    break
+                last_interrupt_time = now
+                # If agent is busy, cancel it
+                session = session_holder[0]
+                if session and not turn_complete_event.is_set():
+                    session.cancel()
+                    print("\nInterrupting agent...")
+                else:
+                    print("\n(Ctrl+C again within 3s to exit)")
+                    turn_complete_event.set()
+                continue
 
             # Check for exit commands
             if user_input.strip().lower() in ["exit", "quit", "/quit", "/exit"]:
@@ -533,35 +682,50 @@ async def main():
                 turn_complete_event.set()
                 continue
 
+            # Handle slash commands
+            if user_input.strip().startswith("/"):
+                sub = _handle_slash_command(
+                    user_input.strip(), config, session_holder, submission_queue, submission_id
+                )
+                if sub is None:
+                    # Command handled locally, loop back for input
+                    turn_complete_event.set()
+                    continue
+                else:
+                    await submission_queue.put(sub)
+                    continue
+
             # Submit to agent
-            submission_id += 1
+            submission_id[0] += 1
             submission = Submission(
-                id=f"sub_{submission_id}",
+                id=f"sub_{submission_id[0]}",
                 operation=Operation(
                     op_type=OpType.USER_INPUT, data={"text": user_input}
                 ),
             )
-            # print(f"Main submitting: {submission.operation.op_type}")
             await submission_queue.put(submission)
 
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")
 
     # Shutdown
-    print("\n🛑 Shutting down agent...")
+    print("\nShutting down agent...")
     shutdown_submission = Submission(
         id="sub_shutdown", operation=Operation(op_type=OpType.SHUTDOWN)
     )
     await submission_queue.put(shutdown_submission)
 
-    await asyncio.wait_for(agent_task, timeout=5.0)
+    try:
+        await asyncio.wait_for(agent_task, timeout=5.0)
+    except asyncio.TimeoutError:
+        agent_task.cancel()
     listener_task.cancel()
 
-    print("✨ Goodbye!\n")
+    print("Goodbye!\n")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n\n✨ Goodbye!")
+        print("\n\nGoodbye!")

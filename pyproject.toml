@@ -18,7 +18,6 @@ agent = [
     "litellm>=1.0.0",
     "huggingface-hub>=1.0.1",
     "fastmcp>=2.4.0",
-    "lmnr>=0.7.23",  # Note: Using base package to avoid torch/transformers from [all] extra
     "prompt-toolkit>=3.0.0",
     "thefuzz>=0.22.1",
     "nbconvert>=7.16.6",
