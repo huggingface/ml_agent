@@ -10,6 +10,7 @@ const shimmer = keyframes`
 
 const TOOL_LABELS: Record<string, string> = {
   sandbox_create: 'Creating sandbox for code development, this might take 1-2 minutes',
+  bash: 'Running command in sandbox',
   hf_jobs: 'Running a GPU job, this might take a while',
   hf_repo_files: 'Uploading file',
   hf_repo_git: 'Git operation',
@@ -22,7 +23,13 @@ function statusLabel(status: ActivityStatus): string {
   switch (status.type) {
     case 'thinking': return 'Thinking';
     case 'streaming': return 'Writing';
-    case 'tool': return status.description || TOOL_LABELS[status.toolName] || `Running ${status.toolName}`;
+    case 'tool': {
+      const base = status.description || TOOL_LABELS[status.toolName] || `Running ${status.toolName}`;
+      if (status.toolName === 'bash' && status.description && /install/i.test(status.description)) {
+        return `${base} — this can take a few minutes, sit tight`;
+      }
+      return base;
+    }
     case 'waiting-approval': return 'Waiting for approval';
     default: return '';
   }
