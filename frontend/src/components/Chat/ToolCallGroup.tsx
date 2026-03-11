@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Stack, Typography, Chip, Button, TextField, IconButton, Link, CircularProgress } from '@mui/material';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
@@ -282,6 +282,20 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
 
+  // Track which toolCallIds we've already submitted so we can detect new approval rounds
+  const submittedIdsRef = useRef<Set<string>>(new Set());
+
+  // Reset submission state when new (unseen) pending tools arrive — e.g. second approval round
+  useEffect(() => {
+    if (!isSubmitting || pendingTools.length === 0) return;
+    const hasNewPending = pendingTools.some(t => !submittedIdsRef.current.has(t.toolCallId));
+    if (hasNewPending) {
+      submittingRef.current = false;
+      setIsSubmitting(false);
+      setDecisions({});
+    }
+  }, [pendingTools, isSubmitting]);
+
   const { scriptLabelMap, toolDisplayMap } = useMemo(() => {
     const hfJobs = tools.filter(t => t.toolName === 'hf_jobs' && (t.input as Record<string, unknown>)?.script);
     const scriptMap: Record<string, string> = {};
@@ -321,6 +335,8 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
 
       const ok = await approveTools(approvals);
       if (ok) {
+        // Track which tool IDs were submitted so we can detect new approval rounds
+        for (const a of approvals) submittedIdsRef.current.add(a.tool_call_id);
         lockPanel();
       } else {
         logger.error('Batch approval failed');
