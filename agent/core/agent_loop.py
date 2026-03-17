@@ -37,7 +37,9 @@ def _resolve_hf_router_params(model_name: str) -> dict:
     if not model_name.startswith("huggingface/"):
         return {"model": model_name}
 
-    parts = model_name.split("/", 2)  # ['huggingface', 'novita', 'moonshotai/kimi-k2.5']
+    parts = model_name.split(
+        "/", 2
+    )  # ['huggingface', 'novita', 'moonshotai/kimi-k2.5']
     if len(parts) < 3:
         return {"model": model_name}
 
@@ -162,8 +164,6 @@ async def _compact_and_notify(session: Session) -> None:
         )
 
 
-
-
 class Handlers:
     """Handler functions for each operation type"""
 
@@ -178,7 +178,9 @@ class Handlers:
         tool_calls = session.pending_approval.get("tool_calls", [])
         for tc in tool_calls:
             tool_name = tc.function.name
-            abandon_msg = "Task abandoned — user continued the conversation without approving."
+            abandon_msg = (
+                "Task abandoned — user continued the conversation without approving."
+            )
 
             # Keep LLM context valid: every tool_call needs a tool result
             tool_msg = Message(
@@ -364,21 +366,40 @@ class Handlers:
                 # Recover any malformed tool calls (sanitize JSON + inject
                 # error results).  Returns IDs to skip during execution.
                 malformed_ids = session.context_manager.recover_malformed_tool_calls()
-                for mid in malformed_ids:
-                    await session.send_event(
-                        Event(
-                            event_type="tool_output",
-                            data={
-                                "tool": next(
-                                    (tc.function.name for tc in tool_calls if tc.id == mid),
-                                    "unknown",
-                                ),
-                                "tool_call_id": mid,
-                                "output": "Malformed tool call — see error in context.",
-                                "success": False,
-                            },
+                if malformed_ids:
+                    # For each malformed tool_call, emit a synthetic tool_call +
+                    # tool_output-error pair so the frontend has a matching
+                    # dynamic-tool part instead of an orphan error.
+                    for tc in tool_calls:
+                        if tc.id not in malformed_ids:
+                            continue
+                        tool_name = tc.function.name
+                        try:
+                            tool_args = json.loads(tc.function.arguments)
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            tool_args = {}
+
+                        await session.send_event(
+                            Event(
+                                event_type="tool_call",
+                                data={
+                                    "tool": tool_name,
+                                    "arguments": tool_args,
+                                    "tool_call_id": tc.id,
+                                },
+                            )
                         )
-                    )
+                        await session.send_event(
+                            Event(
+                                event_type="tool_output",
+                                data={
+                                    "tool": tool_name,
+                                    "tool_call_id": tc.id,
+                                    "output": "Malformed tool call — see error in context.",
+                                    "success": False,
+                                },
+                            )
+                        )
 
                 # Separate tools into those requiring approval and those that don't
                 approval_required_tools = []
@@ -491,10 +512,15 @@ class Handlers:
 
                         # Resolve sandbox file paths for hf_jobs scripts so the
                         # frontend can display & edit the actual file content.
-                        if tool_name == "hf_jobs" and isinstance(tool_args.get("script"), str):
+                        if tool_name == "hf_jobs" and isinstance(
+                            tool_args.get("script"), str
+                        ):
                             from agent.tools.sandbox_tool import resolve_sandbox_script
+
                             sandbox = getattr(session, "sandbox", None)
-                            content, _ = await resolve_sandbox_script(sandbox, tool_args["script"])
+                            content, _ = await resolve_sandbox_script(
+                                sandbox, tool_args["script"]
+                            )
                             if content:
                                 tool_args = {**tool_args, "script": content}
 
@@ -596,7 +622,9 @@ class Handlers:
         approval_map = {a["tool_call_id"]: a for a in approvals}
         for a in approvals:
             if a.get("edited_script"):
-                logger.info(f"Received edited script for tool_call {a['tool_call_id']} ({len(a['edited_script'])} chars)")
+                logger.info(
+                    f"Received edited script for tool_call {a['tool_call_id']} ({len(a['edited_script'])} chars)"
+                )
 
         # Separate approved and rejected tool calls
         approved_tasks = []
@@ -742,7 +770,9 @@ class Handlers:
                 # Ensure feedback is a string and sanitize any problematic characters
                 feedback_str = str(user_feedback).strip()
                 # Remove any control characters that might break JSON parsing
-                feedback_str = "".join(char for char in feedback_str if ord(char) >= 32 or char in "\n\t")
+                feedback_str = "".join(
+                    char for char in feedback_str if ord(char) >= 32 or char in "\n\t"
+                )
                 rejection_msg += f". User feedback: {feedback_str}"
 
             # Ensure rejection_msg is a clean string
@@ -837,7 +867,9 @@ async def submission_loop(
     """
 
     # Create session with tool router
-    session = Session(event_queue, config=config, tool_router=tool_router, hf_token=hf_token)
+    session = Session(
+        event_queue, config=config, tool_router=tool_router, hf_token=hf_token
+    )
     if session_holder is not None:
         session_holder[0] = session
     logger.info("Agent loop started")

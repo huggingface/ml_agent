@@ -85,9 +85,9 @@ class ContextManager:
             prompt_file_suffix="system_prompt_v3.yaml",
             hf_token=hf_token,
         )
-        self.max_context = max_context
+        self.max_context = max_context - 10000
         self.compact_size = int(max_context * compact_size)
-        self.context_length = len(self.system_prompt) // 4
+        self.context_length = max_context
         self.untouched_messages = untouched_messages
         self.items: list[Message] = [Message(role="system", content=self.system_prompt)]
 
@@ -160,8 +160,7 @@ class ContextManager:
         if not needs_fix:
             return
         msg.tool_calls = [
-            tc if not isinstance(tc, dict) else ToolCall(**tc)
-            for tc in tool_calls
+            tc if not isinstance(tc, dict) else ToolCall(**tc) for tc in tool_calls
         ]
 
     def recover_malformed_tool_calls(self) -> set[str]:
@@ -214,7 +213,9 @@ class ContextManager:
                 except (json.JSONDecodeError, TypeError, ValueError) as e:
                     logger.warning(
                         "Malformed arguments for tool_call %s (%s): %s",
-                        tc.id, tc.function.name, e,
+                        tc.id,
+                        tc.function.name,
+                        e,
                     )
                     tc.function.arguments = "{}"
                     malformed_ids.add(tc.id)
@@ -268,7 +269,9 @@ class ContextManager:
         assistant_msg = None
         for i in range(len(self.items) - 1, -1, -1):
             msg = self.items[i]
-            if getattr(msg, "role", None) == "assistant" and getattr(msg, "tool_calls", None):
+            if getattr(msg, "role", None) == "assistant" and getattr(
+                msg, "tool_calls", None
+            ):
                 assistant_msg = msg
                 break
             # Stop scanning once we hit a user message — anything before
