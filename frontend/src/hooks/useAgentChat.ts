@@ -265,6 +265,10 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     messages: initialMessages,
     transport: transportRef.current!,
     experimental_throttle: 80,
+    // On mount, the SDK calls transport.reconnectToStream() which checks
+    // is_processing and subscribes to the live event stream if the agent
+    // is mid-turn.  Without this, page refresh kills live updates.
+    resume: true,
     // After all approval responses are set, auto-send to continue the agent loop.
     // Without this, addToolApprovalResponse only updates the UI — it won't trigger
     // sendMessages on the transport.
@@ -294,8 +298,10 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         if (cancelled) return;
 
         let pendingIds: Set<string> | undefined;
+        let backendIsProcessing = false;
         if (infoRes.ok) {
           const info = await infoRes.json();
+          backendIsProcessing = !!info.is_processing;
           if (info.pending_approval && Array.isArray(info.pending_approval)) {
             pendingIds = new Set(
               info.pending_approval.map((t: { tool_call_id: string }) => t.tool_call_id)
@@ -313,29 +319,17 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
           if (uiMsgs.length > 0) {
             chat.setMessages(uiMsgs);
             saveMessages(sessionId, uiMsgs);
-
-            // Derive processing state from hydrated messages so the input
-            // doesn't flash as enabled before the agent loop resumes.
-            const lastAssistant = [...uiMsgs].reverse().find(m => m.role === 'assistant');
-            if (lastAssistant) {
-              const hasPending = lastAssistant.parts.some(
-                p => p.type === 'dynamic-tool' && p.state === 'approval-requested',
-              );
-              const hasRunning = lastAssistant.parts.some(
-                p => p.type === 'dynamic-tool' && (p.state === 'input-available' || p.state === 'input-streaming'),
-              );
-              if (hasPending) {
-                updateSession(sessionId, { activityStatus: { type: 'waiting-approval' } });
-              } else if (hasRunning) {
-                // Extract the actual tool name from the last in-progress tool part
-                const runningPart = lastAssistant.parts.find(
-                  p => p.type === 'dynamic-tool' && (p.state === 'input-available' || p.state === 'input-streaming'),
-                );
-                const runningToolName = (runningPart && 'toolName' in runningPart) ? runningPart.toolName : undefined;
-                updateSession(sessionId, { isProcessing: true, activityStatus: { type: 'tool', toolName: runningToolName || 'sandbox' } });
-              }
-            }
           }
+        }
+
+        // Use the backend's is_processing flag as the source of truth.
+        // Message-based inference doesn't work because completed tool
+        // results make tools look "done" even when the agent is still
+        // mid-turn and about to call more tools.
+        if (backendIsProcessing) {
+          updateSession(sessionId, { isProcessing: true, activityStatus: { type: 'thinking' } });
+        } else if (pendingIds && pendingIds.size > 0) {
+          updateSession(sessionId, { activityStatus: { type: 'waiting-approval' } });
         }
       } catch {
         /* backend unreachable -- localStorage fallback is fine */
