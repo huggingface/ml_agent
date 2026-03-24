@@ -100,7 +100,7 @@ async def _ensure_sandbox(
 
     kwargs = {"owner": owner, "hardware": hardware, "token": token, "log": _log, **create_kwargs}
     if hardware != "cpu-basic":
-        kwargs["sleep_time"] = 1500
+        kwargs["sleep_time"] = 2700
     sb = await asyncio.to_thread(Sandbox.create, **kwargs)
     session.sandbox = sb
 
