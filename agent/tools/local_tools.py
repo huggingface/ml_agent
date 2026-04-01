@@ -8,17 +8,77 @@ subprocess/pathlib instead of going through a remote sandbox.
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from agent.tools.sandbox_client import Sandbox
 
-MAX_OUTPUT_CHARS = 30_000
+MAX_OUTPUT_CHARS = 25_000
 MAX_LINE_LENGTH = 2000
 DEFAULT_READ_LINES = 2000
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 600
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07')
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write file atomically via temp file + os.replace().
+
+    Ensures the file is never left in a partial/corrupted state — it's either
+    the old content or the new content, never half-written.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        os.replace(tmp_path, str(path))
+        tmp_path = None  # successfully replaced, nothing to clean up
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub('', text)
+
+
+def _truncate_output(output: str, max_chars: int = MAX_OUTPUT_CHARS, head_ratio: float = 0.25) -> str:
+    """Tail-biased truncation with temp file spillover for full output access."""
+    if len(output) <= max_chars:
+        return output
+    # Write full output to temp file so LLM can read specific sections
+    spill_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', prefix='bash_output_', delete=False) as f:
+            f.write(output)
+            spill_path = f.name
+    except Exception:
+        pass
+    head_budget = int(max_chars * head_ratio)
+    tail_budget = max_chars - head_budget
+    head = output[:head_budget]
+    tail = output[-tail_budget:]
+    total = len(output)
+    omitted = total - max_chars
+    meta = f"\n\n... ({omitted:,} of {total:,} chars omitted, showing first {head_budget:,} + last {tail_budget:,}) ...\n"
+    if spill_path:
+        meta += f"Full output saved to {spill_path} — use the read tool with offset/limit to inspect specific sections.\n"
+    return head + meta + tail
 
 
 # ── Handlers ────────────────────────────────────────────────────────────
@@ -38,9 +98,8 @@ async def _bash_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
             cwd=work_dir,
             timeout=timeout,
         )
-        output = result.stdout + result.stderr
-        if len(output) > MAX_OUTPUT_CHARS:
-            output = output[:MAX_OUTPUT_CHARS] + "\n... (output truncated)"
+        output = _strip_ansi(result.stdout + result.stderr)
+        output = _truncate_output(output)
         if not output.strip():
             output = "(no output)"
         return output, result.returncode == 0
@@ -83,18 +142,27 @@ async def _write_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
         return "No path provided.", False
     p = Path(file_path)
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content)
-        return f"Wrote {len(content)} bytes to {file_path}", True
+        _atomic_write(p, content)
+        msg = f"Wrote {len(content)} bytes to {file_path}"
+        # Syntax validation for Python files
+        if p.suffix == ".py":
+            from agent.tools.edit_utils import validate_python
+            warnings = validate_python(content, file_path)
+            if warnings:
+                msg += "\n\nValidation warnings:\n" + "\n".join(f"  ⚠ {w}" for w in warnings)
+        return msg, True
     except Exception as e:
         return f"write error: {e}", False
 
 
 async def _edit_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
+    from agent.tools.edit_utils import apply_edit, validate_python
+
     file_path = args.get("path", "")
     old_str = args.get("old_str", "")
     new_str = args.get("new_str", "")
     replace_all = args.get("replace_all", False)
+    mode = args.get("mode", "replace")
 
     if not file_path:
         return "No path provided.", False
@@ -110,23 +178,27 @@ async def _edit_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     except Exception as e:
         return f"edit read error: {e}", False
 
-    count = text.count(old_str)
-    if count == 0:
-        return "old_str not found in file.", False
-    if count > 1 and not replace_all:
-        return (
-            f"old_str appears {count} times. Use replace_all=true to replace all, "
-            "or provide a more specific old_str."
-        ), False
-
-    new_text = text.replace(old_str, new_str) if replace_all else text.replace(old_str, new_str, 1)
     try:
-        p.write_text(new_text)
+        new_text, replacements, fuzzy_note = apply_edit(
+            text, old_str, new_str, mode=mode, replace_all=replace_all
+        )
+    except ValueError as e:
+        return str(e), False
+
+    try:
+        _atomic_write(p, new_text)
     except Exception as e:
         return f"edit write error: {e}", False
 
-    replacements = count if replace_all else 1
-    return f"Edited {file_path} ({replacements} replacement{'s' if replacements > 1 else ''})", True
+    msg = f"Edited {file_path} ({replacements} replacement{'s' if replacements > 1 else ''})"
+    if fuzzy_note:
+        msg += f" {fuzzy_note}"
+    # Syntax validation for Python files
+    if p.suffix == ".py":
+        warnings = validate_python(new_text, file_path)
+        if warnings:
+            msg += "\n\nValidation warnings:\n" + "\n".join(f"  ⚠ {w}" for w in warnings)
+    return msg, True
 
 
 # ── Public API ──────────────────────────────────────────────────────────

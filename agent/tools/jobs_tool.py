@@ -117,11 +117,19 @@ def _filter_uv_install_output(logs: list[str]) -> list[str]:
     return logs
 
 
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07')
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub('', text)
+
+
 _DEFAULT_ENV = {
     "HF_HUB_DISABLE_PROGRESS_BARS": "1",
     "TQDM_DISABLE": "1",
     "TRANSFORMERS_VERBOSITY": "warning",
     "HF_HUB_ENABLE_HF_TRANSFER": "1",
+    "UV_NO_PROGRESS": "1",
 }
 
 
@@ -580,7 +588,7 @@ class HfJobsTool:
             filtered_logs = _filter_uv_install_output(all_logs)
 
             # Format all logs for the agent
-            log_text = "\n".join(filtered_logs) if filtered_logs else "(no logs)"
+            log_text = _strip_ansi("\n".join(filtered_logs)) if filtered_logs else "(no logs)"
 
             response = f"""{job_type} job completed!
 
@@ -657,7 +665,7 @@ class HfJobsTool:
                     "resultsShared": 0,
                 }
 
-            log_text = "\n".join(logs)
+            log_text = _strip_ansi("\n".join(logs))
             return {
                 "formatted": f"**Logs for {job_id}:**\n\n```\n{log_text}\n```",
                 "totalResults": 1,

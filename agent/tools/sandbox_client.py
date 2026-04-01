@@ -56,7 +56,7 @@ HARDWARE_OPTIONS = [
     "a10g-large",
     "a100-large",
 ]
-OUTPUT_LIMIT = 30000
+OUTPUT_LIMIT = 25000
 LINE_LIMIT = 2000
 DEFAULT_READ_LIMIT = 2000
 DEFAULT_TIMEOUT = 240
@@ -85,7 +85,9 @@ ENV HOME=/home/user \\
     PIP_USER=1 \\
     HF_HUB_DISABLE_PROGRESS_BARS=1 \\
     TQDM_DISABLE=1 \\
-    HF_HUB_ENABLE_HF_TRANSFER=1
+    HF_HUB_ENABLE_HF_TRANSFER=1 \\
+    UV_NO_PROGRESS=1 \\
+    PYTHONWARNINGS=ignore::DeprecationWarning
 
 WORKDIR /app
 COPY --chown=user . /app
@@ -97,11 +99,60 @@ CMD ["python", "sandbox_server.py"]
 
 _SANDBOX_SERVER = '''\
 """Minimal FastAPI server for sandbox operations."""
-import os, subprocess, pathlib, signal, threading
+import os, subprocess, pathlib, signal, threading, re, tempfile
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
+
+_ANSI_RE = re.compile(r'\\x1b\\[[0-9;]*[a-zA-Z]|\\x1b\\].*?\\x07')
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub('', text)
+
+def _truncate_output(output: str, max_chars: int = 25000, head_ratio: float = 0.25) -> str:
+    if len(output) <= max_chars:
+        return output
+    # Write full output to temp file so LLM can read specific sections
+    spill_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', prefix='bash_output_', dir='/tmp', delete=False) as f:
+            f.write(output)
+            spill_path = f.name
+    except Exception:
+        pass
+    head_budget = int(max_chars * head_ratio)
+    tail_budget = max_chars - head_budget
+    head = output[:head_budget]
+    tail = output[-tail_budget:]
+    total = len(output)
+    omitted = total - max_chars
+    meta = f"\\n\\n... ({omitted:,} of {total:,} chars omitted, showing first {head_budget:,} + last {tail_budget:,}) ...\\n"
+    if spill_path:
+        meta += f"Full output saved to {spill_path} — use the read tool with offset/limit to inspect specific sections.\\n"
+    return head + meta + tail
+
+def _atomic_write(path: pathlib.Path, content: str):
+    """Write atomically: temp file + fsync + os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        os.replace(tmp_path, str(path))
+        tmp_path = None
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 app = FastAPI()
 
@@ -128,9 +179,122 @@ class EditReq(BaseModel):
     old_str: str
     new_str: str
     replace_all: bool = False
+    mode: str = "replace"
 
 class ExistsReq(BaseModel):
     path: str
+
+# ── Fuzzy matching & edit utilities (embedded) ──
+
+UNICODE_MAP = {
+    "\\u2013": "-", "\\u2014": "-", "\\u2212": "-",
+    "\\u2018": "'", "\\u2019": "'",
+    "\\u201c": \'"\', "\\u201d": \'"\',
+    "\\u00a0": " ", "\\u2003": " ", "\\u2002": " ",
+    "\\u200b": "", "\\ufeff": "",
+}
+
+def _normalize_unicode(s):
+    return "".join(UNICODE_MAP.get(c, c) for c in s)
+
+def _fuzzy_find_original(content, pattern):
+    """Find the original text in content that matches pattern fuzzily."""
+    if pattern in content:
+        return pattern, None
+    # Pass 2: right-trim
+    c_lines = content.split("\\n")
+    c_rt = "\\n".join(l.rstrip() for l in c_lines)
+    p_rt = "\\n".join(l.rstrip() for l in pattern.split("\\n"))
+    if p_rt in c_rt:
+        idx = c_rt.index(p_rt)
+        start_line = c_rt[:idx].count("\\n")
+        n_lines = p_rt.count("\\n") + 1
+        matched = "\\n".join(c_lines[start_line:start_line + n_lines])
+        return matched, "(matched after trimming trailing whitespace)"
+    # Pass 3: both-sides trim
+    c_st = "\\n".join(l.strip() for l in c_lines)
+    p_st = "\\n".join(l.strip() for l in pattern.split("\\n"))
+    if p_st in c_st:
+        idx = c_st.index(p_st)
+        start_line = c_st[:idx].count("\\n")
+        n_lines = p_st.count("\\n") + 1
+        matched = "\\n".join(c_lines[start_line:start_line + n_lines])
+        return matched, "(matched after trimming whitespace)"
+    # Pass 4: unicode normalization
+    c_norm = _normalize_unicode(c_st)
+    p_norm = _normalize_unicode(p_st)
+    if p_norm in c_norm:
+        idx = c_norm.index(p_norm)
+        start_line = c_norm[:idx].count("\\n")
+        n_lines = p_norm.count("\\n") + 1
+        matched = "\\n".join(c_lines[start_line:start_line + n_lines])
+        return matched, "(matched after unicode normalization)"
+    return None, None
+
+def _apply_edit(content, old_str, new_str, mode="replace", replace_all=False):
+    """Apply edit. Returns (new_content, count, fuzzy_note) or raises ValueError."""
+    if mode == "replace_all":
+        replace_all = True
+        mode = "replace"
+    fuzzy_note = None
+    if old_str not in content:
+        matched, fuzzy_note = _fuzzy_find_original(content, old_str)
+        if matched is None:
+            raise ValueError("old_str not found in file.")
+        old_str = matched
+    count = content.count(old_str)
+    if mode == "replace":
+        if count > 1 and not replace_all:
+            raise ValueError(f"old_str appears {count} times. Use replace_all=true or provide more context.")
+        if replace_all:
+            return content.replace(old_str, new_str), count, fuzzy_note
+        return content.replace(old_str, new_str, 1), 1, fuzzy_note
+    elif mode == "append_after":
+        if replace_all:
+            return content.replace(old_str, old_str + new_str), count, fuzzy_note
+        idx = content.index(old_str) + len(old_str)
+        return content[:idx] + new_str + content[idx:], 1, fuzzy_note
+    elif mode == "prepend_before":
+        if replace_all:
+            return content.replace(old_str, new_str + old_str), count, fuzzy_note
+        idx = content.index(old_str)
+        return content[:idx] + new_str + content[idx:], 1, fuzzy_note
+    raise ValueError(f"Unknown mode: {mode}")
+
+def _validate_python(content, path=""):
+    """Lightweight Python validation. Returns list of warning strings."""
+    import ast as _ast, importlib as _il
+    warnings = []
+    try:
+        tree = _ast.parse(content)
+    except SyntaxError as e:
+        warnings.append(f"Python syntax error at line {e.lineno}: {e.msg}")
+        return warnings
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.ImportFrom) and node.module:
+            try:
+                mod = _il.import_module(node.module)
+                for alias in node.names:
+                    if alias.name != "*" and not hasattr(mod, alias.name):
+                        warnings.append(f"Import warning: '{alias.name}' not found in '{node.module}' (line {node.lineno})")
+            except ImportError as e:
+                warnings.append(f"Import error: {e} (line {node.lineno})")
+            except Exception:
+                pass
+        elif isinstance(node, _ast.Import):
+            for alias in node.names:
+                try:
+                    _il.import_module(alias.name)
+                except ImportError as e:
+                    warnings.append(f"Import error: {e} (line {node.lineno})")
+                except Exception:
+                    pass
+    if any(kw in content for kw in ("TrainingArguments", "SFTConfig", "DPOConfig", "GRPOConfig")):
+        if "push_to_hub" not in content:
+            warnings.append("Training script warning: no \'push_to_hub\' found")
+        if "hub_model_id" not in content:
+            warnings.append("Training script warning: no \'hub_model_id\' found")
+    return warnings
 
 @app.get("/api/health")
 def health():
@@ -147,9 +311,8 @@ def bash(req: BashReq):
             _active_procs[proc.pid] = proc
         try:
             stdout, stderr = proc.communicate(timeout=req.timeout)
-            output = stdout + stderr
-            if len(output) > 30000:
-                output = output[:30000] + "\\n... (truncated)"
+            output = _strip_ansi(stdout + stderr)
+            output = _truncate_output(output)
             return {"success": proc.returncode == 0, "output": output, "error": "" if proc.returncode == 0 else f"Exit code {proc.returncode}"}
         except subprocess.TimeoutExpired:
             try:
@@ -203,9 +366,13 @@ def read(req: ReadReq):
 def write(req: WriteReq):
     try:
         p = pathlib.Path(req.path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(req.content)
-        return {"success": True, "output": f"Wrote {len(req.content)} bytes to {req.path}", "error": ""}
+        _atomic_write(p, req.content)
+        msg = f"Wrote {len(req.content)} bytes to {req.path}"
+        if p.suffix == ".py":
+            warnings = _validate_python(req.content, req.path)
+            if warnings:
+                msg += "\\n\\nValidation warnings:\\n" + "\\n".join(f"  ! {w}" for w in warnings)
+        return {"success": True, "output": msg, "error": ""}
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
@@ -216,16 +383,23 @@ def edit(req: EditReq):
         if not p.exists():
             return {"success": False, "output": "", "error": f"File not found: {req.path}"}
         content = p.read_text()
-        if req.old_str not in content:
-            return {"success": False, "output": "", "error": f"old_str not found in {req.path}"}
-        if not req.replace_all and content.count(req.old_str) > 1:
-            return {"success": False, "output": "", "error": f"old_str appears {content.count(req.old_str)} times. Use replace_all=true or provide more context."}
-        if req.replace_all:
-            new_content = content.replace(req.old_str, req.new_str)
-        else:
-            new_content = content.replace(req.old_str, req.new_str, 1)
-        p.write_text(new_content)
-        return {"success": True, "output": f"Edited {req.path}", "error": ""}
+        if req.old_str == req.new_str:
+            return {"success": False, "output": "", "error": "old_str and new_str must differ."}
+        try:
+            new_content, count, fuzzy_note = _apply_edit(
+                content, req.old_str, req.new_str, mode=req.mode, replace_all=req.replace_all
+            )
+        except ValueError as e:
+            return {"success": False, "output": "", "error": str(e)}
+        _atomic_write(p, new_content)
+        msg = f"Edited {req.path} ({count} replacement{'s' if count > 1 else ''})"
+        if fuzzy_note:
+            msg += f" {fuzzy_note}"
+        if p.suffix == ".py":
+            warnings = _validate_python(new_content, req.path)
+            if warnings:
+                msg += "\\n\\nValidation warnings:\\n" + "\\n".join(f"  ! {w}" for w in warnings)
+        return {"success": True, "output": msg, "error": ""}
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
@@ -605,7 +779,8 @@ class Sandbox:
         return result
 
     def edit(
-        self, path: str, old_str: str, new_str: str, *, replace_all: bool = False
+        self, path: str, old_str: str, new_str: str, *, replace_all: bool = False,
+        mode: str = "replace",
     ) -> ToolResult:
         if old_str == new_str:
             return ToolResult(success=False, error="old_str and new_str are identical.")
@@ -621,6 +796,7 @@ class Sandbox:
                 "old_str": old_str,
                 "new_str": new_str,
                 "replace_all": replace_all,
+                "mode": mode,
             },
         )
 
@@ -731,7 +907,12 @@ class Sandbox:
         },
         "edit": {
             "description": (
-                "Targeted edit via exact string replacement.\n"
+                "Targeted edit via string replacement with fuzzy matching fallback.\n"
+                "\n"
+                "Modes:\n"
+                "- replace (default): replace first occurrence of old_str with new_str.\n"
+                "- append_after: insert new_str immediately after old_str (old_str is kept).\n"
+                "- prepend_before: insert new_str immediately before old_str (old_str is kept).\n"
                 "\n"
                 "Rules:\n"
                 "- old_str must appear EXACTLY once (unless replace_all is true).\n"
@@ -742,7 +923,9 @@ class Sandbox:
                 "- File MUST have been read this session (system enforced).\n"
                 "- Do NOT include line number prefixes in old_str/new_str.\n"
                 "\n"
-                "Use replace_all=true for batch operations like variable renaming."
+                "If exact match fails, the tool automatically tries trimmed/normalized matching.\n"
+                "Use replace_all=true for batch operations like variable renaming.\n"
+                "Use append_after/prepend_before to insert code without replacing existing code."
             ),
             "parameters": {
                 "type": "object",
@@ -755,13 +938,19 @@ class Sandbox:
                     },
                     "old_str": {
                         "type": "string",
-                        "description": "Exact text to find (must differ from new_str).",
+                        "description": "Text to find (fuzzy matching used as fallback).",
                     },
-                    "new_str": {"type": "string", "description": "Replacement text."},
+                    "new_str": {"type": "string", "description": "Replacement text (or text to insert for append_after/prepend_before)."},
                     "replace_all": {
                         "type": "boolean",
                         "description": "Replace all occurrences (default: false).",
                         "default": False,
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["replace", "append_after", "prepend_before"],
+                        "description": "Edit mode (default: replace).",
+                        "default": "replace",
                     },
                 },
             },
@@ -791,6 +980,7 @@ class Sandbox:
                 a["old_str"],
                 a["new_str"],
                 replace_all=a.get("replace_all", False),
+                mode=a.get("mode", "replace"),
             ),
         }
         fn = dispatch.get(name)
