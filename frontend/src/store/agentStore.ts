@@ -60,6 +60,8 @@ export interface PerSessionState {
   panelView: PanelView;
   panelEditable: boolean;
   plan: PlanItem[];
+  /** Steps completed by the research sub-agent (tool_log events). */
+  researchSteps: string[];
 }
 
 const defaultSessionState: PerSessionState = {
@@ -69,6 +71,7 @@ const defaultSessionState: PerSessionState = {
   panelView: 'script',
   panelEditable: false,
   plan: [],
+  researchSteps: [],
 };
 
 interface AgentStore {
@@ -233,6 +236,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
         panelView: state.panelView,
         panelEditable: state.panelEditable,
         plan: state.plan,
+        researchSteps: state.sessionStates[state.activeSessionId]?.researchSteps ?? [],
       };
     }
 

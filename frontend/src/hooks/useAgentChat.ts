@@ -86,6 +86,17 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         }
       },
       onToolLog: (tool: string, log: string) => {
+        // Research sub-agent: accumulate steps + update activity status
+        if (tool === 'research') {
+          const sessState = useAgentStore.getState().getSessionState(sessionId);
+          const steps = [...sessState.researchSteps, log];
+          updateSession(sessionId, {
+            researchSteps: steps,
+            activityStatus: { type: 'tool', toolName: 'research', description: log },
+          });
+          return;
+        }
+
         const STREAMABLE_TOOLS = new Set(['hf_jobs', 'sandbox', 'bash']);
         if (!STREAMABLE_TOOLS.has(tool)) return;
 
@@ -221,7 +232,12 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         updateSession(sessionId, { activityStatus: { type: 'streaming' } });
       },
       onToolRunning: (toolName: string, description?: string) => {
-        updateSession(sessionId, { activityStatus: { type: 'tool', toolName, description } });
+        const updates: Partial<import('@/store/agentStore').PerSessionState> = {
+          activityStatus: { type: 'tool', toolName, description },
+        };
+        // Clear research steps when a new research call starts
+        if (toolName === 'research') updates.researchSteps = [];
+        updateSession(sessionId, updates);
       },
       onInterrupted: () => { /* no-op — handled by stop() caller */ },
     }),

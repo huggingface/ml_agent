@@ -17,6 +17,7 @@ const TOOL_LABELS: Record<string, string> = {
   hf_inspect_dataset: 'Inspecting dataset',
   hf_search: 'Searching',
   plan_tool: 'Planning',
+  research: 'Researching',
 };
 
 function statusLabel(status: ActivityStatus): string {

@@ -32,6 +32,74 @@ interface ToolCallGroupProps {
 }
 
 // ---------------------------------------------------------------------------
+// Research sub-steps (inline under the research tool row)
+// ---------------------------------------------------------------------------
+
+/** Pretty labels for research sub-agent tool calls */
+function formatResearchStep(step: string): { icon: string; label: string } {
+  if (step === 'Starting research sub-agent...') return { icon: '🔍', label: 'Starting research' };
+  if (step === 'Research complete.') return { icon: '✓', label: 'Research complete' };
+  if (step.startsWith('github_find_examples')) return { icon: '📂', label: step.replace('github_find_examples', 'Finding examples') };
+  if (step.startsWith('github_read_file')) {
+    const path = step.match(/\(([^)]+)\)/)?.[1] || '';
+    const filename = path.split('/').pop() || path;
+    return { icon: '📄', label: `Reading ${filename}` };
+  }
+  if (step.startsWith('explore_hf_docs')) return { icon: '📚', label: step.replace('explore_hf_docs', 'Exploring docs') };
+  if (step.startsWith('fetch_hf_docs')) return { icon: '📖', label: step.replace('fetch_hf_docs', 'Fetching docs') };
+  if (step.startsWith('hf_inspect_dataset')) return { icon: '🗃️', label: step.replace('hf_inspect_dataset', 'Inspecting dataset') };
+  if (step.startsWith('hf_papers')) return { icon: '📑', label: 'Searching papers' };
+  if (step.startsWith('find_hf_api')) return { icon: '🔌', label: 'Finding API endpoints' };
+  if (step.startsWith('hf_repo_files')) return { icon: '📁', label: 'Reading repo files' };
+  return { icon: '→', label: step };
+}
+
+function ResearchSteps({ steps, isRunning }: { steps: string[]; isRunning: boolean }) {
+  // Filter out the "Starting..." and "complete" meta-steps for the list
+  const toolSteps = steps.filter(
+    s => s !== 'Starting research sub-agent...' && s !== 'Research complete.',
+  );
+  if (toolSteps.length === 0) return null;
+
+  return (
+    <Box sx={{ pl: 4.5, pr: 1.5, pb: 1, pt: 0.25 }}>
+      {toolSteps.map((step, i) => {
+        const { icon, label } = formatResearchStep(step);
+        const isLast = i === toolSteps.length - 1;
+        return (
+          <Stack
+            key={i}
+            direction="row"
+            alignItems="center"
+            spacing={0.75}
+            sx={{ py: 0.2 }}
+          >
+            <Typography sx={{ fontSize: '0.65rem', lineHeight: 1, width: 14, textAlign: 'center', flexShrink: 0 }}>
+              {isLast && isRunning ? '' : icon}
+            </Typography>
+            {isLast && isRunning && (
+              <CircularProgress size={10} thickness={5} sx={{ color: 'var(--accent-yellow)', flexShrink: 0 }} />
+            )}
+            <Typography
+              sx={{
+                fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace',
+                fontSize: '0.68rem',
+                color: isLast && isRunning ? 'var(--text)' : 'var(--muted-text)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {label}
+            </Typography>
+          </Stack>
+        );
+      })}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Hardware pricing ($/hr) — from HF Spaces & Jobs pricing
 // ---------------------------------------------------------------------------
 const HARDWARE_PRICING: Record<string, string> = {
@@ -327,6 +395,10 @@ function InlineApproval({
 
 export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProps) {
   const { setPanel, lockPanel, getJobUrl, getEditedScript } = useAgentStore();
+  const researchSteps = useAgentStore(s => {
+    const activeId = s.activeSessionId;
+    return activeId ? (s.sessionStates[activeId]?.researchSteps ?? []) : [];
+  });
   const { setRightPanelOpen, setLeftSidebarOpen } = useLayoutStore();
 
   // ── Batch approval state ──────────────────────────────────────────
@@ -365,6 +437,12 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
       } else {
         scriptMap[id] = 'Script';
         displayMap[id] = 'hf_jobs';
+      }
+    }
+    // Pretty name for research tool
+    for (const t of tools) {
+      if (t.toolName === 'research') {
+        displayMap[t.toolCallId] = 'research';
       }
     }
     return { scriptLabelMap: scriptMap, toolDisplayMap: displayMap };
@@ -704,6 +782,13 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
                 )}
               </Stack>
 
+              {/* Research sub-agent steps */}
+              {tool.toolName === 'research' && researchSteps.length > 0 && (
+                <ResearchSteps
+                  steps={researchSteps}
+                  isRunning={state === 'input-streaming' || state === 'input-available'}
+                />
+              )}
 
               {/* Per-tool approval: undecided */}
               {isPending && !localDecision && !isSubmitting && (
