@@ -779,6 +779,7 @@ async def main():
 
     submission_id = [0]
     last_interrupt_time = 0.0
+    agent_busy = False  # True only while the agent is processing a submission
 
     try:
         while True:
@@ -788,6 +789,7 @@ async def main():
             except asyncio.CancelledError:
                 break
             turn_complete_event.clear()
+            agent_busy = False
 
             # Get user input
             try:
@@ -797,16 +799,14 @@ async def main():
             except KeyboardInterrupt:
                 now = time.monotonic()
                 if now - last_interrupt_time < 3.0:
-                    print("\nDouble Ctrl+C, exiting...")
                     break
                 last_interrupt_time = now
-                # If agent is busy, cancel it
+                # If agent is actually working, cancel it
                 session = session_holder[0]
-                if session and not turn_complete_event.is_set():
+                if agent_busy and session:
                     session.cancel()
-                    print("\nInterrupting agent...")
                 else:
-                    print("\n(Ctrl+C again within 3s to exit)")
+                    get_console().print("[dim]Ctrl+C again to exit[/dim]")
                     turn_complete_event.set()
                 continue
 
@@ -829,6 +829,7 @@ async def main():
                     turn_complete_event.set()
                     continue
                 else:
+                    agent_busy = True
                     await submission_queue.put(sub)
                     continue
 
@@ -840,10 +841,11 @@ async def main():
                     op_type=OpType.USER_INPUT, data={"text": user_input}
                 ),
             )
+            agent_busy = True
             await submission_queue.put(submission)
 
     except KeyboardInterrupt:
-        print("\n\nInterrupted by user")
+        pass
 
     # Shutdown
     shutdown_submission = Submission(
