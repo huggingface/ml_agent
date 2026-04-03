@@ -295,6 +295,11 @@ async def research_handler(
                 output, _success = await session.tool_router.call_tool(
                     tool_name, tool_args, session=session
                 )
+                # Log a short preview of the output
+                preview = output.replace("\n", " ").strip()[:20]
+                if len(output.strip()) > 20:
+                    preview += "…"
+                await _log(f"  → {preview}")
                 # Truncate tool output for the research context
                 if len(output) > 8000:
                     output = (
