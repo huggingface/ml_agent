@@ -21,7 +21,7 @@ MAX_OUTPUT_CHARS = 25_000
 MAX_LINE_LENGTH = 2000
 DEFAULT_READ_LINES = 2000
 DEFAULT_TIMEOUT = 120
-MAX_TIMEOUT = 600
+MAX_TIMEOUT = 36000  # 10 hours — needed for long training runs (e.g. PostTrainBench)
 
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07')
 
