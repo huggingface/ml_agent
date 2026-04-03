@@ -858,7 +858,11 @@ async def main():
     get_console().print("\n[dim]Bye.[/dim]\n")
 
 
-async def headless_main(prompt: str, model: str | None = None) -> None:
+async def headless_main(
+    prompt: str,
+    model: str | None = None,
+    max_iterations: int | None = None,
+) -> None:
     """Run a single prompt headlessly and exit."""
     import logging
 
@@ -876,12 +880,13 @@ async def headless_main(prompt: str, model: str | None = None) -> None:
     config.yolo_mode = True  # Auto-approve everything in headless mode
 
     if model:
-        if model not in VALID_MODEL_IDS:
-            print(f"ERROR: Unknown model '{model}'. Valid: {', '.join(VALID_MODEL_IDS)}", file=sys.stderr)
-            sys.exit(1)
         config.model_name = model
 
+    if max_iterations is not None:
+        config.max_requests_per_turn = max_iterations
+
     print(f"Model: {config.model_name}", file=sys.stderr)
+    print(f"Max iterations: {config.max_requests_per_turn}", file=sys.stderr)
     print(f"Prompt: {prompt}", file=sys.stderr)
     print("---", file=sys.stderr)
 
@@ -922,6 +927,7 @@ async def headless_main(prompt: str, model: str | None = None) -> None:
     shimmer = _ThinkingShimmer(console)
     stream_buf = _StreamBuffer(console)
     _hl_last_tool = [None]
+    _hl_sub_id = [1]
     shimmer.start()
 
     while True:
@@ -960,6 +966,26 @@ async def headless_main(prompt: str, model: str | None = None) -> None:
             log = event.data.get("log", "") if event.data else ""
             if log:
                 print_tool_log(tool, log)
+        elif event.event_type == "approval_required":
+            # Auto-approve everything in headless mode (safety net if yolo_mode
+            # didn't prevent the approval event for some reason)
+            tools_data = event.data.get("tools", []) if event.data else []
+            approvals = [
+                {
+                    "tool_call_id": t.get("tool_call_id", ""),
+                    "approved": True,
+                    "feedback": None,
+                }
+                for t in tools_data
+            ]
+            _hl_sub_id[0] += 1
+            await submission_queue.put(Submission(
+                id=f"hl_approval_{_hl_sub_id[0]}",
+                operation=Operation(
+                    op_type=OpType.EXEC_APPROVAL,
+                    data={"approvals": approvals},
+                ),
+            ))
         elif event.event_type == "compacted":
             old_tokens = event.data.get("old_tokens", 0) if event.data else 0
             new_tokens = event.data.get("new_tokens", 0) if event.data else 0
@@ -999,11 +1025,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hugging Face Agent CLI")
     parser.add_argument("prompt", nargs="?", default=None, help="Run headlessly with this prompt")
     parser.add_argument("--model", "-m", default=None, help=f"Model to use (default: from config)")
+    parser.add_argument("--max-iterations", type=int, default=None,
+                        help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
     args = parser.parse_args()
 
     try:
         if args.prompt:
-            asyncio.run(headless_main(args.prompt, model=args.model))
+            max_iter = args.max_iterations
+            if max_iter is not None and max_iter < 0:
+                max_iter = 10_000  # effectively unlimited
+            asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter))
         else:
             asyncio.run(main())
     except KeyboardInterrupt:
