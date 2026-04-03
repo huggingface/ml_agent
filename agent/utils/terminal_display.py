@@ -26,20 +26,23 @@ def get_console() -> Console:
 
 # ── Banner ─────────────────────────────────────────────────────────────
 
+_BANNER = r"""
+ [yellow] _  _ ___     _                _   [/yellow]
+ [yellow]| || | __|   /_\  __ _ ___ _ _| |_ [/yellow]
+ [yellow]| __ | _|   / _ \/ _` / -_) ' \  _|[/yellow]
+ [yellow]|_||_|_|   /_/ \_\__, \___|_||_\__|[/yellow]
+ [yellow]                 |___/             [/yellow]"""
+
+
 def print_banner() -> None:
-    logo = Text.from_ansi(
-        "\033[38;2;255;200;50m"  # warm gold
-        "  🤗 Hugging Face Agent\n"
-        "\033[0m"
-    )
     _console.print()
     _console.print(
         Panel(
-            logo,
-            subtitle="[dim]/help for commands · /quit to exit[/dim]",
-            border_style="dim",
+            _BANNER,
+            subtitle="[dim]/help · /quit[/dim]",
+            border_style="dim yellow",
             expand=False,
-            padding=(0, 2),
+            padding=(0, 1),
         )
     )
     _console.print()
