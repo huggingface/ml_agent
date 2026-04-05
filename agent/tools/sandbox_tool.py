@@ -12,7 +12,6 @@ a cpu-basic sandbox is auto-created (no approval needed).
 from __future__ import annotations
 
 import asyncio
-import shlex
 import threading
 from typing import Any
 
@@ -49,9 +48,15 @@ async def resolve_sandbox_script(
     if not sandbox or not _looks_like_path(script):
         return None, None
     try:
-        result = await asyncio.to_thread(sandbox.bash, f"cat {shlex.quote(script)}")
+        # Use the read endpoint instead of bash("cat ...") which truncates at 25KB.
+        result = await asyncio.to_thread(sandbox.read, script, limit=100_000)
         if result.success and result.output:
-            return result.output, None
+            # Strip line number prefixes (read returns "N\tcontent" format)
+            lines = []
+            for line in result.output.split("\n"):
+                parts = line.split("\t", 1)
+                lines.append(parts[1] if len(parts) == 2 else line)
+            return "\n".join(lines), None
         return None, f"Failed to read {script} from sandbox: {result.error}"
     except Exception as e:
         return None, f"Failed to read {script} from sandbox: {e}"
