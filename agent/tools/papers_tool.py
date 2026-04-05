@@ -43,10 +43,20 @@ S2_HEADERS: dict[str, str] = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
 S2_TIMEOUT = 12
 _s2_last_request: float = 0.0
 
+# Shared response cache (survives across sessions, keyed by (path, params_tuple))
+_s2_cache: dict[str, Any] = {}
+_S2_CACHE_MAX = 500
+
 
 def _s2_paper_id(arxiv_id: str) -> str:
     """Convert bare arxiv ID to S2 format."""
     return f"ARXIV:{arxiv_id}"
+
+
+def _s2_cache_key(path: str, params: dict | None) -> str:
+    """Build a hashable cache key from path + sorted params."""
+    p = tuple(sorted((params or {}).items()))
+    return f"{path}:{p}"
 
 
 async def _s2_request(
@@ -55,17 +65,19 @@ async def _s2_request(
     path: str,
     **kwargs: Any,
 ) -> httpx.Response | None:
-    """Rate-limited S2 request with 2 retries on 429/5xx."""
+    """S2 request with 2 retries on 429/5xx. Rate-limited only when using API key."""
     global _s2_last_request
     url = f"{S2_API}{path}"
     kwargs.setdefault("headers", {}).update(S2_HEADERS)
     kwargs.setdefault("timeout", S2_TIMEOUT)
 
     for attempt in range(3):
-        # Rate limit: 1 request per second
-        elapsed = time.monotonic() - _s2_last_request
-        if elapsed < 1.0:
-            await asyncio.sleep(1.0 - elapsed)
+        # Rate limit only when authenticated (1 req/s for search, 10 req/s for others)
+        if S2_API_KEY:
+            min_interval = 1.0 if "search" in path else 0.1
+            elapsed = time.monotonic() - _s2_last_request
+            if elapsed < min_interval:
+                await asyncio.sleep(min_interval - elapsed)
         _s2_last_request = time.monotonic()
 
         try:
@@ -89,18 +101,32 @@ async def _s2_request(
     return None
 
 
+async def _s2_get_json(
+    client: httpx.AsyncClient, path: str, params: dict | None = None,
+) -> dict | None:
+    """Cached S2 GET returning parsed JSON or None."""
+    key = _s2_cache_key(path, params)
+    if key in _s2_cache:
+        return _s2_cache[key]
+
+    resp = await _s2_request(client, "GET", path, params=params or {})
+    if resp and resp.status_code == 200:
+        data = resp.json()
+        if len(_s2_cache) < _S2_CACHE_MAX:
+            _s2_cache[key] = data
+        return data
+    return None
+
+
 async def _s2_get_paper(
     client: httpx.AsyncClient, arxiv_id: str, fields: str,
 ) -> dict | None:
     """Fetch a single paper from S2 by arxiv ID. Returns None on failure."""
-    resp = await _s2_request(
-        client, "GET",
+    return await _s2_get_json(
+        client,
         f"/graph/v1/paper/{_s2_paper_id(arxiv_id)}",
-        params={"fields": fields},
+        {"fields": fields},
     )
-    if resp and resp.status_code == 200:
-        return resp.json()
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -651,21 +677,13 @@ async def _op_paper_details(args: dict[str, Any], limit: int) -> ToolResult:
     if not arxiv_id:
         return _error("'arxiv_id' is required for paper_details.")
 
-    s2_fields = "citationCount,influentialCitationCount,tldr,s2FieldsOfStudy,venue"
-
     async with httpx.AsyncClient(timeout=15) as client:
-        hf_coro = client.get(f"{HF_API}/papers/{arxiv_id}")
-        s2_coro = _s2_get_paper(client, arxiv_id, s2_fields)
-        hf_resp, s2_data = await asyncio.gather(hf_coro, s2_coro, return_exceptions=True)
-
-        if isinstance(hf_resp, Exception):
-            raise hf_resp
-        hf_resp.raise_for_status()
-        paper = hf_resp.json()
-        s2 = s2_data if isinstance(s2_data, dict) else None
+        resp = await client.get(f"{HF_API}/papers/{arxiv_id}")
+        resp.raise_for_status()
+        paper = resp.json()
 
     return {
-        "formatted": _format_paper_detail(paper, s2),
+        "formatted": _format_paper_detail(paper),
         "totalResults": 1,
         "resultsShared": 1,
     }
@@ -800,32 +818,27 @@ async def _op_citation_graph(args: dict[str, Any], limit: int) -> ToolResult:
     direction = args.get("direction", "both")
     s2_id = _s2_paper_id(arxiv_id)
     fields = "title,externalIds,year,citationCount,influentialCitationCount,contexts,intents,isInfluential"
+    params = {"fields": fields, "limit": limit}
 
     async with httpx.AsyncClient(timeout=15) as client:
         refs, cites = None, None
         coros = []
         if direction in ("references", "both"):
-            coros.append(
-                _s2_request(client, "GET", f"/graph/v1/paper/{s2_id}/references",
-                            params={"fields": fields, "limit": limit})
-            )
+            coros.append(_s2_get_json(client, f"/graph/v1/paper/{s2_id}/references", params))
         if direction in ("citations", "both"):
-            coros.append(
-                _s2_request(client, "GET", f"/graph/v1/paper/{s2_id}/citations",
-                            params={"fields": fields, "limit": limit})
-            )
+            coros.append(_s2_get_json(client, f"/graph/v1/paper/{s2_id}/citations", params))
 
         results = await asyncio.gather(*coros, return_exceptions=True)
         idx = 0
         if direction in ("references", "both"):
             r = results[idx]
-            if isinstance(r, httpx.Response) and r.status_code == 200:
-                refs = r.json().get("data", [])
+            if isinstance(r, dict):
+                refs = r.get("data", [])
             idx += 1
         if direction in ("citations", "both"):
             r = results[idx]
-            if isinstance(r, httpx.Response) and r.status_code == 200:
-                cites = r.json().get("data", [])
+            if isinstance(r, dict):
+                cites = r.get("data", [])
 
     if refs is None and cites is None:
         return _error(f"Could not fetch citation data for {arxiv_id}. Paper may not be indexed by Semantic Scholar.")
@@ -1088,7 +1101,7 @@ async def _op_recommend(args: dict[str, Any], limit: int) -> ToolResult:
 
     async with httpx.AsyncClient(timeout=15) as client:
         if positive_ids and not arxiv_id:
-            # Multi-paper recommendations
+            # Multi-paper recommendations (POST, not cached)
             pos = [_s2_paper_id(pid.strip()) for pid in positive_ids.split(",") if pid.strip()]
             neg_raw = args.get("negative_ids", "")
             neg = [_s2_paper_id(pid.strip()) for pid in neg_raw.split(",") if pid.strip()] if neg_raw else []
@@ -1097,17 +1110,18 @@ async def _op_recommend(args: dict[str, Any], limit: int) -> ToolResult:
                 json={"positivePaperIds": pos, "negativePaperIds": neg},
                 params={"fields": fields, "limit": limit},
             )
+            if not resp or resp.status_code != 200:
+                return _error("Recommendation request failed. Semantic Scholar may be unavailable.")
+            data = resp.json()
         else:
-            # Single-paper recommendations
-            resp = await _s2_request(
-                client, "GET",
+            # Single-paper recommendations (cached)
+            data = await _s2_get_json(
+                client,
                 f"/recommendations/v1/papers/forpaper/{_s2_paper_id(arxiv_id)}",
-                params={"fields": fields, "limit": limit, "from": "recent"},
+                {"fields": fields, "limit": limit, "from": "recent"},
             )
-
-        if not resp or resp.status_code != 200:
-            return _error("Recommendation request failed. Semantic Scholar may be unavailable.")
-        data = resp.json()
+            if not data:
+                return _error("Recommendation request failed. Semantic Scholar may be unavailable.")
 
     papers = data.get("recommendedPapers") or []
     if not papers:
@@ -1161,7 +1175,7 @@ HF_PAPERS_TOOL_SPEC = {
         "Operations:\n"
         "- trending: Get trending daily papers, optionally filter by topic keyword\n"
         "- search: Search papers. Uses HF by default (ML-tuned). Add date_from/min_citations/categories to use Semantic Scholar with filters\n"
-        "- paper_details: Metadata, abstract, AI summary, citation count, TL;DR\n"
+        "- paper_details: Metadata, abstract, AI summary, github link\n"
         "- read_paper: Read paper contents — without section: abstract + TOC; with section: full text\n"
         "- citation_graph: Get references and citations for a paper with influence flags and citation intents\n"
         "- snippet_search: Semantic search over full-text passages from 12M+ papers\n"
