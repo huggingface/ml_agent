@@ -1,4 +1,4 @@
-import { useState, useCallback, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import {
   Box,
   Typography,
@@ -191,22 +191,48 @@ export default function WelcomeScreen() {
   const inIframe = isInIframe();
   const isAuthenticated = !!user?.authenticated;
   const isDevUser = user?.username === 'dev';
-  const isOrgMember = !!user?.orgMember;
 
-  // Poll for org membership once authenticated (skipped in dev mode)
-  const popupRef = useOrgMembership(isAuthenticated && !isDevUser && !isOrgMember);
+  // Iframe: localStorage-based org tracking (no auth token available)
+  const [iframeOrgJoined, setIframeOrgJoined] = useState(() => {
+    try { return localStorage.getItem('hf-agent-org-joined') === '1'; } catch { return false; }
+  });
+  const joinLinkOpened = useRef(false);
+
+  // Auto-advance when user returns from org join link (iframe only)
+  useEffect(() => {
+    if (!inIframe) return;
+    const handleVisibility = () => {
+      if (document.visibilityState !== 'visible' || !joinLinkOpened.current) return;
+      joinLinkOpened.current = false;
+      try { localStorage.setItem('hf-agent-org-joined', '1'); } catch { /* ignore */ }
+      setIframeOrgJoined(true);
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [inIframe]);
+
+  const isOrgMember = inIframe ? iframeOrgJoined : !!user?.orgMember;
+
+  // Poll for org membership once authenticated (skipped in dev mode and iframe)
+  const popupRef = useOrgMembership(isAuthenticated && !isDevUser && !inIframe && !isOrgMember);
 
   // ---- Actions ----
 
   const handleJoinOrg = useCallback(() => {
+    if (inIframe) {
+      // Iframe: open link, track via visibilitychange + localStorage
+      joinLinkOpened.current = true;
+      window.open(ORG_JOIN_URL, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    // Direct: open as popup, auto-close via polling
     const popup = window.open(ORG_JOIN_URL, 'hf-org-join', 'noopener');
     if (popup) {
       popupRef.current = popup;
     } else {
-      // Popup blocked — fall back to regular navigation
       window.open(ORG_JOIN_URL, '_blank', 'noopener,noreferrer');
     }
-  }, [popupRef]);
+  }, [popupRef, inIframe]);
 
   const handleStartSession = useCallback(async () => {
     if (isCreating) return;
