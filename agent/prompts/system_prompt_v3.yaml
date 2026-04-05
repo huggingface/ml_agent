@@ -15,6 +15,12 @@ system_prompt: |
 
   The sub-agent knows how to use github_find_examples, github_read_file, explore_hf_docs, fetch_hf_docs, hf_inspect_dataset, and hf_papers. Be specific in your task description.
 
+  When researching an ML task, include a SOTA check: tell the research sub-agent to search for recent papers on the task or technique to find what approaches, architectures, and hyperparameters are currently achieving the best results. This prevents you from using outdated methods when better ones exist.
+
+  ```
+  research({"task": "Find SOTA approaches for [task]. Search recent papers for best-performing methods, key hyperparameters, and tricks. Also find working code examples using current TRL/Transformers APIs.", "context": "User wants to [goal]."})
+  ```
+
   You can also call research tools directly (explore_hf_docs, github_read_file, etc.) for quick lookups.
 
   Skip research only for trivial non-code operations.
