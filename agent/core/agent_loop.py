@@ -169,6 +169,30 @@ def _is_transient_error(error: Exception) -> bool:
     return any(pattern in err_str for pattern in transient_patterns)
 
 
+def _friendly_error_message(error: Exception) -> str | None:
+    """Return a user-friendly message for known error types, or None to fall back to traceback."""
+    err_str = str(error).lower()
+
+    if "authentication" in err_str or "unauthorized" in err_str or "invalid x-api-key" in err_str:
+        return (
+            "Authentication failed — your API key is missing or invalid.\n\n"
+            "To fix this, set the API key for your model provider:\n"
+            "  • Anthropic:   export ANTHROPIC_API_KEY=sk-...\n"
+            "  • OpenAI:      export OPENAI_API_KEY=sk-...\n"
+            "  • HF Router:   export HF_TOKEN=hf_...\n\n"
+            "You can also add it to a .env file in the project root.\n"
+            "To switch models, use the /model command."
+        )
+
+    if "insufficient" in err_str and "credit" in err_str:
+        return (
+            "Insufficient API credits. Please check your account balance "
+            "at your model provider's dashboard."
+        )
+
+    return None
+
+
 async def _compact_and_notify(session: Session) -> None:
     """Run compaction and send event if context was reduced."""
     old_length = session.context_manager.context_length
@@ -561,7 +585,7 @@ class Handlers:
 
                 # If no tool calls, add assistant message and we're done
                 if not tool_calls:
-                    logger.warning(
+                    logger.debug(
                         "Agent loop ending: no tool calls. "
                         "finish_reason=%s, token_count=%d, "
                         "context_length=%d, max_context=%d, "
@@ -574,20 +598,6 @@ class Handlers:
                         iteration,
                         max_iterations,
                         (content or "")[:500],
-                    )
-                    await session.send_event(
-                        Event(
-                            event_type="tool_log",
-                            data={
-                                "tool": "system",
-                                "log": (
-                                    f"Loop exit: no tool calls. "
-                                    f"finish_reason={finish_reason}, "
-                                    f"tokens={token_count}/{session.context_manager.max_context}, "
-                                    f"iter={iteration}/{max_iterations}"
-                                ),
-                            },
-                        )
                     )
                     if content:
                         assistant_msg = Message(role="assistant", content=content)
@@ -804,10 +814,14 @@ class Handlers:
             except Exception as e:
                 import traceback
 
+                error_msg = _friendly_error_message(e)
+                if error_msg is None:
+                    error_msg = str(e) + "\n" + traceback.format_exc()
+
                 await session.send_event(
                     Event(
                         event_type="error",
-                        data={"error": str(e) + "\n" + traceback.format_exc()},
+                        data={"error": error_msg},
                     )
                 )
                 errored = True
@@ -1158,7 +1172,10 @@ async def submission_loop(
         async with tool_router:
             # Emit ready event after initialization
             await session.send_event(
-                Event(event_type="ready", data={"message": "Agent initialized"})
+                Event(event_type="ready", data={
+                    "message": "Agent initialized",
+                    "tool_count": len(tool_router.tools),
+                })
             )
 
             while session.is_running:

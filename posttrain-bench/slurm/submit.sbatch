@@ -116,7 +116,7 @@ srun \
             REASONING_FLAG="--reasoning-effort '"${REASONING_EFFORT}"'"
         fi
 
-        python -m agent.main --max-iterations -1 --no-stream $MODEL_FLAG $REASONING_FLAG "$PROMPT"
+        python -m agent.main --max-iterations -1 --no-stream --resume timer.sh --resume-min-minutes 30 $MODEL_FLAG $REASONING_FLAG "$PROMPT"
     ' > "${SOLVE_OUT}" 2>&1 || true
 
 END_TIME=$(date +%s)

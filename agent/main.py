@@ -867,14 +867,53 @@ async def main():
     get_console().print("\n[dim]Bye.[/dim]\n")
 
 
+def _check_reprompt_timer(timer_script: str, min_remaining_minutes: int) -> tuple[bool, int, int]:
+    """Check if enough time remains for a reprompt.
+
+    Returns (should_continue, remaining_hours, remaining_minutes).
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["bash", timer_script], capture_output=True, text=True, timeout=10,
+        )
+        output = result.stdout.strip()
+        if "expired" in output.lower():
+            return False, 0, 0
+
+        import re
+        hours_match = re.search(r"^(\d+):", output)
+        mins_match = re.search(r":(\d+)", output)
+        if not hours_match or not mins_match:
+            return False, 0, 0
+
+        hours = int(hours_match.group(1))
+        mins = int(mins_match.group(1))
+        total_mins = hours * 60 + mins
+        if total_mins < min_remaining_minutes:
+            return False, hours, mins
+        return True, hours, mins
+    except Exception:
+        return False, 0, 0
+
+
 async def headless_main(
     prompt: str,
     model: str | None = None,
     max_iterations: int | None = None,
     stream: bool = True,
     reasoning_effort: str | None = None,
+    reprompt_timer: str | None = None,
+    reprompt_min_minutes: int = 30,
 ) -> None:
-    """Run a single prompt headlessly and exit."""
+    """Run a single prompt headlessly and exit.
+
+    If reprompt_timer is set (path to a timer script), the agent will be
+    re-prompted in the SAME session after each turn completes, as long as
+    the timer has more than reprompt_min_minutes remaining. The agent keeps
+    its full context window across reprompts.
+    """
     import logging
 
     logging.basicConfig(level=logging.WARNING)
@@ -902,6 +941,8 @@ async def headless_main(
     print(f"Model: {config.model_name}", file=sys.stderr)
     print(f"Max iterations: {config.max_iterations}", file=sys.stderr)
     print(f"Prompt: {prompt}", file=sys.stderr)
+    if reprompt_timer:
+        print(f"Reprompt: enabled (timer={reprompt_timer}, min={reprompt_min_minutes}m)", file=sys.stderr)
     print("---", file=sys.stderr)
 
     submission_queue: asyncio.Queue = asyncio.Queue()
@@ -930,18 +971,19 @@ async def headless_main(
             break
 
     # Submit the prompt
+    sub_id = 1
     submission = Submission(
-        id="sub_1",
+        id=f"sub_{sub_id}",
         operation=Operation(op_type=OpType.USER_INPUT, data={"text": prompt}),
     )
     await submission_queue.put(submission)
 
-    # Process events until turn completes
+    # Process events until turn completes (or reprompt loop ends)
     console = _create_rich_console()
     shimmer = _ThinkingShimmer(console)
     stream_buf = _StreamBuffer(console)
     _hl_last_tool = [None]
-    _hl_sub_id = [1]
+    reprompt_count = 0
     shimmer.start()
 
     while True:
@@ -992,9 +1034,9 @@ async def headless_main(
                 }
                 for t in tools_data
             ]
-            _hl_sub_id[0] += 1
+            sub_id += 1
             await submission_queue.put(Submission(
-                id=f"hl_approval_{_hl_sub_id[0]}",
+                id=f"hl_approval_{sub_id}",
                 operation=Operation(
                     op_type=OpType.EXEC_APPROVAL,
                     data={"approvals": approvals},
@@ -1015,6 +1057,34 @@ async def headless_main(
             stream_buf.discard()
             history_size = event.data.get("history_size", "?") if event.data else "?"
             print(f"\n--- Agent {event.event_type} (history_size={history_size}) ---", file=sys.stderr)
+
+            # Reprompt: if timer script is set and time remains, send another
+            # user message into the SAME session (full context preserved)
+            if reprompt_timer:
+                should_continue, hours, mins = _check_reprompt_timer(
+                    reprompt_timer, reprompt_min_minutes,
+                )
+                if should_continue:
+                    reprompt_count += 1
+                    continuation = (
+                        f"You still have {hours}h {mins}m remaining. "
+                        f"Continue improving your result — check eval scores, "
+                        f"try different hyperparameters or data, and maximize "
+                        f"performance. Do not stop early."
+                    )
+                    print(f"\n=== REPROMPT #{reprompt_count} ({hours}h {mins}m remaining) ===", file=sys.stderr)
+                    sub_id += 1
+                    await submission_queue.put(Submission(
+                        id=f"sub_{sub_id}",
+                        operation=Operation(
+                            op_type=OpType.USER_INPUT,
+                            data={"text": continuation},
+                        ),
+                    ))
+                    shimmer.start()
+                    continue  # keep processing events for the new turn
+                else:
+                    print(f"Reprompt loop done after {reprompt_count} reprompt(s) ({hours}h {mins}m left)", file=sys.stderr)
             break
 
     # Shutdown
@@ -1046,10 +1116,16 @@ def cli():
     parser.add_argument("--model", "-m", default=None, help=f"Model to use (default: from config)")
     parser.add_argument("--max-iterations", type=int, default=None,
                         help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
-    parser.add_argument("--reasoning-effort", default=None, choices=["low", "medium", "high"],
-        help="Reasoning effort for reasoning models")
     parser.add_argument("--no-stream", action="store_true",
                         help="Disable token streaming (use non-streaming LLM calls)")
+    parser.add_argument("--reasoning-effort", default=None, choices=["low", "medium", "high"],
+                        help="Reasoning effort for models that support it (e.g. o-series, GPT-5.4)")
+    parser.add_argument("--resume", type=str, default=None, metavar="TIMER_SCRIPT",
+                        help="Re-prompt the agent in the same session when a turn ends, "
+                             "as long as TIMER_SCRIPT reports time remaining. "
+                             "The agent keeps its full context window across reprompts.")
+    parser.add_argument("--resume-min-minutes", type=int, default=30,
+                        help="Minimum minutes remaining to trigger a reprompt (default: 30)")
     args = parser.parse_args()
 
     try:
@@ -1057,7 +1133,15 @@ def cli():
             max_iter = args.max_iterations
             if max_iter is not None and max_iter < 0:
                 max_iter = 10_000  # effectively unlimited
-            asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream, reasoning_effort=getattr(args, "reasoning_effort", None)))
+            asyncio.run(headless_main(
+                args.prompt,
+                model=args.model,
+                max_iterations=max_iter,
+                stream=not args.no_stream,
+                reasoning_effort=args.reasoning_effort,
+                reprompt_timer=args.resume,
+                reprompt_min_minutes=args.resume_min_minutes,
+            ))
         else:
             asyncio.run(main())
     except KeyboardInterrupt:
