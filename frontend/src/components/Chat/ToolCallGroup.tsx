@@ -172,51 +172,70 @@ function formatResearchStep(raw: string): { label: string } {
   return { label: step.replace(/^▸\s*/, '') };
 }
 
-/** Rolling 2-line display of research sub-tool calls — hidden when complete. */
-function ResearchSteps({ steps, isRunning }: { steps: string[]; isRunning: boolean }) {
-  if (!isRunning) return null;
-  const visible = steps.slice(-RESEARCH_MAX_STEPS);
-  if (visible.length === 0) return null;
+/** Rolling display of research sub-tool calls per agent — hidden when complete. */
+function ResearchSteps({ agents }: { agents: Record<string, { label: string; steps: string[]; stats: { startedAt: number | null } }> }) {
+  const running = Object.entries(agents).filter(([, a]) => a.stats.startedAt !== null);
+  if (running.length === 0) return null;
 
   return (
     <Box sx={{ pl: 4.5, pr: 1.5, pb: 1, pt: 0.25 }}>
-      {visible.map((step, i) => {
-        const { label } = formatResearchStep(step);
-        const isLast = i === visible.length - 1;
+      {running.map(([agentId, agent]) => {
+        const visible = agent.steps.slice(-RESEARCH_MAX_STEPS);
         return (
-          <Stack
-            key={i}
-            direction="row"
-            alignItems="center"
-            spacing={0.75}
-            sx={{ py: 0.2 }}
-          >
-            {isLast ? (
-              <CircularProgress size={10} thickness={5} sx={{ color: 'var(--accent-yellow)', flexShrink: 0 }} />
-            ) : (
-              <CheckCircleOutlineIcon sx={{ fontSize: 12, color: 'var(--muted-text)', flexShrink: 0 }} />
+          <Box key={agentId} sx={{ mb: running.length > 1 ? 0.75 : 0 }}>
+            {running.length > 1 && (
+              <Typography
+                sx={{
+                  fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace',
+                  fontSize: '0.62rem',
+                  color: 'var(--accent-yellow)',
+                  opacity: 0.7,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  mb: 0.25,
+                }}
+              >
+                {agent.label}
+              </Typography>
             )}
-            <Typography
-              sx={{
-                fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace',
-                fontSize: '0.68rem',
-                color: isLast ? 'var(--text)' : 'var(--muted-text)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {label}
-            </Typography>
-          </Stack>
+            {visible.map((step, i) => {
+              const { label } = formatResearchStep(step);
+              const isLast = i === visible.length - 1;
+              return (
+                <Stack
+                  key={i}
+                  direction="row"
+                  alignItems="center"
+                  spacing={0.75}
+                  sx={{ py: 0.2 }}
+                >
+                  {isLast ? (
+                    <CircularProgress size={10} thickness={5} sx={{ color: 'var(--accent-yellow)', flexShrink: 0 }} />
+                  ) : (
+                    <CheckCircleOutlineIcon sx={{ fontSize: 12, color: 'var(--muted-text)', flexShrink: 0 }} />
+                  )}
+                  <Typography
+                    sx={{
+                      fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace',
+                      fontSize: '0.68rem',
+                      color: isLast ? 'var(--text)' : 'var(--muted-text)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {label}
+                  </Typography>
+                </Stack>
+              );
+            })}
+          </Box>
         );
       })}
     </Box>
   );
 }
-
-// Stable reference to avoid infinite re-renders from Zustand selectors
-const EMPTY_STEPS: string[] = [];
 
 // ---------------------------------------------------------------------------
 // Hardware pricing ($/hr) — from HF Spaces & Jobs pricing
@@ -514,14 +533,25 @@ function InlineApproval({
 
 export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProps) {
   const { setPanel, lockPanel, getJobUrl, getEditedScript, setJobStatus, getJobStatus, setToolError, getToolError, setToolRejected, getToolRejected } = useAgentStore();
-  const researchSteps = useAgentStore(s => {
+  const researchAgents = useAgentStore(s => {
     const activeId = s.activeSessionId;
-    return activeId ? (s.sessionStates[activeId]?.researchSteps) : undefined;
-  }) ?? EMPTY_STEPS;
-  const researchStats = useAgentStore(s => {
-    const activeId = s.activeSessionId;
-    return activeId ? s.sessionStates[activeId]?.researchStats : undefined;
-  }) ?? { toolCount: 0, tokenCount: 0, startedAt: null, finalElapsed: null };
+    return activeId ? (s.sessionStates[activeId]?.researchAgents) : undefined;
+  }) ?? {};
+  // Aggregate stats across all agents for the chip label
+  const aggregateStats = useMemo(() => {
+    const agents = Object.values(researchAgents);
+    if (agents.length === 0) return { toolCount: 0, tokenCount: 0, startedAt: null, finalElapsed: null };
+    const running = agents.filter(a => a.stats.startedAt !== null);
+    return {
+      toolCount: agents.reduce((sum, a) => sum + a.stats.toolCount, 0),
+      tokenCount: agents.reduce((sum, a) => sum + a.stats.tokenCount, 0),
+      startedAt: running.length > 0 ? Math.min(...running.map(a => a.stats.startedAt!)) : null,
+      finalElapsed: running.length === 0 && agents.length > 0
+        ? Math.max(...agents.map(a => a.stats.finalElapsed ?? 0))
+        : null,
+    };
+  }, [researchAgents]);
+  const researchStats = aggregateStats;
   const liveElapsed = useElapsed(researchStats.startedAt);
   const isProcessing = useAgentStore(s => s.isProcessing);
   const { setRightPanelOpen, setLeftSidebarOpen } = useLayoutStore();
@@ -1049,10 +1079,7 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
 
               {/* Research sub-agent rolling steps (visible only while running) */}
               {tool.toolName === 'research' && !cancelled && state !== 'output-available' && state !== 'output-error' && state !== 'output-denied' && (
-                <ResearchSteps
-                  steps={researchSteps}
-                  isRunning={researchStats.startedAt !== null}
-                />
+                <ResearchSteps agents={researchAgents} />
               )}
 
               {/* Per-tool approval: undecided */}

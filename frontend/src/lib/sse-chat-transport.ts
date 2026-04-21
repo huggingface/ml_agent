@@ -23,7 +23,7 @@ export interface SideChannelCallbacks {
   onUndoComplete: () => void;
   onCompacted: (oldTokens: number, newTokens: number) => void;
   onPlanUpdate: (plan: Array<{ id: string; content: string; status: string }>) => void;
-  onToolLog: (tool: string, log: string) => void;
+  onToolLog: (tool: string, log: string, agentId?: string, label?: string) => void;
   onConnectionChange: (connected: boolean) => void;
   onSessionDead: (sessionId: string) => void;
   onApprovalRequired: (tools: Array<{ tool: string; arguments: Record<string, unknown>; tool_call_id: string }>) => void;
@@ -131,6 +131,8 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           sideChannel.onToolLog(
             (event.data?.tool as string) || '',
             (event.data?.log as string) || '',
+            (event.data?.agent_id as string) || '',
+            (event.data?.label as string) || '',
           );
           break;
 

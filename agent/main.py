@@ -326,7 +326,9 @@ async def event_listener(
                 tool = event.data.get("tool", "") if event.data else ""
                 log = event.data.get("log", "") if event.data else ""
                 if log:
-                    print_tool_log(tool, log)
+                    agent_id = event.data.get("agent_id", "") if event.data else ""
+                    label = event.data.get("label", "") if event.data else ""
+                    print_tool_log(tool, log, agent_id=agent_id, label=label)
             elif event.event_type == "tool_state_change":
                 pass  # visual noise — approval flow handles this
             elif event.event_type == "error":

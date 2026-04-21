@@ -281,11 +281,21 @@ async def research_handler(
         if spec["function"]["name"] in RESEARCH_TOOL_NAMES
     ]
 
+    # Unique ID + short label so parallel agents show separate status lines
+    import hashlib
+    _agent_id = hashlib.md5(task.encode()).hexdigest()[:8]
+    _agent_label = "research: " + (task[:50] + "…" if len(task) > 50 else task)
+
     async def _log(text: str) -> None:
         """Send a progress event to the UI so it doesn't look frozen."""
         try:
             await session.send_event(
-                Event(event_type="tool_log", data={"tool": "research", "log": text})
+                Event(event_type="tool_log", data={
+                    "tool": "research",
+                    "log": text,
+                    "agent_id": _agent_id,
+                    "label": _agent_label,
+                })
             )
         except Exception:
             pass

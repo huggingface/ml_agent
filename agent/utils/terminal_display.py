@@ -117,74 +117,83 @@ def print_tool_output(output: str, success: bool, truncate: bool = True) -> None
     _console.print(f"[{style}]{indented}[/{style}]")
 
 
-class SubAgentDisplay:
-    """Live-updating display: header with stats (ticks every second) + rolling 2-line tool calls."""
+class SubAgentDisplayManager:
+    """Manages multiple concurrent sub-agent displays.
 
-    _MAX_VISIBLE = 2
+    Each agent gets its own stats and rolling tool-call log.
+    All agents are rendered together so terminal escape-code
+    erase/redraw stays consistent.
+    """
+
+    _MAX_VISIBLE = 2  # tool-call lines shown per agent
 
     def __init__(self):
-        self._calls: list[str] = []
-        self._tool_count = 0
-        self._token_count = 0
-        self._start_time: float | None = None
+        self._agents: dict[str, dict] = {}  # agent_id -> state dict
         self._lines_on_screen = 0
         self._ticker_task = None
 
-    def start(self) -> None:
-        """Begin the display with a 1-second ticker."""
+    def start(self, agent_id: str, label: str = "research") -> None:
         import asyncio
         import time
-        self._calls = []
-        self._tool_count = 0
-        self._token_count = 0
-        self._start_time = time.monotonic()
-        self._redraw()
-        self._ticker_task = asyncio.ensure_future(self._tick())
-
-    def set_tokens(self, tokens: int) -> None:
-        self._token_count = tokens
-        # no redraw — ticker handles it
-
-    def set_tool_count(self, count: int) -> None:
-        self._tool_count = count
-        # no redraw — ticker handles it
-
-    def add_call(self, tool_desc: str) -> None:
-        self._calls.append(tool_desc)
+        self._agents[agent_id] = {
+            "label": label,
+            "calls": [],
+            "tool_count": 0,
+            "token_count": 0,
+            "start_time": time.monotonic(),
+        }
+        if not self._ticker_task:
+            self._ticker_task = asyncio.ensure_future(self._tick())
         self._redraw()
 
-    def clear(self) -> None:
-        if self._ticker_task:
-            self._ticker_task.cancel()
-            self._ticker_task = None
-        self._erase()
-        self._lines_on_screen = 0
-        self._calls = []
-        self._start_time = None
+    def set_tokens(self, agent_id: str, tokens: int) -> None:
+        if agent_id in self._agents:
+            self._agents[agent_id]["token_count"] = tokens
+
+    def set_tool_count(self, agent_id: str, count: int) -> None:
+        if agent_id in self._agents:
+            self._agents[agent_id]["tool_count"] = count
+
+    def add_call(self, agent_id: str, tool_desc: str) -> None:
+        if agent_id in self._agents:
+            self._agents[agent_id]["calls"].append(tool_desc)
+            self._redraw()
+
+    def clear(self, agent_id: str) -> None:
+        self._agents.pop(agent_id, None)
+        if not self._agents:
+            if self._ticker_task:
+                self._ticker_task.cancel()
+                self._ticker_task = None
+            self._erase()
+            self._lines_on_screen = 0
+        else:
+            self._redraw()
 
     async def _tick(self) -> None:
         import asyncio
         try:
             while True:
                 await asyncio.sleep(1.0)
-                self._redraw()
+                if self._agents:
+                    self._redraw()
         except asyncio.CancelledError:
             pass
 
-    def _format_stats(self) -> str:
+    @staticmethod
+    def _format_stats(agent: dict) -> str:
         import time
-        if self._start_time is None:
+        start = agent["start_time"]
+        if start is None:
             return ""
-        elapsed = time.monotonic() - self._start_time
+        elapsed = time.monotonic() - start
         if elapsed < 60:
             time_str = f"{elapsed:.0f}s"
         else:
             time_str = f"{elapsed / 60:.0f}m {elapsed % 60:.0f}s"
-        if self._token_count >= 1000:
-            tok_str = f"{self._token_count / 1000:.1f}k"
-        else:
-            tok_str = str(self._token_count)
-        return f"{self._tool_count} tool uses · {tok_str} tokens · {time_str}"
+        tok = agent["token_count"]
+        tok_str = f"{tok / 1000:.1f}k" if tok >= 1000 else str(tok)
+        return f"{agent['tool_count']} tool uses · {tok_str} tokens · {time_str}"
 
     def _erase(self) -> None:
         if self._lines_on_screen > 0:
@@ -196,39 +205,40 @@ class SubAgentDisplay:
     def _redraw(self) -> None:
         f = _console.file
         self._erase()
-        lines = []
-        # Header: ▸ research (stats)
-        stats = self._format_stats()
-        header = f"{_I}\033[38;2;255;200;80m▸ research\033[0m"
-        if stats:
-            header += f"  \033[2m({stats})\033[0m"
-        lines.append(header)
-        # Last 2 tool calls, gray
-        visible = self._calls[-self._MAX_VISIBLE:]
-        for desc in visible:
-            lines.append(f"{_I}  \033[2m{desc}\033[0m")
+        lines: list[str] = []
+        for agent in self._agents.values():
+            stats = self._format_stats(agent)
+            label = agent["label"]
+            header = f"{_I}\033[38;2;255;200;80m▸ {label}\033[0m"
+            if stats:
+                header += f"  \033[2m({stats})\033[0m"
+            lines.append(header)
+            visible = agent["calls"][-self._MAX_VISIBLE:]
+            for desc in visible:
+                lines.append(f"{_I}  \033[2m{desc}\033[0m")
         for line in lines:
             f.write(line + "\n")
         f.flush()
         self._lines_on_screen = len(lines)
 
 
-_subagent_display = SubAgentDisplay()
+_subagent_display = SubAgentDisplayManager()
 
 
-def print_tool_log(tool: str, log: str) -> None:
+def print_tool_log(tool: str, log: str, agent_id: str = "", label: str = "") -> None:
     """Handle tool log events — sub-agent calls get the rolling display."""
     if tool == "research":
+        aid = agent_id or "research"
         if log == "Starting research sub-agent...":
-            _subagent_display.start()
+            _subagent_display.start(aid, label or "research")
         elif log == "Research complete.":
-            _subagent_display.clear()
+            _subagent_display.clear(aid)
         elif log.startswith("tokens:"):
-            _subagent_display.set_tokens(int(log[7:]))
+            _subagent_display.set_tokens(aid, int(log[7:]))
         elif log.startswith("tools:"):
-            _subagent_display.set_tool_count(int(log[6:]))
+            _subagent_display.set_tool_count(aid, int(log[6:]))
         else:
-            _subagent_display.add_call(log)
+            _subagent_display.add_call(aid, log)
     else:
         _console.print(f"{_I}[dim]{tool}: {log}[/dim]")
 

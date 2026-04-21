@@ -53,6 +53,19 @@ export type ActivityStatus =
   | { type: 'streaming' }
   | { type: 'cancelled' };
 
+export interface ResearchAgentStats {
+  toolCount: number;
+  tokenCount: number;
+  startedAt: number | null;
+  finalElapsed: number | null;
+}
+
+export interface ResearchAgentState {
+  label: string;
+  steps: string[];
+  stats: ResearchAgentStats;
+}
+
 /** State that is tracked per-session (each session has its own copy). */
 export interface PerSessionState {
   isProcessing: boolean;
@@ -61,11 +74,15 @@ export interface PerSessionState {
   panelView: PanelView;
   panelEditable: boolean;
   plan: PlanItem[];
-  /** Steps completed by the research sub-agent (tool_log events). */
+  /** Per-agent research state, keyed by agent_id. */
+  researchAgents: Record<string, ResearchAgentState>;
+  /** @deprecated kept for backward compat selectors — use researchAgents instead */
   researchSteps: string[];
-  /** Live stats from the research sub-agent. */
-  researchStats: { toolCount: number; tokenCount: number; startedAt: number | null; finalElapsed: number | null };
+  /** @deprecated kept for backward compat selectors — use researchAgents instead */
+  researchStats: ResearchAgentStats;
 }
+
+const defaultResearchStats: ResearchAgentStats = { toolCount: 0, tokenCount: 0, startedAt: null, finalElapsed: null };
 
 const defaultSessionState: PerSessionState = {
   isProcessing: false,
@@ -74,8 +91,9 @@ const defaultSessionState: PerSessionState = {
   panelView: 'script',
   panelEditable: false,
   plan: [],
+  researchAgents: {},
   researchSteps: [],
-  researchStats: { toolCount: 0, tokenCount: 0, startedAt: null, finalElapsed: null },
+  researchStats: { ...defaultResearchStats },
 };
 
 interface AgentStore {
@@ -299,8 +317,9 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
         panelView: state.panelView,
         panelEditable: state.panelEditable,
         plan: state.plan,
+        researchAgents: state.sessionStates[state.activeSessionId]?.researchAgents ?? {},
         researchSteps: state.sessionStates[state.activeSessionId]?.researchSteps ?? [],
-        researchStats: state.sessionStates[state.activeSessionId]?.researchStats ?? defaultSessionState.researchStats,
+        researchStats: state.sessionStates[state.activeSessionId]?.researchStats ?? { ...defaultResearchStats },
       };
     }
 
