@@ -136,6 +136,58 @@ def _is_transient_error(error: Exception) -> bool:
     return any(pattern in err_str for pattern in transient_patterns)
 
 
+def _is_effort_config_error(error: Exception) -> bool:
+    """Catch the two 400s the effort probe also handles — thinking
+    unsupported for this model, or the specific effort level invalid.
+
+    This is our safety net for the case where ``/effort`` was changed
+    mid-conversation (which clears the probe cache) and the new level
+    doesn't work for the current model. We heal the cache and retry once.
+    """
+    from agent.core.effort_probe import _is_invalid_effort, _is_thinking_unsupported
+    return _is_thinking_unsupported(error) or _is_invalid_effort(error)
+
+
+async def _heal_effort_and_rebuild_params(
+    session: Session, error: Exception, llm_params: dict,
+) -> dict:
+    """Update the session's effort cache based on ``error`` and return new
+    llm_params. Called only when ``_is_effort_config_error(error)`` is True.
+
+    Two branches:
+      • thinking-unsupported → cache ``None`` for this model, next call
+        strips thinking entirely
+      • invalid-effort → re-run the full cascade probe; the result lands
+        in the cache
+    """
+    from agent.core.effort_probe import ProbeInconclusive, _is_thinking_unsupported, probe_effort
+
+    model = session.config.model_name
+    if _is_thinking_unsupported(error):
+        session.model_effective_effort[model] = None
+        logger.info("healed: %s doesn't support thinking — stripped", model)
+    else:
+        try:
+            outcome = await probe_effort(
+                model, session.config.reasoning_effort, session.hf_token,
+            )
+            session.model_effective_effort[model] = outcome.effective_effort
+            logger.info(
+                "healed: %s effort cascade → %s", model, outcome.effective_effort,
+            )
+        except ProbeInconclusive:
+            # Transient during healing — strip thinking for safety, next
+            # call will either succeed or surface the real error.
+            session.model_effective_effort[model] = None
+            logger.info("healed: %s probe inconclusive — stripped", model)
+
+    return _resolve_llm_params(
+        model,
+        session.hf_token,
+        reasoning_effort=session.effective_effort_for(model),
+    )
+
+
 def _friendly_error_message(error: Exception) -> str | None:
     """Return a user-friendly message for known error types, or None to fall back to traceback."""
     err_str = str(error).lower()
@@ -243,6 +295,7 @@ class LLMResult:
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
     response = None
+    _healed_effort = False  # one-shot safety net per call
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
             response = await acompletion(
@@ -258,6 +311,14 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         except ContextWindowExceededError:
             raise
         except Exception as e:
+            if not _healed_effort and _is_effort_config_error(e):
+                _healed_effort = True
+                llm_params = await _heal_effort_and_rebuild_params(session, e, llm_params)
+                await session.send_event(Event(
+                    event_type="tool_log",
+                    data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
+                ))
+                continue
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _is_transient_error(e):
                 _delay = _LLM_RETRY_DELAYS[_llm_attempt]
                 logger.warning(
@@ -328,6 +389,7 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
 async def _call_llm_non_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM without streaming, emit assistant_message at the end."""
     response = None
+    _healed_effort = False
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
             response = await acompletion(
@@ -342,6 +404,14 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
         except ContextWindowExceededError:
             raise
         except Exception as e:
+            if not _healed_effort and _is_effort_config_error(e):
+                _healed_effort = True
+                llm_params = await _heal_effort_and_rebuild_params(session, e, llm_params)
+                await session.send_event(Event(
+                    event_type="tool_log",
+                    data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
+                ))
+                continue
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _is_transient_error(e):
                 _delay = _LLM_RETRY_DELAYS[_llm_attempt]
                 logger.warning(
@@ -490,10 +560,13 @@ class Handlers:
             tools = session.tool_router.get_tool_specs_for_llm()
             try:
                 # ── Call the LLM (streaming or non-streaming) ──
+                # Pull the per-model probed effort from the session cache when
+                # available; fall back to the raw preference for models we
+                # haven't probed yet (e.g. research sub-model).
                 llm_params = _resolve_llm_params(
                     session.config.model_name,
                     session.hf_token,
-                    reasoning_effort=session.config.reasoning_effort,
+                    reasoning_effort=session.effective_effort_for(session.config.model_name),
                 )
                 if session.stream:
                     llm_result = await _call_llm_streaming(session, messages, tools, llm_params)

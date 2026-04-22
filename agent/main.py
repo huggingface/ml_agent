@@ -55,6 +55,7 @@ litellm.suppress_debug_info = True
 # append ":fastest" / ":cheapest" / ":preferred" / ":<provider>" to override
 # the default routing policy (auto = fastest with failover).
 SUGGESTED_MODELS = [
+    {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7"},
     {"id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6"},
     {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
     {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6"},
@@ -94,17 +95,17 @@ def _safe_get_args(arguments: dict) -> dict:
 _ROUTING_POLICIES = {"fastest", "cheapest", "preferred"}
 
 
-def _print_model_preflight(model_id: str, console) -> None:
-    """Validate a model switch against the HF router catalog and show the
-    user what they're about to use (providers, price, context, tool support).
+def _print_hf_routing_info(model_id: str, console) -> bool:
+    """Show HF router catalog info (providers, price, context, tool support)
+    for an HF-router model id. Returns ``True`` to signal the caller can
+    proceed with the switch, ``False`` to indicate a hard problem the user
+    should notice before we fire the effort probe.
 
-    Anthropic/OpenAI ids skip the catalog — those are direct API calls.
-    For unknown HF ids we print a red warning with fuzzy suggestions but
-    still allow the switch (the catalog might be lagging).
+    Anthropic / OpenAI ids return ``True`` without printing anything
+    (the probe below covers "does this model exist").
     """
     if model_id.startswith(("anthropic/", "openai/")):
-        console.print(f"[green]Model switched to {model_id}[/green]")
-        return
+        return True
 
     from agent.core import hf_router_catalog as cat
 
@@ -113,12 +114,12 @@ def _print_model_preflight(model_id: str, console) -> None:
     if info is None:
         console.print(
             f"[bold red]Warning:[/bold red] '{bare}' isn't in the HF router "
-            "catalog. Switching anyway — first call may fail."
+            "catalog. Checking anyway — first call may fail."
         )
         suggestions = cat.fuzzy_suggest(bare)
         if suggestions:
             console.print(f"[dim]Did you mean: {', '.join(suggestions)}[/dim]")
-        return
+        return True
 
     live = info.live_providers
     if not live:
@@ -126,7 +127,7 @@ def _print_model_preflight(model_id: str, console) -> None:
             f"[bold red]Warning:[/bold red] '{bare}' has no live providers "
             "right now. First call will likely fail."
         )
-        return
+        return True
 
     if tag and tag not in _ROUTING_POLICIES:
         matched = [p for p in live if p.provider == tag]
@@ -134,9 +135,8 @@ def _print_model_preflight(model_id: str, console) -> None:
             names = ", ".join(p.provider for p in live)
             console.print(
                 f"[bold red]Warning:[/bold red] provider '{tag}' doesn't serve "
-                f"'{bare}'. Live providers: {names}. Switching anyway."
+                f"'{bare}'. Live providers: {names}. Checking anyway."
             )
-            return
 
     if not info.any_supports_tools:
         console.print(
@@ -144,7 +144,6 @@ def _print_model_preflight(model_id: str, console) -> None:
             "tool-call support. This agent relies on tool calls — expect errors."
         )
 
-    console.print(f"[green]Model switched to {model_id}[/green]")
     if tag in _ROUTING_POLICIES:
         policy = tag
     elif tag:
@@ -163,6 +162,87 @@ def _print_model_preflight(model_id: str, console) -> None:
         console.print(
             f"  [dim]{p.provider}: {price}, {ctx}, {tools}[/dim]"
         )
+    return True
+
+
+async def _probe_and_switch_model(
+    model_id: str,
+    config,
+    session,
+    console,
+) -> None:
+    """Validate model+effort with a 1-token ping, cache the effective effort,
+    then commit the switch.
+
+    Three visible outcomes:
+
+    * ✓ ``effort: <level>`` — model accepted the preferred effort (or a
+      fallback from the cascade; the note explains if so)
+    * ✓ ``effort: off`` — model doesn't support thinking; we'll strip it
+    * ✗ hard error (auth, model-not-found, quota) — we reject the switch
+      and keep the current model so the user isn't stranded
+
+    Transient errors (5xx, timeout) complete the switch with a yellow
+    warning; the next real call re-surfaces the error if it's persistent.
+    """
+    from agent.core.effort_probe import ProbeInconclusive, probe_effort
+
+    hf_token = _get_hf_token()
+    preference = config.reasoning_effort
+    if not _print_hf_routing_info(model_id, console):
+        return
+
+    if not preference:
+        # Nothing to validate with a ping that we couldn't validate on the
+        # first real call just as cheaply. Skip the probe entirely.
+        _commit_model_switch(model_id, config, session, effective=None, cache=False)
+        console.print(f"[green]Model switched to {model_id}[/green] [dim](effort: off)[/dim]")
+        return
+
+    console.print(f"[dim]checking {model_id} (effort: {preference})...[/dim]")
+    try:
+        outcome = await probe_effort(model_id, preference, hf_token)
+    except ProbeInconclusive as e:
+        _commit_model_switch(model_id, config, session, effective=None, cache=False)
+        console.print(
+            f"[yellow]Model switched to {model_id}[/yellow] "
+            f"[dim](couldn't validate: {e}; will verify on first message)[/dim]"
+        )
+        return
+    except Exception as e:
+        # Hard persistent error — auth, unknown model, quota. Don't switch.
+        console.print(f"[bold red]Switch failed:[/bold red] {e}")
+        console.print(f"[dim]Keeping current model: {config.model_name}[/dim]")
+        return
+
+    _commit_model_switch(
+        model_id, config, session,
+        effective=outcome.effective_effort, cache=True,
+    )
+    effort_label = outcome.effective_effort or "off"
+    suffix = f" — {outcome.note}" if outcome.note else ""
+    console.print(
+        f"[green]Model switched to {model_id}[/green] "
+        f"[dim](effort: {effort_label}{suffix}, {outcome.elapsed_ms}ms)[/dim]"
+    )
+
+
+def _commit_model_switch(model_id, config, session, effective, cache: bool) -> None:
+    """Apply the switch to the session (or bare config if no session yet).
+
+    ``effective`` is the probe's resolved effort; ``cache=True`` stores it
+    in the session's per-model cache so real calls use the resolved level
+    instead of re-probing. ``cache=False`` (inconclusive probe / effort
+    off) leaves the cache untouched — next call falls back to preference.
+    """
+    if session is not None:
+        session.update_model(model_id)
+        if cache:
+            session.model_effective_effort[model_id] = effective
+        else:
+            session.model_effective_effort.pop(model_id, None)
+    else:
+        config.model_name = model_id
 
 
 def _get_hf_token() -> str | None:
@@ -807,7 +887,7 @@ async def get_user_input(prompt_session: PromptSession) -> str:
 # Slash commands are defined in terminal_display
 
 
-def _handle_slash_command(
+async def _handle_slash_command(
     cmd: str,
     config,
     session_holder: list,
@@ -817,6 +897,9 @@ def _handle_slash_command(
     """
     Handle a slash command. Returns a Submission to enqueue, or None if
     the command was handled locally (caller should set turn_complete_event).
+
+    Async because ``/model`` fires a probe ping to validate the model+effort
+    combo before committing the switch.
     """
     parts = cmd.strip().split(None, 1)
     command = parts[0].lower()
@@ -866,12 +949,8 @@ def _handle_slash_command(
             )
             return None
         normalized = arg.removeprefix("huggingface/")
-        _print_model_preflight(normalized, console)
         session = session_holder[0] if session_holder else None
-        if session:
-            session.update_model(normalized)
-        else:
-            config.model_name = normalized
+        await _probe_and_switch_model(normalized, config, session, console)
         return None
 
     if command == "/yolo":
@@ -882,14 +961,19 @@ def _handle_slash_command(
 
     if command == "/effort":
         console = get_console()
-        valid = {"minimal", "low", "medium", "high", "off"}
+        valid = {"minimal", "low", "medium", "high", "xhigh", "max", "off"}
+        session = session_holder[0] if session_holder else None
         if not arg:
             current = config.reasoning_effort or "off"
-            console.print(f"[bold]Reasoning effort:[/bold] {current}")
+            console.print(f"[bold]Reasoning effort preference:[/bold] {current}")
+            if session and session.model_effective_effort:
+                console.print("[dim]Probed per model:[/dim]")
+                for m, eff in session.model_effective_effort.items():
+                    console.print(f"  [dim]{m}: {eff or 'off'}[/dim]")
             console.print(
-                "[dim]Set with '/effort minimal|low|medium|high|off'. "
-                "Applies to models that support it (GPT-5 / o-series, Claude "
-                "extended thinking, HF reasoning models); dropped otherwise.[/dim]"
+                "[dim]Set with '/effort minimal|low|medium|high|xhigh|max|off'. "
+                "'max' and 'xhigh' are Anthropic-only; the cascade falls back "
+                "to whatever the model actually accepts.[/dim]"
             )
             return None
         level = arg.lower()
@@ -898,7 +982,16 @@ def _handle_slash_command(
             console.print(f"[dim]Expected one of: {', '.join(sorted(valid))}[/dim]")
             return None
         config.reasoning_effort = None if level == "off" else level
+        # Drop the per-model probe cache — the new preference may resolve
+        # differently. Next ``/model`` (or the retry safety net) reprobes.
+        if session is not None:
+            session.model_effective_effort.clear()
         console.print(f"[green]Reasoning effort: {level}[/green]")
+        if session is not None:
+            console.print(
+                "[dim]run /model <current> to re-probe, or send a message — "
+                "the agent adjusts automatically if the new level isn't supported.[/dim]"
+            )
         return None
 
     if command == "/status":
@@ -1083,7 +1176,7 @@ async def main():
 
             # Handle slash commands
             if user_input.strip().startswith("/"):
-                sub = _handle_slash_command(
+                sub = await _handle_slash_command(
                     user_input.strip(), config, session_holder, submission_queue, submission_id
                 )
                 if sub is None:

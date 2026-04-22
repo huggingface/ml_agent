@@ -109,6 +109,16 @@ class Session:
         self.turn_count: int = 0
         self.last_auto_save_turn: int = 0
 
+        # Per-model probed reasoning-effort cache. Populated by the probe
+        # on /model switch, read by ``effective_effort_for`` below. Keys are
+        # raw model ids (including any ``:tag``). Values:
+        #   str  → the effort level to send (may be a downgrade from the
+        #          preference, e.g. "high" when user asked for "max")
+        #   None → model rejected all efforts in the cascade; send no
+        #          thinking params at all
+        # Key absent → not probed yet; fall back to the raw preference.
+        self.model_effective_effort: dict[str, str | None] = {}
+
     async def send_event(self, event: Event) -> None:
         """Send event back to client and log to trajectory"""
         await self.event_queue.put(event)
@@ -138,6 +148,19 @@ class Session:
         """Switch the active model and update the context window limit."""
         self.config.model_name = model_name
         self.context_manager.model_max_tokens = _get_max_tokens_safe(model_name)
+
+    def effective_effort_for(self, model_name: str) -> str | None:
+        """Resolve the effort level to actually send for ``model_name``.
+
+        Returns the probed result when we have one (may be ``None`` meaning
+        "model doesn't do thinking, strip it"), else the raw preference.
+        Unknown-model case falls back to the preference so a stale cache
+        from a prior ``/model`` can't poison research sub-calls that use a
+        different model id.
+        """
+        if model_name in self.model_effective_effort:
+            return self.model_effective_effort[model_name]
+        return self.config.reasoning_effort
 
     def increment_turn(self) -> None:
         """Increment turn counter (called after each user interaction)"""
