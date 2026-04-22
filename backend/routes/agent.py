@@ -166,9 +166,11 @@ async def generate_title(
 ) -> dict:
     """Generate a short title for a chat session based on the first user message.
 
-    Always uses Llama-3.1-8B-Instruct via Cerebras on the HF router. The tab
-    headline renders as plain text, so the model is told to avoid markdown
-    and any stray formatting characters are stripped before returning.
+    Always uses gpt-oss-120b via Cerebras on the HF router. The tab headline
+    renders as plain text, so the model is told to avoid markdown and any
+    stray formatting characters are stripped before returning. gpt-oss is a
+    reasoning model — reasoning_effort=low keeps the reasoning budget small
+    so the 60-token output budget isn't consumed before the title is written.
     """
     api_key = (
         os.environ.get("INFERENCE_TOKEN")
@@ -179,7 +181,7 @@ async def generate_title(
         response = await acompletion(
             # Double openai/ prefix: LiteLLM strips the first as its provider
             # prefix, leaving the HF model id on the wire for the router.
-            model="openai/meta-llama/Llama-3.1-8B-Instruct:cerebras",
+            model="openai/openai/gpt-oss-120b:cerebras",
             api_base="https://router.huggingface.co/v1",
             api_key=api_key,
             messages=[
@@ -195,9 +197,10 @@ async def generate_title(
                 },
                 {"role": "user", "content": request.text[:500]},
             ],
-            max_tokens=20,
+            max_tokens=60,
             temperature=0.3,
             timeout=10,
+            reasoning_effort="low",
         )
         title = response.choices[0].message.content.strip().strip('"').strip("'")
         title = title.translate(_TITLE_STRIP_CHARS).strip()
