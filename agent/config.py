@@ -33,6 +33,15 @@ class Config(BaseModel):
     confirm_cpu_jobs: bool = True
     auto_file_upload: bool = False
 
+    # Reasoning effort for models that support it (GPT-5 / o-series, Claude
+    # extended thinking, HF reasoning models like MiniMax M2 / Kimi K2).
+    # Defaults to "high" — we'd rather spend tokens thinking than ship a
+    # wrong ML recipe. Users can dial down with `/effort low|medium|off`.
+    # "minimal" is an OpenAI-only level and is normalized to "low" for HF
+    # router models (MiniMax requires ≥low). Ignored for non-reasoning models.
+    # Valid values: None | "minimal" | "low" | "medium" | "high"
+    reasoning_effort: str | None = "high"
+
 
 def substitute_env_vars(obj: Any) -> Any:
     """

@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 # Local max-token lookup — avoids litellm.get_max_tokens() which can hang
 # on network calls for certain providers (known litellm issue).
 _MAX_TOKENS_MAP: dict[str, int] = {
-    # Anthropic
     "anthropic/claude-opus-4-6": 200_000,
     "anthropic/claude-opus-4-5-20251101": 200_000,
     "anthropic/claude-sonnet-4-5-20250929": 200_000,
@@ -26,20 +25,32 @@ _MAX_TOKENS_MAP: dict[str, int] = {
     "anthropic/claude-haiku-3-5-20241022": 200_000,
     "anthropic/claude-3-5-sonnet-20241022": 200_000,
     "anthropic/claude-3-opus-20240229": 200_000,
-    "huggingface/fireworks-ai/MiniMaxAI/MiniMax-M2.5": 200_000,
-    "huggingface/novita/minimax/minimax-m2.1": 196_608,
-    "huggingface/novita/moonshotai/kimi-k2.5": 262_144,
-    "huggingface/novita/zai-org/glm-5": 200_000,
 }
 _DEFAULT_MAX_TOKENS = 200_000
 
 
 def _get_max_tokens_safe(model_name: str) -> int:
-    """Return the max context window for a model without network calls."""
+    """Return the max context window for a model.
+
+    Anthropic/OpenAI ids hit the local table; HF router ids ask the catalog
+    (cached) for the max ``context_length`` across live providers. Falls back
+    to ``_DEFAULT_MAX_TOKENS`` if nothing is available.
+    """
     tokens = _MAX_TOKENS_MAP.get(model_name)
     if tokens:
         return tokens
-    # Fallback: try litellm but with a short timeout via threading
+
+    if not model_name.startswith(("anthropic/", "openai/")):
+        try:
+            from agent.core import hf_router_catalog as cat
+
+            bare = model_name.removeprefix("huggingface/").split(":", 1)[0]
+            info = cat.lookup(bare)
+            if info and info.max_context_length:
+                return info.max_context_length
+        except Exception as e:
+            logger.warning("HF catalog lookup failed for %s: %s", model_name, e)
+
     try:
         from litellm import get_max_tokens
 
@@ -49,10 +60,9 @@ def _get_max_tokens_safe(model_name: str) -> int:
         logger.warning(
             f"get_max_tokens returned {result} for {model_name}, using default"
         )
-        return _DEFAULT_MAX_TOKENS
     except Exception as e:
         logger.warning(f"get_max_tokens failed for {model_name}, using default: {e}")
-        return _DEFAULT_MAX_TOKENS
+    return _DEFAULT_MAX_TOKENS
 
 
 class OpType(Enum):

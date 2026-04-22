@@ -306,19 +306,14 @@ class ContextManager:
             )
         )
 
-        hf_key = (
-            os.environ.get("INFERENCE_TOKEN")
-            or hf_token
-            or os.environ.get("HF_TOKEN")
-        )
+        from agent.core.llm_params import _resolve_llm_params
+
+        llm_params = _resolve_llm_params(model_name, hf_token, reasoning_effort="high")
         response = await acompletion(
-            model=model_name,
             messages=messages_to_summarize,
             max_completion_tokens=self.compact_size,
             tools=tool_specs,
-            api_key=hf_key
-            if hf_key and model_name.startswith("huggingface/")
-            else None,
+            **llm_params,
         )
         summarized_message = Message(
             role="assistant", content=response.choices[0].message.content

@@ -30,7 +30,7 @@ from models import (
 )
 from session_manager import MAX_SESSIONS, SessionCapacityError, session_manager
 
-from agent.core.agent_loop import _resolve_hf_router_params
+from agent.core.llm_params import _resolve_llm_params
 
 logger = logging.getLogger(__name__)
 
@@ -44,19 +44,19 @@ AVAILABLE_MODELS = [
         "recommended": True,
     },
     {
-        "id": "huggingface/fireworks-ai/MiniMaxAI/MiniMax-M2.5",
-        "label": "MiniMax M2.5",
+        "id": "MiniMaxAI/MiniMax-M2.7",
+        "label": "MiniMax M2.7",
         "provider": "huggingface",
         "recommended": True,
     },
     {
-        "id": "huggingface/novita/moonshotai/kimi-k2.5",
-        "label": "Kimi K2.5",
+        "id": "moonshotai/Kimi-K2.6",
+        "label": "Kimi K2.6",
         "provider": "huggingface",
     },
     {
-        "id": "huggingface/novita/zai-org/glm-5",
-        "label": "GLM 5",
+        "id": "zai-org/GLM-5.1",
+        "label": "GLM 5.1",
         "provider": "huggingface",
     },
 ]
@@ -93,7 +93,7 @@ async def llm_health_check() -> LLMHealthResponse:
     """
     model = session_manager.config.model_name
     try:
-        llm_params = _resolve_hf_router_params(model)
+        llm_params = _resolve_llm_params(model, reasoning_effort="high")
         await acompletion(
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=1,
@@ -163,7 +163,7 @@ async def generate_title(
 ) -> dict:
     """Generate a short title for a chat session based on the first user message."""
     model = session_manager.config.model_name
-    llm_params = _resolve_hf_router_params(model)
+    llm_params = _resolve_llm_params(model, reasoning_effort="high")
     try:
         response = await acompletion(
             messages=[

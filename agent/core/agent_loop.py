@@ -13,6 +13,7 @@ from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
 from agent.core.doom_loop import check_for_doom_loop
+from agent.core.llm_params import _resolve_llm_params
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.tools.jobs_tool import CPU_FLAVORS
@@ -20,51 +21,6 @@ from agent.tools.jobs_tool import CPU_FLAVORS
 logger = logging.getLogger(__name__)
 
 ToolCall = ChatCompletionMessageToolCall
-
-
-def _resolve_hf_router_params(
-    model_name: str, session_hf_token: str | None = None
-) -> dict:
-    """
-    Build LiteLLM kwargs for HuggingFace Router models.
-
-    api-inference.huggingface.co is deprecated; the new router lives at
-    router.huggingface.co/<provider>/v3/openai.  LiteLLM's built-in
-    ``huggingface/`` provider still targets the old endpoint, so we
-    rewrite model names to ``openai/`` and supply the correct api_base.
-
-    Input format:  huggingface/<router_provider>/<org>/<model>
-    Example:       huggingface/novita/moonshotai/kimi-k2.5
-
-    Token resolution (first non-empty wins):
-      1. INFERENCE_TOKEN env — shared key on the hosted Space so inference
-         is free for users and billed to the Space owner.
-      2. session.hf_token — the user's own token (CLI or self-hosted),
-         resolved from env / huggingface-cli login / cached token file.
-      3. HF_TOKEN env — belt-and-suspenders fallback for CLI users.
-    """
-    if not model_name.startswith("huggingface/"):
-        return {"model": model_name}
-
-    parts = model_name.split(
-        "/", 2
-    )  # ['huggingface', 'novita', 'moonshotai/kimi-k2.5']
-    if len(parts) < 3:
-        return {"model": model_name}
-
-    router_provider = parts[1]
-    actual_model = parts[2]
-    api_key = (
-        os.environ.get("INFERENCE_TOKEN")
-        or session_hf_token
-        or os.environ.get("HF_TOKEN")
-    )
-
-    return {
-        "model": f"openai/{actual_model}",
-        "api_base": f"https://router.huggingface.co/{router_provider}/v3/openai",
-        "api_key": api_key,
-    }
 
 
 def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
@@ -199,6 +155,24 @@ def _friendly_error_message(error: Exception) -> str | None:
         return (
             "Insufficient API credits. Please check your account balance "
             "at your model provider's dashboard."
+        )
+
+    if "not supported by provider" in err_str or "no provider supports" in err_str:
+        return (
+            "The model isn't served by the provider you pinned.\n\n"
+            "Drop the ':<provider>' suffix to let the HF router auto-pick a "
+            "provider, or use '/model' (no arg) to see which providers host "
+            "which models."
+        )
+
+    if "model_not_found" in err_str or (
+        "model" in err_str
+        and ("not found" in err_str or "does not exist" in err_str)
+    ):
+        return (
+            "Model not found. Use '/model' to list suggestions, or paste an "
+            "HF model id like 'MiniMaxAI/MiniMax-M2.7'. Availability is shown "
+            "when you switch."
         )
 
     return None
@@ -518,8 +492,10 @@ class Handlers:
             tools = session.tool_router.get_tool_specs_for_llm()
             try:
                 # ── Call the LLM (streaming or non-streaming) ──
-                llm_params = _resolve_hf_router_params(
-                    session.config.model_name, session.hf_token
+                llm_params = _resolve_llm_params(
+                    session.config.model_name,
+                    session.hf_token,
+                    reasoning_effort=session.config.reasoning_effort,
                 )
                 if session.stream:
                     llm_result = await _call_llm_streaming(session, messages, tools, llm_params)
