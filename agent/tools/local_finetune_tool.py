@@ -154,7 +154,7 @@ async def _run_local(args: dict[str, Any], session: Any) -> tuple[str, bool]:
         rc = proc.returncode
 
         if rc == 0:
-            summary = f"Training completed successfully (exit 0)."
+            summary = "Training completed successfully (exit 0)."
             if output_dir:
                 summary += f" Adapters saved to: {output_dir}"
             if session:

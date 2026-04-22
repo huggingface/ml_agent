@@ -23,6 +23,7 @@ from agent.config import load_config
 from agent.core.agent_loop import submission_loop
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
+from agent.utils.ollama_utils import ensure_ollama_readiness, is_model_available, is_ollama_running
 from agent.utils.reliability_checks import check_training_script_save_pattern
 from agent.utils.terminal_display import (
     get_console,
@@ -45,32 +46,35 @@ from agent.utils.terminal_display import (
 
 litellm.drop_params = True
 
-# ── Suggested models shown by `/model` (not a gate) ──────────────────────
-# Any model id accepted by litellm is usable; for the HF router the form is
-# `huggingface/<inference_provider>/<org>/<model>` and users can pick any
-# model supported by any HF inference provider.
-SUGGESTED_MODELS = [
+# ── Available models shown by `/model` ───────────────────────────────────
+# Seeded with well-tested defaults; users can extend with /add-model <ollama/...>.
+# ollama/ models run locally — no API key required.
+AVAILABLE_MODELS: list[dict] = [
+    {"id": "ollama/qwen3.5:4b", "label": "Qwen 3.5 4B (local, free)"},
     {"id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6"},
     {"id": "huggingface/fireworks-ai/MiniMaxAI/MiniMax-M2.5", "label": "MiniMax M2.5"},
     {"id": "huggingface/novita/moonshotai/kimi-k2.5", "label": "Kimi K2.5"},
     {"id": "huggingface/novita/zai-org/glm-5", "label": "GLM 5"},
 ]
+VALID_MODEL_IDS: set[str] = {m["id"] for m in AVAILABLE_MODELS}
 
 
 def _is_valid_model_id(model_id: str) -> bool:
-    """Loose format check — lets users pick any inference-provider model.
+    """Loose format check — lets users pick any supported provider model.
 
     Accepts:
+      • ollama/<model>                         (local Ollama)
       • huggingface/<provider>/<org>/<model>  (HF router)
       • anthropic/<model>
       • openai/<model>
-    Actual availability is verified by the provider when the first call
-    is made; we don't want to maintain a hardcoded allowlist.
+    Actual availability is verified by the provider on the first call.
     """
     if not model_id or "/" not in model_id:
         return False
+    if model_id.startswith("ollama/"):
+        parts = model_id.split("/", 1)
+        return len(parts) == 2 and bool(parts[1])
     if model_id.startswith("huggingface/"):
-        # needs provider + org + model → at least 3 slashes after the prefix
         parts = model_id.split("/")
         return len(parts) >= 4 and all(parts)
     if model_id.startswith(("anthropic/", "openai/")):
@@ -675,12 +679,23 @@ async def get_user_input(prompt_session: PromptSession) -> str:
 # Slash commands are defined in terminal_display
 
 
+def _do_model_switch(model_id: str, config, session_holder: list) -> None:
+    session = session_holder[0] if session_holder else None
+    if session:
+        session.update_model(model_id)
+        print(f"Model switched to {model_id}")
+    else:
+        config.model_name = model_id
+        print(f"Model set to {model_id} (session not started yet)")
+
+
 def _handle_slash_command(
     cmd: str,
     config,
     session_holder: list,
     submission_queue: asyncio.Queue,
     submission_id: list[int],
+    prompt_session=None,
 ) -> Submission | None:
     """
     Handle a slash command. Returns a Submission to enqueue, or None if
@@ -711,33 +726,71 @@ def _handle_slash_command(
     if command == "/model":
         if not arg:
             current = config.model_name if config else ""
+            ollama_up = is_ollama_running()
             print("Current model:")
             print(f"  {current}")
-            print("\nSuggested models (any HF inference-provider model works):")
-            for m in SUGGESTED_MODELS:
+            print("\nAvailable models:")
+            for m in AVAILABLE_MODELS:
                 marker = " <-- current" if m["id"] == current else ""
-                print(f"  {m['id']}  ({m['label']}){marker}")
+                local_tag = ""
+                if m["id"].startswith("ollama/"):
+                    model_name = m["id"].removeprefix("ollama/")
+                    if not ollama_up:
+                        local_tag = " [ollama not running]"
+                    elif not is_model_available(m["id"]):
+                        local_tag = f" [not pulled — run: ollama pull {model_name}]"
+                    else:
+                        local_tag = " [ready]"
+                print(f"  {m['id']}  ({m['label']}){local_tag}{marker}")
             print(
-                "\nPass any id, e.g. huggingface/<provider>/<org>/<model>.\n"
-                "Availability is verified on first use."
+                "\nUse /add-model <ollama/model> to add a local model.\n"
+                "For cloud: any ollama/<model>, huggingface/<provider>/<org>/<model>, "
+                "anthropic/<model>, or openai/<model> id works."
             )
             return None
         if not _is_valid_model_id(arg):
             print(f"Invalid model id format: {arg}")
             print(
                 "Expected one of:\n"
+                "  • ollama/<model>\n"
                 "  • huggingface/<provider>/<org>/<model>\n"
                 "  • anthropic/<model>\n"
                 "  • openai/<model>"
             )
             return None
-        session = session_holder[0] if session_holder else None
-        if session:
-            session.update_model(arg)
-            print(f"Model switched to {arg}")
-        else:
-            config.model_name = arg
-            print(f"Model set to {arg} (session not started yet)")
+        # For Ollama models, verify readiness before switching
+        if arg.startswith("ollama/"):
+            async def _switch_ollama():
+                ready = await ensure_ollama_readiness(arg, prompt_session)
+                if not ready:
+                    return
+                _do_model_switch(arg, config, session_holder)
+            asyncio.ensure_future(_switch_ollama())
+            return None
+        _do_model_switch(arg, config, session_holder)
+        return None
+
+    if command == "/add-model":
+        if not arg:
+            print("Usage: /add-model <ollama/model-name>")
+            print("Example: /add-model ollama/llama3.2:3b")
+            return None
+        model_id = arg if arg.startswith("ollama/") else f"ollama/{arg}"
+        if not _is_valid_model_id(model_id):
+            print(f"Invalid model id: {model_id}")
+            return None
+        if model_id in VALID_MODEL_IDS:
+            print(f"{model_id} is already in the model list.")
+            return None
+
+        async def _add_ollama_model():
+            ready = await ensure_ollama_readiness(model_id, prompt_session)
+            if ready:
+                label = model_id.removeprefix("ollama/")
+                AVAILABLE_MODELS.append({"id": model_id, "label": f"{label} (local)"})
+                VALID_MODEL_IDS.add(model_id)
+                print(f"Added {model_id}. Use /model {model_id} to switch.")
+        asyncio.ensure_future(_add_ollama_model())
         return None
 
     if command == "/yolo":
@@ -767,18 +820,23 @@ async def main():
     # Create prompt session for input (needed early for token prompt)
     prompt_session = PromptSession()
 
-    # HF token — required, prompt if missing
+    # HF token — required unless using a local Ollama model
+    config_path_early = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
+    _early_config = load_config(config_path_early)
+    is_local_model = _early_config.model_name.startswith("ollama/")
+
     hf_token = _get_hf_token()
-    if not hf_token:
+    if not hf_token and not is_local_model:
         hf_token = await _prompt_and_save_hf_token(prompt_session)
 
     # Resolve username for banner
     hf_user = None
-    try:
-        from huggingface_hub import HfApi
-        hf_user = HfApi(token=hf_token).whoami().get("name")
-    except Exception:
-        pass
+    if hf_token:
+        try:
+            from huggingface_hub import HfApi
+            hf_user = HfApi(token=hf_token).whoami().get("name")
+        except Exception:
+            pass
 
     print_banner(hf_user=hf_user)
 
@@ -873,7 +931,8 @@ async def main():
             # Handle slash commands
             if user_input.strip().startswith("/"):
                 sub = _handle_slash_command(
-                    user_input.strip(), config, session_holder, submission_queue, submission_id
+                    user_input.strip(), config, session_holder, submission_queue, submission_id,
+                    prompt_session=prompt_session,
                 )
                 if sub is None:
                     # Command handled locally, loop back for input
@@ -930,19 +989,36 @@ async def headless_main(
 
     logging.basicConfig(level=logging.WARNING)
 
-    hf_token = _get_hf_token()
-    if not hf_token:
-        print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"HF token loaded", file=sys.stderr)
-
     config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
     config = load_config(config_path)
     config.yolo_mode = True  # Auto-approve everything in headless mode
 
     if model:
         config.model_name = model
+
+    is_local_model = config.model_name.startswith("ollama/")
+
+    hf_token = _get_hf_token()
+    if not hf_token and not is_local_model:
+        print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
+        sys.exit(1)
+
+    if hf_token:
+        print("HF token loaded", file=sys.stderr)
+
+    # For Ollama models: verify server is running and model is available
+    if is_local_model:
+        if not is_ollama_running():
+            print(
+                "ERROR: Ollama server is not running. Start it with: ollama serve",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        model_id = config.model_name
+        if not is_model_available(model_id):
+            name = model_id.removeprefix("ollama/")
+            print(f"ERROR: Model '{name}' is not pulled. Run: ollama pull {name}", file=sys.stderr)
+            sys.exit(1)
 
     if max_iterations is not None:
         config.max_iterations = max_iterations
@@ -1091,7 +1167,7 @@ def cli():
 
     parser = argparse.ArgumentParser(description="Hugging Face Agent CLI")
     parser.add_argument("prompt", nargs="?", default=None, help="Run headlessly with this prompt")
-    parser.add_argument("--model", "-m", default=None, help=f"Model to use (default: from config)")
+    parser.add_argument("--model", "-m", default=None, help="Model to use (default: from config)")
     parser.add_argument("--max-iterations", type=int, default=None,
                         help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
     parser.add_argument("--no-stream", action="store_true",

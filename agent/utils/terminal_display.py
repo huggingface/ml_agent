@@ -74,8 +74,8 @@ def print_init_done(tool_count: int = 0) -> None:
     import time
     f = _console.file
     # Overwrite the "Tools: loading..." line with actual count
-    f.write(f"\033[A\033[A\033[A\033[K")  # Move up 3 lines (blank + help + blank) then up to tools line
-    f.write(f"\033[A\033[K")
+    f.write("\033[A\033[A\033[A\033[K")  # Move up 3 lines (blank + help + blank) then up to tools line
+    f.write("\033[A\033[K")
     gold = "\033[38;2;180;140;40m"
     reset = "\033[0m"
     tool_text = f"{_I}  Tools: {tool_count} loaded"
@@ -236,7 +236,9 @@ def print_tool_log(tool: str, log: str) -> None:
 # ── Messages ───────────────────────────────────────────────────────────
 
 def print_markdown(text: str) -> None:
-    import io, time, random
+    import io
+    import time
+    import random
     from rich.padding import Padding
 
     _console.print()
@@ -318,6 +320,7 @@ HELP_TEXT = f"""\
 {_I}  [cyan]/undo[/cyan]            Undo last turn
 {_I}  [cyan]/compact[/cyan]         Compact context window
 {_I}  [cyan]/model[/cyan] [id]      Show available models or switch
+{_I}  [cyan]/add-model[/cyan] [id]  Add a local Ollama model (e.g. /add-model ollama/llama3.2:3b)
 {_I}  [cyan]/yolo[/cyan]            Toggle auto-approve mode
 {_I}  [cyan]/status[/cyan]          Current model & turn count
 {_I}  [cyan]/quit[/cyan]            Exit"""

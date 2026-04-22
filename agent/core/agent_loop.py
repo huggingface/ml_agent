@@ -26,45 +26,57 @@ def _resolve_hf_router_params(
     model_name: str, session_hf_token: str | None = None
 ) -> dict:
     """
-    Build LiteLLM kwargs for HuggingFace Router models.
+    Build LiteLLM kwargs based on model prefix.
 
-    api-inference.huggingface.co is deprecated; the new router lives at
-    router.huggingface.co/<provider>/v3/openai.  LiteLLM's built-in
-    ``huggingface/`` provider still targets the old endpoint, so we
-    rewrite model names to ``openai/`` and supply the correct api_base.
+    ollama/<model>:
+      Routes to local Ollama via its OpenAI-compatible endpoint.
+      OLLAMA_API_BASE env overrides the default http://localhost:11434.
 
-    Input format:  huggingface/<router_provider>/<org>/<model>
-    Example:       huggingface/novita/moonshotai/kimi-k2.5
+    huggingface/<provider>/<org>/<model>:
+      api-inference.huggingface.co is deprecated; the new router lives at
+      router.huggingface.co/<provider>/v3/openai.  LiteLLM's built-in
+      ``huggingface/`` provider still targets the old endpoint, so we
+      rewrite to ``openai/`` with the correct api_base.
+      Token resolution (first non-empty wins):
+        1. INFERENCE_TOKEN env — shared Space key billed to Space owner.
+        2. session.hf_token — user's own token from env / huggingface-cli.
+        3. HF_TOKEN env — belt-and-suspenders fallback.
 
-    Token resolution (first non-empty wins):
-      1. INFERENCE_TOKEN env — shared key on the hosted Space so inference
-         is free for users and billed to the Space owner.
-      2. session.hf_token — the user's own token (CLI or self-hosted),
-         resolved from env / huggingface-cli login / cached token file.
-      3. HF_TOKEN env — belt-and-suspenders fallback for CLI users.
+    Everything else passes through to LiteLLM unchanged.
     """
-    if not model_name.startswith("huggingface/"):
-        return {"model": model_name}
+    # ── Ollama (local) ────────────────────────────────────────────────────
+    if model_name.startswith("ollama/"):
+        from agent.utils.ollama_utils import get_ollama_base_url
+        actual_model = model_name.removeprefix("ollama/")
+        api_base = get_ollama_base_url()
+        if not api_base.endswith("/v1"):
+            api_base = f"{api_base.rstrip('/')}/v1"
+        return {
+            "model": f"openai/{actual_model}",
+            "api_base": api_base,
+            "api_key": "ollama",  # required by LiteLLM but ignored by Ollama
+        }
 
-    parts = model_name.split(
-        "/", 2
-    )  # ['huggingface', 'novita', 'moonshotai/kimi-k2.5']
-    if len(parts) < 3:
-        return {"model": model_name}
+    # ── HuggingFace Inference Router ──────────────────────────────────────
+    if model_name.startswith("huggingface/"):
+        parts = model_name.split("/", 2)  # ['huggingface', 'novita', 'org/model']
+        if len(parts) < 3:
+            return {"model": model_name}
+        router_provider = parts[1]
+        actual_model = parts[2]
+        api_key = (
+            os.environ.get("INFERENCE_TOKEN")
+            or session_hf_token
+            or os.environ.get("HF_TOKEN")
+        )
+        return {
+            "model": f"openai/{actual_model}",
+            "api_base": f"https://router.huggingface.co/{router_provider}/v3/openai",
+            "api_key": api_key,
+        }
 
-    router_provider = parts[1]
-    actual_model = parts[2]
-    api_key = (
-        os.environ.get("INFERENCE_TOKEN")
-        or session_hf_token
-        or os.environ.get("HF_TOKEN")
-    )
-
-    return {
-        "model": f"openai/{actual_model}",
-        "api_base": f"https://router.huggingface.co/{router_provider}/v3/openai",
-        "api_key": api_key,
-    }
+    # ── Everything else (anthropic/, openai/, …) — pass through ──────────
+    return {"model": model_name}
 
 
 def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:

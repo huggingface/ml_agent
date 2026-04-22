@@ -6,7 +6,6 @@ and injects a corrective prompt to break the cycle.
 """
 
 import hashlib
-import json
 import logging
 from dataclasses import dataclass
 
