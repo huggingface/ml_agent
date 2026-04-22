@@ -36,15 +36,33 @@ def test_hf_adapter_adds_bill_to_header(monkeypatch):
     assert params["api_key"] == "hf-space-token"
 
 
+def test_opencode_go_adapter_uses_api_key(monkeypatch):
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "go-test-key")
+
+    params = _resolve_llm_params("opencode-go/kimi-k2.6")
+
+    assert params == {
+        "model": "openai/kimi-k2.6",
+        "api_base": "https://opencode.ai/zen/go/v1",
+        "api_key": "go-test-key",
+    }
+
+
 def test_model_catalog_comes_from_adapters():
     catalog = build_model_catalog("anthropic/claude-opus-4-6")
 
     assert catalog["current"] == "anthropic/claude-opus-4-6"
     assert any(model["provider"] == "anthropic" for model in catalog["available"])
     assert any(model["provider"] == "huggingface" for model in catalog["available"])
+    assert any(model["provider"] == "opencode_go" for model in catalog["available"])
+    assert any(provider["id"] == "opencode_go" for provider in catalog["providers"])
     assert any(provider["id"] == "huggingface" for provider in catalog["providers"])
 
 
 def test_model_validation_accepts_free_form_hf_ids():
     assert is_valid_model_name("moonshotai/Kimi-K2.6:fastest") is True
     assert is_valid_model_name("huggingface/moonshotai/Kimi-K2.6:novita") is True
+
+
+def test_model_validation_accepts_free_form_opencode_go_ids():
+    assert is_valid_model_name("opencode-go/glm-5.1") is True

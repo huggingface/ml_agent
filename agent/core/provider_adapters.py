@@ -159,8 +159,53 @@ class HfRouterAdapter(ProviderAdapter):
         return params
 
 
+@dataclass(frozen=True)
+class OpenCodeGoAdapter(ProviderAdapter):
+    prefixes: tuple[str, ...] = ("opencode-go/",)
+
+    def suggested_models(self) -> tuple[SuggestedModel, ...]:
+        return (
+            SuggestedModel(
+                id="opencode-go/kimi-k2.6",
+                label="Kimi K2.6",
+                description="OpenCode Go",
+                provider="opencode_go",
+                provider_label="OpenCode Go",
+                avatar_url="https://huggingface.co/api/avatars/opencode-ai",
+                recommended=True,
+            ),
+        )
+
+    def allows_model_name(self, model_name: str) -> bool:
+        if not self.matches(model_name):
+            return False
+        return bool(model_name.removeprefix("opencode-go/"))
+
+    def build_params(
+        self,
+        model_name: str,
+        session_hf_token: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> dict:
+        model_id = model_name.removeprefix("opencode-go/")
+        api_key = os.environ.get("OPENCODE_GO_API_KEY") or os.environ.get(
+            "OPENCODE_API_KEY"
+        )
+        return {
+            "model": f"openai/{model_id}",
+            "api_base": "https://opencode.ai/zen/go/v1",
+            "api_key": api_key,
+        }
+
+
 ADAPTERS: tuple[ProviderAdapter, ...] = (
     NativeAdapter(provider_id="native", provider_label="Native"),
+    OpenCodeGoAdapter(
+        provider_id="opencode_go",
+        provider_label="OpenCode Go",
+        supports_custom_model=True,
+        custom_model_hint="Use opencode-go/<model-id>, for example opencode-go/kimi-k2.6",
+    ),
     HfRouterAdapter(
         provider_id="huggingface",
         provider_label="Hugging Face Router",
@@ -218,9 +263,15 @@ def find_model_option(model_name: str) -> dict[str, Any] | None:
     if not adapter or not adapter.supports_custom_model:
         return None
 
+    label = model_name
+    if adapter.provider_id == "huggingface":
+        label = model_name.removeprefix("huggingface/")
+    elif adapter.prefixes:
+        label = model_name.removeprefix(adapter.prefixes[0])
+
     return {
         "id": model_name,
-        "label": model_name.removeprefix("huggingface/"),
+        "label": label,
         "description": f"Custom {adapter.provider_label} model",
         "provider": adapter.provider_id,
         "providerLabel": adapter.provider_label,

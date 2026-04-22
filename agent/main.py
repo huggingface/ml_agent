@@ -22,7 +22,11 @@ from prompt_toolkit import PromptSession
 
 from agent.config import load_config
 from agent.core.agent_loop import submission_loop
-from agent.core.provider_adapters import get_available_models, is_valid_model_name
+from agent.core.provider_adapters import (
+    get_available_models,
+    is_valid_model_name,
+    resolve_adapter,
+)
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.utils.reliability_checks import check_training_script_save_pattern
@@ -61,8 +65,10 @@ def _suggested_models() -> list[dict[str, Any]]:
 
 
 def _looks_like_hf_model_id(model_id: str) -> bool:
-    if model_id.startswith(("anthropic/", "openai/")):
-        return False
+    adapter = resolve_adapter(model_id)
+    if adapter:
+        return adapter.provider_id == "huggingface"
+
     bare = model_id.removeprefix("huggingface/").split(":", 1)[0]
     parts = bare.split("/")
     return len(parts) >= 2 and all(parts)
@@ -93,6 +99,11 @@ def _print_model_preflight(model_id: str, console) -> None:
     still allow the switch (the catalog might be lagging).
     """
     if model_id.startswith(("anthropic/", "openai/")):
+        console.print(f"[green]Model switched to {model_id}[/green]")
+        return
+
+    adapter = resolve_adapter(model_id)
+    if adapter and adapter.provider_id != "huggingface":
         console.print(f"[green]Model switched to {model_id}[/green]")
         return
 
