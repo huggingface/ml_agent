@@ -15,14 +15,14 @@ export PATH="/root/.local/bin:$PATH"
 # Clone the agent source (container has git + internet)
 AGENT_DIR="/home/ben/hf_agent"
 git clone --depth 1 --branch posttrain-bench \
-    https://github.com/huggingface/hf_agent.git "$AGENT_DIR"
+    https://github.com/huggingface/ml-intern.git "$AGENT_DIR"
 
 cd "$AGENT_DIR"
 
 # Install agent into the system Python (3.11) which already has
 # torch, trl, vllm, flash-attn, etc. pre-installed in the Docker image.
 # This avoids creating an isolated venv that can't see those packages.
-uv pip install --system -e ".[agent]"
+uv pip install --system -e .
 
 # Return to task directory (evaluate.py, timer.sh, templates/)
 cd /home/ben/task

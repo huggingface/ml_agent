@@ -98,9 +98,9 @@ srun \
         # Clone agent and install into system Python (3.11) which already
         # has torch, trl, vllm, flash-attn etc. from the Docker image.
         git clone --depth 1 --branch posttrain-bench \
-            https://github.com/huggingface/hf_agent.git /tmp/hf_agent
+            https://github.com/huggingface/ml-intern.git /tmp/hf_agent
         cd /tmp/hf_agent
-        uv pip install --system -e ".[agent]"
+        uv pip install --system -e .
 
         # Run agent in the task directory
         cd /home/ben/task

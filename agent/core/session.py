@@ -15,44 +15,38 @@ from agent.context_manager.manager import ContextManager
 
 logger = logging.getLogger(__name__)
 
-# Local max-token lookup — avoids litellm.get_max_tokens() which can hang
-# on network calls for certain providers (known litellm issue).
-_MAX_TOKENS_MAP: dict[str, int] = {
-    # Anthropic
-    "anthropic/claude-opus-4-6": 200_000,
-    "anthropic/claude-opus-4-5-20251101": 200_000,
-    "anthropic/claude-sonnet-4-5-20250929": 200_000,
-    "anthropic/claude-sonnet-4-20250514": 200_000,
-    "anthropic/claude-haiku-3-5-20241022": 200_000,
-    "anthropic/claude-3-5-sonnet-20241022": 200_000,
-    "anthropic/claude-3-opus-20240229": 200_000,
-    "huggingface/fireworks-ai/MiniMaxAI/MiniMax-M2.5": 200_000,
-    "huggingface/novita/minimax/minimax-m2.1": 196_608,
-    "huggingface/novita/moonshotai/kimi-k2.5": 262_144,
-    "huggingface/novita/zai-org/glm-5": 200_000,
-}
 _DEFAULT_MAX_TOKENS = 200_000
 
 
 def _get_max_tokens_safe(model_name: str) -> int:
-    """Return the max context window for a model without network calls."""
-    tokens = _MAX_TOKENS_MAP.get(model_name)
-    if tokens:
-        return tokens
-    # Fallback: try litellm but with a short timeout via threading
-    try:
-        from litellm import get_max_tokens
+    """Return the max input-context tokens for a model.
 
-        result = get_max_tokens(model_name)
-        if result and isinstance(result, int):
-            return result
-        logger.warning(
-            f"get_max_tokens returned {result} for {model_name}, using default"
-        )
-        return _DEFAULT_MAX_TOKENS
-    except Exception as e:
-        logger.warning(f"get_max_tokens failed for {model_name}, using default: {e}")
-        return _DEFAULT_MAX_TOKENS
+    Primary source: ``litellm.get_model_info(model)['max_input_tokens']`` —
+    LiteLLM maintains an upstream catalog that knows Claude Opus 4.6 is
+    1M, GPT-5 is 272k, Sonnet 4.5 is 200k, and so on. Strips any HF routing
+    suffix / huggingface/ prefix so tagged ids ('moonshotai/Kimi-K2.6:cheapest')
+    look up the bare model. Falls back to a conservative 200k default for
+    models not in the catalog (typically HF-router-only models).
+    """
+    from litellm import get_model_info
+
+    candidates = [model_name]
+    stripped = model_name.removeprefix("huggingface/").split(":", 1)[0]
+    if stripped != model_name:
+        candidates.append(stripped)
+    for candidate in candidates:
+        try:
+            info = get_model_info(candidate)
+            max_input = info.get("max_input_tokens") if info else None
+            if isinstance(max_input, int) and max_input > 0:
+                return max_input
+        except Exception:
+            continue
+    logger.info(
+        "No litellm.get_model_info entry for %s, falling back to %d",
+        model_name, _DEFAULT_MAX_TOKENS,
+    )
+    return _DEFAULT_MAX_TOKENS
 
 
 class OpType(Enum):
@@ -91,7 +85,7 @@ class Session:
         self.stream = stream
         tool_specs = tool_router.get_tool_specs_for_llm() if tool_router else []
         self.context_manager = context_manager or ContextManager(
-            max_context=_get_max_tokens_safe(config.model_name),
+            model_max_tokens=_get_max_tokens_safe(config.model_name),
             compact_size=0.1,
             untouched_messages=5,
             tool_specs=tool_specs,
@@ -114,6 +108,16 @@ class Session:
         self.session_start_time = datetime.now().isoformat()
         self.turn_count: int = 0
         self.last_auto_save_turn: int = 0
+
+        # Per-model probed reasoning-effort cache. Populated by the probe
+        # on /model switch, read by ``effective_effort_for`` below. Keys are
+        # raw model ids (including any ``:tag``). Values:
+        #   str  → the effort level to send (may be a downgrade from the
+        #          preference, e.g. "high" when user asked for "max")
+        #   None → model rejected all efforts in the cascade; send no
+        #          thinking params at all
+        # Key absent → not probed yet; fall back to the raw preference.
+        self.model_effective_effort: dict[str, str | None] = {}
 
     async def send_event(self, event: Event) -> None:
         """Send event back to client and log to trajectory"""
@@ -143,7 +147,20 @@ class Session:
     def update_model(self, model_name: str) -> None:
         """Switch the active model and update the context window limit."""
         self.config.model_name = model_name
-        self.context_manager.max_context = _get_max_tokens_safe(model_name)
+        self.context_manager.model_max_tokens = _get_max_tokens_safe(model_name)
+
+    def effective_effort_for(self, model_name: str) -> str | None:
+        """Resolve the effort level to actually send for ``model_name``.
+
+        Returns the probed result when we have one (may be ``None`` meaning
+        "model doesn't do thinking, strip it"), else the raw preference.
+        Unknown-model case falls back to the preference so a stale cache
+        from a prior ``/model`` can't poison research sub-calls that use a
+        different model id.
+        """
+        if model_name in self.model_effective_effort:
+            return self.model_effective_effort[model_name]
+        return self.config.reasoning_effort
 
     def increment_turn(self) -> None:
         """Increment turn counter (called after each user interaction)"""

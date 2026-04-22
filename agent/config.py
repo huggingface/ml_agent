@@ -28,11 +28,20 @@ class Config(BaseModel):
     auto_save_interval: int = 3  # Save every N user turns (0 = disabled)
     yolo_mode: bool = False  # Auto-approve all tool calls without confirmation
     max_iterations: int = 300  # Max LLM calls per agent turn (-1 = unlimited)
-    reasoning_effort: str | None = None  # e.g. "low", "medium", "high" for o-series models
 
     # Permission control parameters
     confirm_cpu_jobs: bool = True
     auto_file_upload: bool = False
+
+    # Reasoning effort *preference* — the ceiling the user wants. The probe
+    # on `/model` walks a cascade down from here (``max`` → ``xhigh`` → ``high``
+    # → …) and caches per-model what the provider actually accepted in
+    # ``Session.model_effective_effort``. Default ``max`` because we'd rather
+    # burn tokens thinking than ship a wrong ML recipe; the cascade lands on
+    # whichever level the model supports (``high`` for GPT-5 / HF router,
+    # ``xhigh`` or ``max`` for Anthropic 4.6 / 4.7). ``None`` = thinking off.
+    # Valid values: None | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+    reasoning_effort: str | None = "max"
 
 
 def substitute_env_vars(obj: Any) -> Any:

@@ -5,25 +5,20 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    # Core dependencies
     "datasets>=4.4.1",
-    # Core dependencies (always required)
     "pydantic>=2.12.3",
     "python-dotenv>=1.2.1",
-]
-
-[project.optional-dependencies]
-# Agent runtime dependencies
-agent = [
-    "requests>=2.32.5",
-    "litellm>=1.0.0",
+    # Agent runtime dependencies
+    "requests>=2.33.0",
+    "litellm>=1.83.0",
     "huggingface-hub>=1.0.1",
-    "fastmcp>=2.4.0",
+    "fastmcp>=3.2.0",
     "prompt-toolkit>=3.0.0",
     "thefuzz>=0.22.1",
     "rich>=13.0.0",
     "nbconvert>=7.16.6",
     "nbformat>=5.10.4",
-    "datasets>=4.3.0",  # For session logging to HF datasets
     "whoosh>=2.7.4",
     # Web backend dependencies
     "fastapi>=0.115.0",
@@ -31,6 +26,8 @@ agent = [
     "httpx>=0.27.0",
     "websockets>=13.0",
 ]
+
+[project.optional-dependencies]
 
 # Evaluation/benchmarking dependencies
 eval = [
@@ -45,10 +42,13 @@ dev = [
     "pytest>=9.0.2",
 ]
 
-# All dependencies (agent + eval + dev)
+# All dependencies (eval + dev)
 all = [
-    "hf-agent[agent,eval,dev]",
+    "hf-agent[eval,dev]",
 ]
+
+[project.scripts]
+ml-intern = "agent.main:cli"
 
 [build-system]
 requires = ["setuptools>=64"]

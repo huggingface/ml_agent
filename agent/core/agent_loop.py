@@ -13,6 +13,7 @@ from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
 from agent.core.doom_loop import check_for_doom_loop
+from agent.core.llm_params import _resolve_llm_params
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.tools.jobs_tool import CPU_FLAVORS
@@ -20,40 +21,6 @@ from agent.tools.jobs_tool import CPU_FLAVORS
 logger = logging.getLogger(__name__)
 
 ToolCall = ChatCompletionMessageToolCall
-# Explicit inference token for LLM API calls (separate from user OAuth tokens).
-_INFERENCE_API_KEY = os.environ.get("INFERENCE_TOKEN")
-
-
-def _resolve_hf_router_params(model_name: str) -> dict:
-    """
-    Build LiteLLM kwargs for HuggingFace Router models.
-
-    api-inference.huggingface.co is deprecated; the new router lives at
-    router.huggingface.co/<provider>/v3/openai.  LiteLLM's built-in
-    ``huggingface/`` provider still targets the old endpoint, so we
-    rewrite model names to ``openai/`` and supply the correct api_base.
-
-    Input format:  huggingface/<router_provider>/<org>/<model>
-    Example:       huggingface/novita/moonshotai/kimi-k2.5
-    """
-    if not model_name.startswith("huggingface/"):
-        return {"model": model_name}
-
-    parts = model_name.split(
-        "/", 2
-    )  # ['huggingface', 'novita', 'moonshotai/kimi-k2.5']
-    if len(parts) < 3:
-        return {"model": model_name}
-
-    router_provider = parts[1]
-    actual_model = parts[2]
-    api_key = _INFERENCE_API_KEY
-
-    return {
-        "model": f"openai/{actual_model}",
-        "api_base": f"https://router.huggingface.co/{router_provider}/v3/openai",
-        "api_key": api_key,
-    }
 
 
 def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
@@ -169,6 +136,58 @@ def _is_transient_error(error: Exception) -> bool:
     return any(pattern in err_str for pattern in transient_patterns)
 
 
+def _is_effort_config_error(error: Exception) -> bool:
+    """Catch the two 400s the effort probe also handles — thinking
+    unsupported for this model, or the specific effort level invalid.
+
+    This is our safety net for the case where ``/effort`` was changed
+    mid-conversation (which clears the probe cache) and the new level
+    doesn't work for the current model. We heal the cache and retry once.
+    """
+    from agent.core.effort_probe import _is_invalid_effort, _is_thinking_unsupported
+    return _is_thinking_unsupported(error) or _is_invalid_effort(error)
+
+
+async def _heal_effort_and_rebuild_params(
+    session: Session, error: Exception, llm_params: dict,
+) -> dict:
+    """Update the session's effort cache based on ``error`` and return new
+    llm_params. Called only when ``_is_effort_config_error(error)`` is True.
+
+    Two branches:
+      • thinking-unsupported → cache ``None`` for this model, next call
+        strips thinking entirely
+      • invalid-effort → re-run the full cascade probe; the result lands
+        in the cache
+    """
+    from agent.core.effort_probe import ProbeInconclusive, _is_thinking_unsupported, probe_effort
+
+    model = session.config.model_name
+    if _is_thinking_unsupported(error):
+        session.model_effective_effort[model] = None
+        logger.info("healed: %s doesn't support thinking — stripped", model)
+    else:
+        try:
+            outcome = await probe_effort(
+                model, session.config.reasoning_effort, session.hf_token,
+            )
+            session.model_effective_effort[model] = outcome.effective_effort
+            logger.info(
+                "healed: %s effort cascade → %s", model, outcome.effective_effort,
+            )
+        except ProbeInconclusive:
+            # Transient during healing — strip thinking for safety, next
+            # call will either succeed or surface the real error.
+            session.model_effective_effort[model] = None
+            logger.info("healed: %s probe inconclusive — stripped", model)
+
+    return _resolve_llm_params(
+        model,
+        session.hf_token,
+        reasoning_effort=session.effective_effort_for(model),
+    )
+
+
 def _friendly_error_message(error: Exception) -> str | None:
     """Return a user-friendly message for known error types, or None to fall back to traceback."""
     err_str = str(error).lower()
@@ -190,33 +209,50 @@ def _friendly_error_message(error: Exception) -> str | None:
             "at your model provider's dashboard."
         )
 
+    if "not supported by provider" in err_str or "no provider supports" in err_str:
+        return (
+            "The model isn't served by the provider you pinned.\n\n"
+            "Drop the ':<provider>' suffix to let the HF router auto-pick a "
+            "provider, or use '/model' (no arg) to see which providers host "
+            "which models."
+        )
+
+    if "model_not_found" in err_str or (
+        "model" in err_str
+        and ("not found" in err_str or "does not exist" in err_str)
+    ):
+        return (
+            "Model not found. Use '/model' to list suggestions, or paste an "
+            "HF model id like 'MiniMaxAI/MiniMax-M2.7'. Availability is shown "
+            "when you switch."
+        )
+
     return None
 
 
 async def _compact_and_notify(session: Session) -> None:
     """Run compaction and send event if context was reduced."""
-    old_length = session.context_manager.context_length
-    max_ctx = session.context_manager.max_context
+    cm = session.context_manager
+    old_usage = cm.running_context_usage
     logger.debug(
-        "Compaction check: context_length=%d, max_context=%d, needs_compact=%s",
-        old_length, max_ctx, old_length > max_ctx,
+        "Compaction check: usage=%d, max=%d, threshold=%d, needs_compact=%s",
+        old_usage, cm.model_max_tokens, cm.compaction_threshold, cm.needs_compaction,
     )
-    tool_specs = session.tool_router.get_tool_specs_for_llm()
-    await session.context_manager.compact(
+    await cm.compact(
         model_name=session.config.model_name,
-        tool_specs=tool_specs,
+        tool_specs=session.tool_router.get_tool_specs_for_llm(),
+        hf_token=session.hf_token,
     )
-    new_length = session.context_manager.context_length
-    if new_length != old_length:
+    new_usage = cm.running_context_usage
+    if new_usage != old_usage:
         logger.warning(
             "Context compacted: %d -> %d tokens (max=%d, %d messages)",
-            old_length, new_length, max_ctx,
-            len(session.context_manager.items),
+            old_usage, new_usage, cm.model_max_tokens, len(cm.items),
         )
         await session.send_event(
             Event(
                 event_type="compacted",
-                data={"old_tokens": old_length, "new_tokens": new_length},
+                data={"old_tokens": old_usage, "new_tokens": new_usage},
             )
         )
 
@@ -259,6 +295,7 @@ class LLMResult:
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
     response = None
+    _healed_effort = False  # one-shot safety net per call
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
             response = await acompletion(
@@ -274,6 +311,14 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         except ContextWindowExceededError:
             raise
         except Exception as e:
+            if not _healed_effort and _is_effort_config_error(e):
+                _healed_effort = True
+                llm_params = await _heal_effort_and_rebuild_params(session, e, llm_params)
+                await session.send_event(Event(
+                    event_type="tool_log",
+                    data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
+                ))
+                continue
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _is_transient_error(e):
                 _delay = _LLM_RETRY_DELAYS[_llm_attempt]
                 logger.warning(
@@ -344,6 +389,7 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
 async def _call_llm_non_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM without streaming, emit assistant_message at the end."""
     response = None
+    _healed_effort = False
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
             response = await acompletion(
@@ -358,6 +404,14 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
         except ContextWindowExceededError:
             raise
         except Exception as e:
+            if not _healed_effort and _is_effort_config_error(e):
+                _healed_effort = True
+                llm_params = await _heal_effort_and_rebuild_params(session, e, llm_params)
+                await session.send_event(Event(
+                    event_type="tool_log",
+                    data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
+                ))
+                continue
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _is_transient_error(e):
                 _delay = _LLM_RETRY_DELAYS[_llm_attempt]
                 logger.warning(
@@ -506,9 +560,14 @@ class Handlers:
             tools = session.tool_router.get_tool_specs_for_llm()
             try:
                 # ── Call the LLM (streaming or non-streaming) ──
-                llm_params = _resolve_hf_router_params(session.config.model_name)
-                if session.config.reasoning_effort:
-                    llm_params["reasoning_effort"] = session.config.reasoning_effort
+                # Pull the per-model probed effort from the session cache when
+                # available; fall back to the raw preference for models we
+                # haven't probed yet (e.g. research sub-model).
+                llm_params = _resolve_llm_params(
+                    session.config.model_name,
+                    session.hf_token,
+                    reasoning_effort=session.effective_effort_for(session.config.model_name),
+                )
                 if session.stream:
                     llm_result = await _call_llm_streaming(session, messages, tools, llm_params)
                 else:
@@ -588,13 +647,13 @@ class Handlers:
                     logger.debug(
                         "Agent loop ending: no tool calls. "
                         "finish_reason=%s, token_count=%d, "
-                        "context_length=%d, max_context=%d, "
+                        "usage=%d, model_max_tokens=%d, "
                         "iteration=%d/%d, "
                         "response_text=%s",
                         finish_reason,
                         token_count,
-                        session.context_manager.context_length,
-                        session.context_manager.max_context,
+                        session.context_manager.running_context_usage,
+                        session.context_manager.model_max_tokens,
                         iteration,
                         max_iterations,
                         (content or "")[:500],
@@ -702,7 +761,7 @@ class Handlers:
                         if not valid:
                             return (tc, name, args, err, False)
                         out, ok = await session.tool_router.call_tool(
-                            name, args, session=session
+                            name, args, session=session, tool_call_id=tc.id
                         )
                         return (tc, name, args, out, ok)
 
@@ -797,17 +856,13 @@ class Handlers:
 
             except ContextWindowExceededError:
                 # Force compact and retry this iteration
+                cm = session.context_manager
                 logger.warning(
                     "ContextWindowExceededError at iteration %d — forcing compaction "
-                    "(context_length=%d, max_context=%d, messages=%d)",
-                    iteration,
-                    session.context_manager.context_length,
-                    session.context_manager.max_context,
-                    len(session.context_manager.items),
+                    "(usage=%d, model_max_tokens=%d, messages=%d)",
+                    iteration, cm.running_context_usage, cm.model_max_tokens, len(cm.items),
                 )
-                session.context_manager.context_length = (
-                    session.context_manager.max_context + 1
-                )
+                cm.running_context_usage = cm.model_max_tokens + 1
                 await _compact_and_notify(session)
                 continue
 
