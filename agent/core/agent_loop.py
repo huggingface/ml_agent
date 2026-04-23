@@ -17,6 +17,7 @@ from agent.core.llm_params import _resolve_llm_params
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.tools.jobs_tool import CPU_FLAVORS
+from agent.utils.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -844,6 +845,14 @@ class Handlers:
                         data={"tools": tools_data, "count": len(tools_data)},
                     ))
 
+                    # Send notification for approval required
+                    if session.notification_service:
+                        await session.notification_service.notify_approval_required(
+                            tools=tools_data,
+                            count=len(tools_data),
+                            session_id=session.session_id,
+                        )
+
                     # Store all approval-requiring tools (ToolCall objects for execution)
                     session.pending_approval = {
                         "tool_calls": [tc for tc, _, _ in approval_required_tools],
@@ -879,6 +888,8 @@ class Handlers:
                         data={"error": error_msg},
                     )
                 )
+                if session.notification_service:
+                    await session.notification_service.notify_error(error_msg, session.session_id)
                 errored = True
                 break
 
@@ -1207,10 +1218,20 @@ async def submission_loop(
     This is the core of the agent (like submission_loop in codex.rs:1259-1340)
     """
 
+    # Initialize notification service from config
+    notification_service = None
+    if config and config.notifications:
+        try:
+            notification_service = NotificationService(
+                [p.model_dump() for p in config.notifications]
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize notification service: {e}")
+
     # Create session with tool router
     session = Session(
         event_queue, config=config, tool_router=tool_router, hf_token=hf_token,
-        local_mode=local_mode, stream=stream,
+        local_mode=local_mode, stream=stream, notification_service=notification_service,
     )
     if session_holder is not None:
         session_holder[0] = session

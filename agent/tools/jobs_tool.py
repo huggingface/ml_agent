@@ -584,6 +584,13 @@ class HfJobsTool:
                     )
                 )
 
+            # Send notification for job completion/failure
+            if self.session:
+                if final_status == "COMPLETED":
+                    await self.session.notify_job_complete(job.id, final_status)
+                else:
+                    await self.session.notify_job_failed(job.id, final_status)
+
             # Filter out UV package installation output
             filtered_logs = _filter_uv_install_output(all_logs)
 

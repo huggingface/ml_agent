@@ -79,6 +79,7 @@ class Session:
         hf_token: str | None = None,
         local_mode: bool = False,
         stream: bool = True,
+        notification_service=None,
     ):
         self.hf_token: Optional[str] = hf_token
         self.tool_router = tool_router
@@ -102,6 +103,7 @@ class Session:
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
         self._running_job_ids: set[str] = set()  # HF job IDs currently executing
+        self.notification_service = notification_service
 
         # Session trajectory logging
         self.logged_events: list[dict] = []
@@ -148,6 +150,21 @@ class Session:
         """Switch the active model and update the context window limit."""
         self.config.model_name = model_name
         self.context_manager.model_max_tokens = _get_max_tokens_safe(model_name)
+
+    async def notify_job_complete(self, job_id: str, status: str) -> None:
+        """Send notification when a job completes."""
+        if self.notification_service:
+            await self.notification_service.notify_job_complete(job_id, status, self.session_id)
+
+    async def notify_job_failed(self, job_id: str, error: str) -> None:
+        """Send notification when a job fails."""
+        if self.notification_service:
+            await self.notification_service.notify_job_failed(job_id, error, self.session_id)
+
+    async def notify_session_saved(self, repo_id: str | None = None) -> None:
+        """Send notification when session trajectory is saved."""
+        if self.notification_service:
+            await self.notification_service.notify_session_saved(self.session_id, repo_id)
 
     def effective_effort_for(self, model_name: str) -> str | None:
         """Resolve the effort level to actually send for ``model_name``.
@@ -279,6 +296,10 @@ class Session:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,  # Detach from parent
             )
+
+            # Notify session saved
+            if self.notification_service:
+                asyncio.create_task(self.notify_session_saved(repo_id))
         except Exception as e:
             logger.warning(f"Failed to spawn upload subprocess: {e}")
 
