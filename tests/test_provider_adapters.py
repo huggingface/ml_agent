@@ -257,6 +257,61 @@ def test_hf_validation_excludes_new_provider_prefixes():
     assert hf.provider_id == "openrouter"
 
 
+def test_model_catalog_hides_local_providers_when_unreachable(monkeypatch):
+    monkeypatch.setattr(providers.OllamaAdapter, "available_models", lambda self: ())
+    monkeypatch.setattr(providers.LmStudioAdapter, "available_models", lambda self: ())
+    monkeypatch.setattr(providers.VllmAdapter, "available_models", lambda self: ())
+
+    catalog = providers.build_model_catalog("anthropic/claude-opus-4-6")
+    provider_ids = {p["id"] for p in catalog["providers"]}
+
+    assert "ollama" not in provider_ids
+    assert "lm_studio" not in provider_ids
+    assert "vllm" not in provider_ids
+
+
+def test_model_catalog_includes_local_providers_when_discovered(monkeypatch):
+    dynamic = (
+        providers.SuggestedModel(
+            id="ollama/llama3.1",
+            label="llama3.1",
+            description="Ollama",
+            provider="ollama",
+            provider_label="Ollama",
+            avatar_url="avatar",
+            source="dynamic",
+        ),
+    )
+    monkeypatch.setattr(
+        providers.OllamaAdapter, "available_models", lambda self: dynamic
+    )
+
+    catalog = providers.build_model_catalog("ollama/llama3.1")
+
+    assert any(m["id"] == "ollama/llama3.1" for m in catalog["available"])
+    assert any(p["id"] == "ollama" for p in catalog["providers"])
+
+
+def test_model_catalog_openai_compat_visibility_depends_on_env(monkeypatch):
+    monkeypatch.delenv("OPENAI_COMPAT_BASE_URL", raising=False)
+    hidden = providers.build_model_catalog("anthropic/claude-opus-4-6")
+    assert not any(p["id"] == "openai_compat" for p in hidden["providers"])
+
+    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "http://localhost:8080/v1")
+    shown = providers.build_model_catalog("anthropic/claude-opus-4-6")
+    assert any(p["id"] == "openai_compat" for p in shown["providers"])
+
+
+def test_model_catalog_includes_current_info_for_custom_model(monkeypatch):
+    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "http://localhost:8080/v1")
+
+    catalog = providers.build_model_catalog("openai-compat/my-model")
+
+    assert catalog["currentInfo"] is not None
+    assert catalog["currentInfo"]["id"] == "openai-compat/my-model"
+    assert catalog["currentInfo"]["source"] == "custom"
+
+
 def test_cli_validation_matches_provider_validation():
     assert is_valid_model_id("openai/gpt-5") is True
     assert is_valid_model_id("moonshotai/Kimi-K2.6:fastest") is True

@@ -1,5 +1,17 @@
 import { useState, useCallback, useEffect, useRef, KeyboardEvent } from 'react';
-import { Box, TextField, IconButton, CircularProgress, Typography, Menu, MenuItem, ListItemIcon, ListItemText, Chip } from '@mui/material';
+import {
+  Box,
+  TextField,
+  IconButton,
+  CircularProgress,
+  Typography,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Chip,
+  ListSubheader,
+} from '@mui/material';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
@@ -8,58 +20,39 @@ import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
 import { useAgentStore } from '@/store/agentStore';
 import { FIRST_FREE_MODEL_PATH } from '@/utils/model';
+import CustomModelDialog from '@/components/Chat/CustomModelDialog';
 
-// Model configuration
 interface ModelOption {
   id: string;
-  name: string;
+  label: string;
   description: string;
-  modelPath: string;
-  avatarUrl: string;
+  provider: string;
+  providerLabel: string;
+  avatarUrl?: string;
   recommended?: boolean;
+  source?: string;
 }
 
-const getHfAvatarUrl = (modelId: string) => {
-  const org = modelId.split('/')[0];
-  return `https://huggingface.co/api/avatars/${org}`;
-};
+interface ProviderOption {
+  id: string;
+  label: string;
+  avatarUrl?: string;
+  supportsCustomModel?: boolean;
+  customModelHint?: string;
+  customModelMode?: string;
+  prefix?: string;
+}
 
-const MODEL_OPTIONS: ModelOption[] = [
-  {
-    id: 'kimi-k2.6',
-    name: 'Kimi K2.6',
-    description: 'Novita',
-    modelPath: 'moonshotai/Kimi-K2.6',
-    avatarUrl: getHfAvatarUrl('moonshotai/Kimi-K2.6'),
-    recommended: true,
-  },
-  {
-    id: 'claude-opus',
-    name: 'Claude Opus 4.6',
-    description: 'Anthropic',
-    modelPath: 'anthropic/claude-opus-4-6',
-    avatarUrl: 'https://huggingface.co/api/avatars/Anthropic',
-    recommended: true,
-  },
-  {
-    id: 'minimax-m2.7',
-    name: 'MiniMax M2.7',
-    description: 'Novita',
-    modelPath: 'MiniMaxAI/MiniMax-M2.7',
-    avatarUrl: getHfAvatarUrl('MiniMaxAI/MiniMax-M2.7'),
-  },
-  {
-    id: 'glm-5.1',
-    name: 'GLM 5.1',
-    description: 'Together',
-    modelPath: 'zai-org/GLM-5.1',
-    avatarUrl: getHfAvatarUrl('zai-org/GLM-5.1'),
-  },
-];
+interface ModelCatalogResponse {
+  current?: string;
+  currentInfo?: ModelOption | null;
+  available?: ModelOption[];
+  providers?: ProviderOption[];
+}
 
-const findModelByPath = (path: string): ModelOption | undefined => {
-  return MODEL_OPTIONS.find(m => m.modelPath === path || path?.includes(m.id));
-};
+interface SessionResponse {
+  model?: string;
+}
 
 interface ChatInputProps {
   sessionId?: string;
@@ -70,45 +63,145 @@ interface ChatInputProps {
   placeholder?: string;
 }
 
-const isClaudeModel = (m: ModelOption) => m.modelPath.startsWith('anthropic/');
-const firstFreeModel = () => MODEL_OPTIONS.find(m => !isClaudeModel(m)) ?? MODEL_OPTIONS[0];
+const OPENAI_COMPAT_PROVIDER = 'openai_compat';
 
-export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
+const toModelOption = (value: unknown): ModelOption | null => {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.id !== 'string' || typeof v.label !== 'string') return null;
+  return {
+    id: v.id,
+    label: v.label,
+    description: typeof v.description === 'string' ? v.description : '',
+    provider: typeof v.provider === 'string' ? v.provider : '',
+    providerLabel: typeof v.providerLabel === 'string' ? v.providerLabel : '',
+    avatarUrl: typeof v.avatarUrl === 'string' ? v.avatarUrl : undefined,
+    recommended: Boolean(v.recommended),
+    source: typeof v.source === 'string' ? v.source : undefined,
+  };
+};
+
+const toProviderOption = (value: unknown): ProviderOption | null => {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.id !== 'string' || typeof v.label !== 'string') return null;
+  return {
+    id: v.id,
+    label: v.label,
+    avatarUrl: typeof v.avatarUrl === 'string' ? v.avatarUrl : undefined,
+    supportsCustomModel: Boolean(v.supportsCustomModel),
+    customModelHint: typeof v.customModelHint === 'string' ? v.customModelHint : undefined,
+    customModelMode: typeof v.customModelMode === 'string' ? v.customModelMode : undefined,
+    prefix: typeof v.prefix === 'string' ? v.prefix : undefined,
+  };
+};
+
+const isClaudePath = (modelPath: string) => modelPath.startsWith('anthropic/');
+
+const firstFreeModel = (models: ModelOption[]) => {
+  const byPath = models.find((m) => m.id === FIRST_FREE_MODEL_PATH);
+  if (byPath) return byPath;
+  return models.find((m) => !isClaudePath(m.id));
+};
+
+export default function ChatInput({
+  sessionId,
+  onSend,
+  onStop,
+  isProcessing = false,
+  disabled = false,
+  placeholder = 'Ask anything...',
+}: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [selectedModelId, setSelectedModelId] = useState<string>(MODEL_OPTIONS[0].id);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [providerOptions, setProviderOptions] = useState<ProviderOption[]>([]);
+  const [selectedModelPath, setSelectedModelPath] = useState<string>('');
+  const [selectedModelInfo, setSelectedModelInfo] = useState<ModelOption | null>(null);
   const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
+  const [customModalOpen, setCustomModalOpen] = useState(false);
+  const [customPrefix, setCustomPrefix] = useState('openai-compat/');
   const { quota, refresh: refreshQuota } = useUserQuota();
-  // The daily-cap dialog is triggered from two places: (a) a 429 returned
-  // from the chat transport when the user tries to send on Opus over cap —
-  // surfaced via the agent-store flag — and (b) nothing else right now
-  // (switching models is free). Keeping the open state in the store means
-  // the hook layer can flip it without threading props through.
   const claudeQuotaExhausted = useAgentStore((s) => s.claudeQuotaExhausted);
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
   const lastSentRef = useRef<string>('');
 
-  // Model is per-session: fetch this tab's current model every time the
-  // session changes. Other tabs keep their own selections independently.
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCatalog = async () => {
+      try {
+        const res = await apiFetch('/api/config/model');
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as ModelCatalogResponse;
+        const available = (data.available || [])
+          .map(toModelOption)
+          .filter((v): v is ModelOption => v !== null);
+        const providers = (data.providers || [])
+          .map(toProviderOption)
+          .filter((v): v is ProviderOption => v !== null);
+        const currentInfo = toModelOption(data.currentInfo ?? null);
+        if (cancelled) return;
+
+        setModelOptions(available);
+        setProviderOptions(providers);
+        setSelectedModelPath(data.current || '');
+        setSelectedModelInfo(currentInfo);
+      } catch {
+        // ignore
+      }
+    };
+
+    void loadCatalog();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (!sessionId) return;
     let cancelled = false;
     apiFetch(`/api/session/${sessionId}`)
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (cancelled) return;
-        if (data?.model) {
-          const model = findModelByPath(data.model);
-          if (model) setSelectedModelId(model.id);
+      .then((data: SessionResponse | null) => {
+        if (cancelled || !data?.model) return;
+        setSelectedModelPath(data.model);
+        const model = modelOptions.find((m) => m.id === data.model);
+        if (model) {
+          setSelectedModelInfo(model);
+          return;
         }
+        const inferred = selectedModelInfo && selectedModelInfo.id === data.model
+          ? selectedModelInfo
+          : {
+            id: data.model,
+            label: data.model,
+            description: 'Custom model',
+            provider: '',
+            providerLabel: '',
+          };
+        setSelectedModelInfo(inferred);
       })
-      .catch(() => { /* ignore */ });
-    return () => { cancelled = true; };
-  }, [sessionId]);
+      .catch(() => {
+        // ignore
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, modelOptions, selectedModelInfo]);
 
-  const selectedModel = MODEL_OPTIONS.find(m => m.id === selectedModelId) || MODEL_OPTIONS[0];
+  const selectedModel = selectedModelInfo
+    || modelOptions.find((m) => m.id === selectedModelPath)
+    || (selectedModelPath
+      ? {
+        id: selectedModelPath,
+        label: selectedModelPath,
+        description: 'Custom model',
+        provider: '',
+        providerLabel: '',
+      }
+      : null);
 
-  // Auto-focus the textarea when the session becomes ready
   useEffect(() => {
     if (!disabled && !isProcessing && inputRef.current) {
       inputRef.current.focus();
@@ -123,20 +216,15 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     }
   }, [input, disabled, onSend]);
 
-  // When the chat transport reports a Claude-quota 429, restore the typed
-  // text so the user doesn't lose their message.
   useEffect(() => {
     if (claudeQuotaExhausted && lastSentRef.current) {
       setInput(lastSentRef.current);
     }
   }, [claudeQuotaExhausted]);
 
-  // Refresh the quota display whenever the session changes (user might
-  // have started another tab that spent quota).
   useEffect(() => {
     if (sessionId) refreshQuota();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [sessionId, refreshQuota]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
@@ -145,7 +233,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         handleSend();
       }
     },
-    [handleSend]
+    [handleSend],
   );
 
   const handleModelClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -156,49 +244,72 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     setModelAnchorEl(null);
   };
 
-  const handleSelectModel = async (model: ModelOption) => {
-    handleModelClose();
-    if (!sessionId) return;
-    try {
+  const switchModel = useCallback(
+    async (modelPath: string, info?: ModelOption) => {
+      if (!sessionId) return;
       const res = await apiFetch(`/api/session/${sessionId}/model`, {
         method: 'POST',
-        body: JSON.stringify({ model: model.modelPath }),
+        body: JSON.stringify({ model: modelPath }),
       });
-      if (res.ok) setSelectedModelId(model.id);
-    } catch { /* ignore */ }
+      if (res.ok) {
+        setSelectedModelPath(modelPath);
+        setSelectedModelInfo(info || modelOptions.find((m) => m.id === modelPath) || null);
+      }
+    },
+    [sessionId, modelOptions],
+  );
+
+  const handleSelectModel = async (model: ModelOption) => {
+    handleModelClose();
+    try {
+      await switchModel(model.id, model);
+    } catch {
+      // ignore
+    }
   };
 
-  // Dialog close: just clear the flag. The typed text is already restored.
+  const handleOpenCustomModal = (provider: ProviderOption) => {
+    handleModelClose();
+    if (!sessionId || !provider.prefix) return;
+    setCustomPrefix(provider.prefix);
+    setCustomModalOpen(true);
+  };
+
+  const handleCustomSubmit = async (modelId: string) => {
+    const full = `${customPrefix}${modelId}`;
+    const info: ModelOption = {
+      id: full,
+      label: modelId,
+      description: 'Custom OpenAI-compatible model',
+      provider: OPENAI_COMPAT_PROVIDER,
+      providerLabel: 'OpenAI-Compatible',
+    };
+    await switchModel(full, info);
+    setCustomModalOpen(false);
+  };
+
   const handleCapDialogClose = useCallback(() => {
     setClaudeQuotaExhausted(false);
   }, [setClaudeQuotaExhausted]);
 
-  // "Use a free model" — switch the current session to Kimi (or the first
-  // non-Anthropic option) and auto-retry the send that tripped the cap.
   const handleUseFreeModel = useCallback(async () => {
     setClaudeQuotaExhausted(false);
     if (!sessionId) return;
-    const free = MODEL_OPTIONS.find(m => m.modelPath === FIRST_FREE_MODEL_PATH)
-      ?? firstFreeModel();
+    const free = firstFreeModel(modelOptions);
+    if (!free) return;
     try {
-      const res = await apiFetch(`/api/session/${sessionId}/model`, {
-        method: 'POST',
-        body: JSON.stringify({ model: free.modelPath }),
-      });
-      if (res.ok) {
-        setSelectedModelId(free.id);
-        const retryText = lastSentRef.current;
-        if (retryText) {
-          onSend(retryText);
-          setInput('');
-          lastSentRef.current = '';
-        }
+      await switchModel(free.id, free);
+      const retryText = lastSentRef.current;
+      if (retryText) {
+        onSend(retryText);
+        setInput('');
+        lastSentRef.current = '';
       }
-    } catch { /* ignore */ }
-  }, [sessionId, onSend, setClaudeQuotaExhausted]);
+    } catch {
+      // ignore
+    }
+  }, [sessionId, modelOptions, onSend, setClaudeQuotaExhausted, switchModel]);
 
-  // Hide the chip until the user has actually burned quota — an unused
-  // Opus session shouldn't populate a counter.
   const claudeChip = (() => {
     if (!quota || quota.claudeUsedToday === 0) return null;
     if (quota.plan === 'free') {
@@ -206,6 +317,18 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     }
     return `${quota.claudeUsedToday}/${quota.claudeDailyCap} today`;
   })();
+
+  const groups = providerOptions.map((provider) => ({
+    provider,
+    models: modelOptions
+      .filter((m) => m.provider === provider.id)
+      .sort((a, b) => {
+        const ar = a.recommended ? 0 : 1;
+        const br = b.recommended ? 0 : 1;
+        if (ar !== br) return ar - br;
+        return a.label.localeCompare(b.label);
+      }),
+  }));
 
   return (
     <Box
@@ -229,9 +352,9 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
             border: '1px solid var(--border)',
             transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
             '&:focus-within': {
-                borderColor: 'var(--accent-yellow)',
-                boxShadow: 'var(--focus)',
-            }
+              borderColor: 'var(--accent-yellow)',
+              boxShadow: 'var(--focus)',
+            },
           }}
         >
           <TextField
@@ -246,27 +369,27 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
             variant="standard"
             inputRef={inputRef}
             InputProps={{
-                disableUnderline: true,
-                sx: {
-                    color: 'var(--text)',
-                    fontSize: '15px',
-                    fontFamily: 'inherit',
-                    padding: 0,
-                    lineHeight: 1.5,
-                    minHeight: { xs: '44px', md: '56px' },
-                    alignItems: 'flex-start',
-                }
+              disableUnderline: true,
+              sx: {
+                color: 'var(--text)',
+                fontSize: '15px',
+                fontFamily: 'inherit',
+                padding: 0,
+                lineHeight: 1.5,
+                minHeight: { xs: '44px', md: '56px' },
+                alignItems: 'flex-start',
+              },
             }}
             sx={{
-                flex: 1,
-                '& .MuiInputBase-root': {
-                    p: 0,
-                    backgroundColor: 'transparent',
-                },
-                '& textarea': {
-                    resize: 'none',
-                    padding: '0 !important',
-                }
+              flex: 1,
+              '& .MuiInputBase-root': {
+                p: 0,
+                backgroundColor: 'transparent',
+              },
+              '& textarea': {
+                resize: 'none',
+                padding: '0 !important',
+              },
             }}
           />
           {isProcessing ? (
@@ -314,7 +437,6 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
           )}
         </Box>
 
-        {/* Powered By Badge */}
         <Box
           onClick={handleModelClick}
           sx={{
@@ -327,25 +449,26 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
             cursor: 'pointer',
             transition: 'opacity 0.2s',
             '&:hover': {
-              opacity: 1
-            }
+              opacity: 1,
+            },
           }}
         >
           <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--muted-text)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
             powered by
           </Typography>
-          <img
-            src={selectedModel.avatarUrl}
-            alt={selectedModel.name}
-            style={{ height: '14px', width: '14px', objectFit: 'contain', borderRadius: '2px' }}
-          />
+          {selectedModel?.avatarUrl && (
+            <img
+              src={selectedModel.avatarUrl}
+              alt={selectedModel.label}
+              style={{ height: '14px', width: '14px', objectFit: 'contain', borderRadius: '2px' }}
+            />
+          )}
           <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--text)', fontWeight: 600, letterSpacing: '0.02em' }}>
-            {selectedModel.name}
+            {selectedModel?.label || 'Model'}
           </Typography>
           <ArrowDropDownIcon sx={{ fontSize: '14px', color: 'var(--muted-text)' }} />
         </Box>
 
-        {/* Model Selection Menu */}
         <Menu
           anchorEl={modelAnchorEl}
           open={Boolean(modelAnchorEl)}
@@ -365,69 +488,139 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
                 border: '1px solid var(--divider)',
                 mb: 1,
                 maxHeight: '400px',
-              }
-            }
+                minWidth: 360,
+              },
+            },
           }}
         >
-          {MODEL_OPTIONS.map((model) => (
-            <MenuItem
-              key={model.id}
-              onClick={() => handleSelectModel(model)}
-              selected={selectedModelId === model.id}
-              sx={{
-                py: 1.5,
-                '&.Mui-selected': {
-                  bgcolor: 'rgba(255,255,255,0.05)',
-                }
-              }}
-            >
-              <ListItemIcon>
-                <img
-                  src={model.avatarUrl}
-                  alt={model.name}
-                  style={{ width: 24, height: 24, borderRadius: '4px', objectFit: 'cover' }}
-                />
-              </ListItemIcon>
-              <ListItemText
-                primary={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    {model.name}
-                    {model.recommended && (
-                      <Chip
-                        label="Recommended"
-                        size="small"
-                        sx={{
-                          height: '18px',
-                          fontSize: '10px',
-                          bgcolor: 'var(--accent-yellow)',
-                          color: '#000',
-                          fontWeight: 600,
-                        }}
-                      />
-                    )}
-                    {isClaudeModel(model) && claudeChip && (
-                      <Chip
-                        label={claudeChip}
-                        size="small"
-                        sx={{
-                          height: '18px',
-                          fontSize: '10px',
-                          bgcolor: 'rgba(255,255,255,0.08)',
-                          color: 'var(--muted-text)',
-                          fontWeight: 600,
-                        }}
-                      />
-                    )}
-                  </Box>
-                }
-                secondary={model.description}
-                secondaryTypographyProps={{
-                  sx: { fontSize: '12px', color: 'var(--muted-text)' }
+          {groups.map(({ provider, models }) => (
+            <Box key={provider.id}>
+              <ListSubheader
+                disableSticky
+                sx={{
+                  bgcolor: 'var(--panel)',
+                  color: 'var(--muted-text)',
+                  fontSize: '11px',
+                  lineHeight: '28px',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
                 }}
-              />
-            </MenuItem>
+              >
+                {provider.label}
+              </ListSubheader>
+
+              {models.map((model) => (
+                <MenuItem
+                  key={model.id}
+                  onClick={() => void handleSelectModel(model)}
+                  disabled={!sessionId}
+                  selected={selectedModelPath === model.id}
+                  sx={{
+                    py: 1.5,
+                    '&.Mui-selected': {
+                      bgcolor: 'rgba(255,255,255,0.05)',
+                    },
+                  }}
+                >
+                  <ListItemIcon>
+                    {model.avatarUrl ? (
+                      <img
+                        src={model.avatarUrl}
+                        alt={model.label}
+                        style={{ width: 24, height: 24, borderRadius: '4px', objectFit: 'cover' }}
+                      />
+                    ) : (
+                      <Box
+                        sx={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: '4px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          bgcolor: 'rgba(255,255,255,0.06)',
+                          color: 'var(--muted-text)',
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                        }}
+                      >
+                        {provider.label.slice(0, 2)}
+                      </Box>
+                    )}
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        {model.label}
+                        {model.recommended && (
+                          <Chip
+                            label="Recommended"
+                            size="small"
+                            sx={{
+                              height: '18px',
+                              fontSize: '10px',
+                              bgcolor: 'var(--accent-yellow)',
+                              color: '#000',
+                              fontWeight: 600,
+                            }}
+                          />
+                        )}
+                        {isClaudePath(model.id) && claudeChip && (
+                          <Chip
+                            label={claudeChip}
+                            size="small"
+                            sx={{
+                              height: '18px',
+                              fontSize: '10px',
+                              bgcolor: 'rgba(255,255,255,0.08)',
+                              color: 'var(--muted-text)',
+                              fontWeight: 600,
+                            }}
+                          />
+                        )}
+                      </Box>
+                    }
+                    secondary={model.description}
+                    secondaryTypographyProps={{
+                      sx: { fontSize: '12px', color: 'var(--muted-text)' },
+                    }}
+                  />
+                </MenuItem>
+              ))}
+
+              {provider.id === OPENAI_COMPAT_PROVIDER && provider.supportsCustomModel && (
+                <MenuItem
+                  onClick={() => handleOpenCustomModal(provider)}
+                  disabled={!sessionId}
+                  sx={{ py: 1.5 }}
+                >
+                  <ListItemText
+                    primary="Custom model…"
+                    secondary={provider.customModelHint || 'Use openai-compat/<model-id>'}
+                    secondaryTypographyProps={{
+                      sx: { fontSize: '12px', color: 'var(--muted-text)' },
+                    }}
+                  />
+                </MenuItem>
+              )}
+            </Box>
           ))}
+          {!sessionId && (
+            <Box sx={{ px: 2, py: 1.5 }}>
+              <Typography sx={{ color: 'var(--muted-text)', fontSize: '12px' }}>
+                Start a session to switch models.
+              </Typography>
+            </Box>
+          )}
         </Menu>
+
+        <CustomModelDialog
+          open={customModalOpen}
+          prefix={customPrefix}
+          onClose={() => setCustomModalOpen(false)}
+          onSubmit={handleCustomSubmit}
+        />
 
         <ClaudeCapDialog
           open={claudeQuotaExhausted}

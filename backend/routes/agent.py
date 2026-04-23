@@ -39,47 +39,19 @@ import user_quotas
 
 from agent.core.llm_errors import health_error_type, render_llm_error_message
 from agent.core.llm_params import _resolve_llm_params
+from agent.core.provider_adapters import build_model_catalog, is_valid_model_name
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
-AVAILABLE_MODELS = [
-    {
-        "id": "moonshotai/Kimi-K2.6",
-        "label": "Kimi K2.6",
-        "provider": "huggingface",
-        "tier": "free",
-        "recommended": True,
-    },
-    {
-        "id": "anthropic/claude-opus-4-6",
-        "label": "Claude Opus 4.6",
-        "provider": "anthropic",
-        "tier": "pro",
-        "recommended": True,
-    },
-    {
-        "id": "MiniMaxAI/MiniMax-M2.7",
-        "label": "MiniMax M2.7",
-        "provider": "huggingface",
-        "tier": "free",
-    },
-    {
-        "id": "zai-org/GLM-5.1",
-        "label": "GLM 5.1",
-        "provider": "huggingface",
-        "tier": "free",
-    },
-]
-
 
 async def _require_hf_for_anthropic(request: Request, model_id: str) -> None:
     """403 if a non-``huggingface``-org user tries to select an Anthropic model.
 
-    Anthropic models are billed to the Space's ``ANTHROPIC_API_KEY``; every
-    other model in ``AVAILABLE_MODELS`` is routed through HF Router and
-    billed via ``X-HF-Bill-To``. The gate only fires for ``anthropic/*`` so
+    Anthropic models are billed to the Space's ``ANTHROPIC_API_KEY``; other
+    providers use their own routing/billing config. The gate only fires for
+    ``anthropic/*`` so
     non-HF users can still freely switch between the free models.
 
     Pattern: https://github.com/huggingface/ml-intern/pull/63
@@ -191,10 +163,7 @@ async def llm_health_check() -> LLMHealthResponse:
 @router.get("/config/model")
 async def get_model() -> dict:
     """Get current model and available models. No auth required."""
-    return {
-        "current": session_manager.config.model_name,
-        "available": AVAILABLE_MODELS,
-    }
+    return build_model_catalog(session_manager.config.model_name)
 
 
 _TITLE_STRIP_CHARS = str.maketrans("", "", "`*_~#[]()")
@@ -289,8 +258,7 @@ async def create_session(
     if isinstance(body, dict):
         model = body.get("model")
 
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
-    if model and model not in valid_ids:
+    if model and not is_valid_model_name(model):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
     # Opus is gated to HF staff (PR #63). Only fires when the resolved model
@@ -334,8 +302,7 @@ async def restore_session_summary(
         hf_token = os.environ.get("HF_TOKEN")
 
     model = body.get("model")
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
-    if model and model not in valid_ids:
+    if model and not is_valid_model_name(model):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
     resolved_model = model or session_manager.config.model_name
@@ -393,8 +360,7 @@ async def set_session_model(
     model_id = body.get("model")
     if not model_id:
         raise HTTPException(status_code=400, detail="Missing 'model' field")
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
-    if model_id not in valid_ids:
+    if not is_valid_model_name(model_id):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
     await _require_hf_for_anthropic(request, model_id)
     agent_session = session_manager.sessions.get(session_id)
