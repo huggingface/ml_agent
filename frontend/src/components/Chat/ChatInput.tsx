@@ -1,9 +1,13 @@
-import { useState, useCallback, useEffect, useRef, KeyboardEvent } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, type KeyboardEvent, type MouseEvent } from 'react';
 import { Box, TextField, IconButton, CircularProgress, Typography, Menu, MenuItem, ListItemIcon, ListItemText, Chip } from '@mui/material';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
 import { apiFetch } from '@/utils/api';
+import { useUserQuota } from '@/hooks/useUserQuota';
+import ClaudeCapDialog from '@/components/ClaudeCapDialog';
+import { useAgentStore } from '@/store/agentStore';
+import { FIRST_FREE_MODEL_PATH } from '@/utils/model';
 
 interface ModelOption {
   id: string;
@@ -12,6 +16,15 @@ interface ModelOption {
   avatarUrl: string;
   providerLabel?: string;
   recommended?: boolean;
+}
+
+interface ModelCatalogResponse {
+  current?: string;
+  available?: unknown;
+}
+
+interface SessionResponse {
+  model?: string;
 }
 
 const FALLBACK_MODELS: ModelOption[] = [
@@ -47,17 +60,38 @@ const FALLBACK_MODELS: ModelOption[] = [
   },
 ];
 
-const toModelOption = (value: any): ModelOption | null => {
-  if (!value || !value.id || !value.label) return null;
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  typeof value === 'object' && value !== null
+);
+
+const toModelOption = (value: unknown): ModelOption | null => {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || typeof value.label !== 'string') return null;
+
+  const description = typeof value.description === 'string'
+    ? value.description
+    : typeof value.providerLabel === 'string'
+      ? value.providerLabel
+      : '';
+
   return {
-    id: String(value.id),
-    label: String(value.label),
-    description: String(value.description || value.providerLabel || ''),
-    avatarUrl: String(value.avatarUrl || 'https://huggingface.co/api/avatars/huggingface'),
-    providerLabel: value.providerLabel ? String(value.providerLabel) : undefined,
+    id: value.id,
+    label: value.label,
+    description,
+    avatarUrl: typeof value.avatarUrl === 'string'
+      ? value.avatarUrl
+      : 'https://huggingface.co/api/avatars/huggingface',
+    providerLabel: typeof value.providerLabel === 'string' ? value.providerLabel : undefined,
     recommended: Boolean(value.recommended),
   };
 };
+
+const makeUnknownModelOption = (modelId: string): ModelOption => ({
+  id: modelId,
+  label: modelId,
+  description: 'Custom model',
+  avatarUrl: 'https://huggingface.co/api/avatars/huggingface',
+});
 
 interface ChatInputProps {
   sessionId?: string;
@@ -68,18 +102,30 @@ interface ChatInputProps {
   placeholder?: string;
 }
 
+const isClaudeModel = (model: ModelOption) => model.id.startsWith('anthropic/');
+
 export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>(FALLBACK_MODELS);
-  const [selectedModelPath, setSelectedModelPath] = useState<string>(FALLBACK_MODELS[0].id);
+  const [catalogCurrent, setCatalogCurrent] = useState<string>(FALLBACK_MODELS[0].id);
+  const [sessionModel, setSessionModel] = useState<string | null>(null);
   const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
+  const { quota, refresh: refreshQuota } = useUserQuota();
+  // The daily-cap dialog is triggered from two places: (a) a 429 returned
+  // from the chat transport when the user tries to send on Opus over cap —
+  // surfaced via the agent-store flag — and (b) nothing else right now
+  // (switching models is free). Keeping the open state in the store means
+  // the hook layer can flip it without threading props through.
+  const claudeQuotaExhausted = useAgentStore((s) => s.claudeQuotaExhausted);
+  const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
+  const lastSentRef = useRef<string>('');
 
   useEffect(() => {
     let cancelled = false;
 
     apiFetch('/api/config/model')
-      .then((res) => (res.ok ? res.json() : null))
+      .then((res) => (res.ok ? res.json() as Promise<ModelCatalogResponse> : null))
       .then((data) => {
         if (cancelled || !data) return;
 
@@ -92,7 +138,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
           setModelOptions(available);
         }
         if (typeof data.current === 'string' && data.current) {
-          setSelectedModelPath(data.current);
+          setCatalogCurrent(data.current);
         }
       })
       .catch(() => { /* ignore */ });
@@ -101,25 +147,31 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   }, []);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      setSessionModel(null);
+      return;
+    }
 
     let cancelled = false;
     apiFetch(`/api/session/${sessionId}`)
-      .then((res) => (res.ok ? res.json() : null))
+      .then((res) => (res.ok ? res.json() as Promise<SessionResponse> : null))
       .then((data) => {
         if (cancelled) return;
-        if (typeof data?.model === 'string' && data.model) {
-          setSelectedModelPath(data.model);
-        }
+        setSessionModel(typeof data?.model === 'string' && data.model ? data.model : null);
       })
       .catch(() => { /* ignore */ });
 
     return () => { cancelled = true; };
   }, [sessionId]);
 
-  const selectedModel = modelOptions.find((model) => model.id === selectedModelPath)
-    || toModelOption({ id: selectedModelPath, label: selectedModelPath, description: '', avatarUrl: 'https://huggingface.co/api/avatars/huggingface' })
-    || modelOptions[0];
+  const selectedModelPath = sessionModel ?? catalogCurrent;
+  const selectedModel = useMemo(
+    () => modelOptions.find((model) => model.id === selectedModelPath)
+      ?? (selectedModelPath ? makeUnknownModelOption(selectedModelPath) : null)
+      ?? modelOptions[0]
+      ?? FALLBACK_MODELS[0],
+    [modelOptions, selectedModelPath],
+  );
 
   useEffect(() => {
     if (!disabled && !isProcessing && inputRef.current) {
@@ -129,10 +181,25 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
 
   const handleSend = useCallback(() => {
     if (input.trim() && !disabled) {
+      lastSentRef.current = input;
       onSend(input);
       setInput('');
     }
   }, [input, disabled, onSend]);
+
+  // When the chat transport reports a Claude-quota 429, restore the typed
+  // text so the user doesn't lose their message.
+  useEffect(() => {
+    if (claudeQuotaExhausted && lastSentRef.current) {
+      setInput(lastSentRef.current);
+    }
+  }, [claudeQuotaExhausted]);
+
+  // Refresh the quota display whenever the session changes (user might
+  // have started another tab that spent quota).
+  useEffect(() => {
+    if (sessionId) refreshQuota();
+  }, [refreshQuota, sessionId]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
@@ -144,7 +211,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     [handleSend],
   );
 
-  const handleModelClick = (event: React.MouseEvent<HTMLElement>) => {
+  const handleModelClick = (event: MouseEvent<HTMLElement>) => {
     setModelAnchorEl(event.currentTarget);
   };
 
@@ -162,12 +229,56 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         body: JSON.stringify({ model: modelPath }),
       });
       if (res.ok) {
-        setSelectedModelPath(modelPath);
+        setSessionModel(modelPath);
       }
     } catch {
       // ignore
     }
   };
+
+  // Dialog close: just clear the flag. The typed text is already restored.
+  const handleCapDialogClose = useCallback(() => {
+    setClaudeQuotaExhausted(false);
+  }, [setClaudeQuotaExhausted]);
+
+  // "Use a free model" — switch the current session to Kimi (or the first
+  // non-Anthropic option) and auto-retry the send that tripped the cap.
+  const handleUseFreeModel = useCallback(async () => {
+    setClaudeQuotaExhausted(false);
+    if (!sessionId) return;
+    const free = modelOptions.find((model) => model.id === FIRST_FREE_MODEL_PATH)
+      ?? modelOptions.find((model) => !isClaudeModel(model))
+      ?? modelOptions[0];
+    if (!free) return;
+
+    try {
+      const res = await apiFetch(`/api/session/${sessionId}/model`, {
+        method: 'POST',
+        body: JSON.stringify({ model: free.id }),
+      });
+      if (res.ok) {
+        setSessionModel(free.id);
+        const retryText = lastSentRef.current;
+        if (retryText) {
+          onSend(retryText);
+          setInput('');
+          lastSentRef.current = '';
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, [modelOptions, onSend, sessionId, setClaudeQuotaExhausted]);
+
+  // Hide the chip until the user has actually burned quota — an unused
+  // Opus session shouldn't populate a counter.
+  const claudeChip = (() => {
+    if (!quota || quota.claudeUsedToday === 0) return null;
+    if (quota.plan === 'free') {
+      return quota.claudeRemaining > 0 ? 'Free today' : 'Pro only';
+    }
+    return `${quota.claudeUsedToday}/${quota.claudeDailyCap} today`;
+  })();
 
   return (
     <Box
@@ -365,6 +476,19 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
                         }}
                       />
                     )}
+                    {isClaudeModel(model) && claudeChip && (
+                      <Chip
+                        label={claudeChip}
+                        size="small"
+                        sx={{
+                          height: '18px',
+                          fontSize: '10px',
+                          bgcolor: 'rgba(255,255,255,0.08)',
+                          color: 'var(--muted-text)',
+                          fontWeight: 600,
+                        }}
+                      />
+                    )}
                   </Box>
                 )}
                 secondary={model.description || model.providerLabel}
@@ -375,6 +499,14 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
             </MenuItem>
           ))}
         </Menu>
+
+        <ClaudeCapDialog
+          open={claudeQuotaExhausted}
+          plan={quota?.plan ?? 'free'}
+          cap={quota?.claudeDailyCap ?? 1}
+          onClose={handleCapDialogClose}
+          onUseFreeModel={handleUseFreeModel}
+        />
       </Box>
     </Box>
   );

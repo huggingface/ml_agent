@@ -1,19 +1,9 @@
-"""Provider adapters for runtime params and model catalog metadata.
-
-Each adapter owns its LiteLLM kwargs construction (``build_params``) and
-the list of suggested models shown in ``/model`` and the web picker.
-Adding a new provider means subclassing ``ProviderAdapter``, implementing
-``build_params``, and appending to ``ADAPTERS``.
-"""
+"""Provider adapters for runtime params and model metadata."""
 
 import os
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
 
 class UnsupportedEffortError(ValueError):
     """The requested effort isn't valid for this provider's API surface.
@@ -22,10 +12,6 @@ class UnsupportedEffortError(ValueError):
     skip levels the provider can't accept (e.g. ``max`` on HF router).
     """
 
-
-# ---------------------------------------------------------------------------
-# Data types
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class SuggestedModel:
@@ -67,18 +53,6 @@ class ProviderAdapter:
             return True
         return self.supports_custom_model and self.matches(model_name)
 
-    def to_summary(self) -> dict[str, Any]:
-        return {
-            "id": self.provider_id,
-            "label": self.provider_label,
-            "supportsCustomModel": self.supports_custom_model,
-            "customModelHint": self.custom_model_hint,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Concrete adapters
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class AnthropicAdapter(ProviderAdapter):
@@ -137,9 +111,7 @@ class OpenAIAdapter(ProviderAdapter):
     """OpenAI models via native API (reasoning_effort top-level kwarg)."""
 
     prefixes: tuple[str, ...] = ("openai/",)
-    _EFFORTS: ClassVar[frozenset[str]] = frozenset(
-        {"minimal", "low", "medium", "high"}
-    )
+    _EFFORTS: ClassVar[frozenset[str]] = frozenset({"minimal", "low", "medium", "high"})
 
     def build_params(
         self,
@@ -244,10 +216,6 @@ class HfRouterAdapter(ProviderAdapter):
         return params
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
-
 ADAPTERS: tuple[ProviderAdapter, ...] = (
     AnthropicAdapter(provider_id="anthropic", provider_label="Anthropic"),
     OpenAIAdapter(
@@ -275,10 +243,6 @@ def resolve_adapter(model_name: str) -> ProviderAdapter | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Catalog helpers (used by model_switcher, backend, frontend)
-# ---------------------------------------------------------------------------
-
 def is_valid_model_name(model_name: str) -> bool:
     adapter = resolve_adapter(model_name)
     if not adapter:
@@ -304,40 +268,12 @@ def get_available_models() -> list[dict[str, Any]]:
     return available
 
 
-def get_provider_summaries() -> list[dict[str, Any]]:
-    return [adapter.to_summary() for adapter in ADAPTERS]
-
-
-def find_model_option(model_name: str) -> dict[str, Any] | None:
-    for model in get_available_models():
-        if model["id"] == model_name:
-            return model
-
-    adapter = resolve_adapter(model_name)
-    if not adapter or not adapter.supports_custom_model:
-        return None
-
-    label = model_name
-    if adapter.provider_id == "huggingface":
-        label = model_name.removeprefix("huggingface/")
-    elif adapter.prefixes:
-        label = model_name.removeprefix(adapter.prefixes[0])
-
-    return {
-        "id": model_name,
-        "label": label,
-        "description": f"Custom {adapter.provider_label} model",
-        "provider": adapter.provider_id,
-        "providerLabel": adapter.provider_label,
-        "avatarUrl": "https://huggingface.co/api/avatars/huggingface",
-        "recommended": False,
-    }
+def is_suggested_model_name(model_name: str) -> bool:
+    return any(model["id"] == model_name for model in get_available_models())
 
 
 def build_model_catalog(current_model: str) -> dict[str, Any]:
     return {
         "current": current_model,
         "available": get_available_models(),
-        "providers": get_provider_summaries(),
-        "currentInfo": find_model_option(current_model),
     }

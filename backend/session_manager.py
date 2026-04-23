@@ -91,6 +91,10 @@ class AgentSession:
     is_active: bool = True
     is_processing: bool = False  # True while a submission is being executed
     broadcaster: Any = None
+    # True once this session has been counted against the user's daily
+    # Claude quota. Guards double-counting when the user re-selects an
+    # Anthropic model mid-session.
+    claude_counted: bool = False
 
 
 class SessionCapacityError(Exception):
@@ -126,7 +130,12 @@ class SessionManager:
             if s.user_id == user_id and s.is_active
         )
 
-    async def create_session(self, user_id: str = "dev", hf_token: str | None = None) -> str:
+    async def create_session(
+        self,
+        user_id: str = "dev",
+        hf_token: str | None = None,
+        model: str | None = None,
+    ) -> str:
         """Create a new agent session and return its ID.
 
         Session() and ToolRouter() constructors contain blocking I/O
@@ -135,6 +144,10 @@ class SessionManager:
 
         Args:
             user_id: The ID of the user who owns this session.
+            hf_token: The user's HF OAuth token, stored for tool execution.
+            model: Optional model override. When set, replaces ``model_name``
+                on the per-session config clone. None falls back to the
+                config default.
 
         Raises:
             SessionCapacityError: If the server or user has reached the
@@ -175,6 +188,8 @@ class SessionManager:
             # Deep-copy config so each session's model switches independently —
             # tab A picking GLM doesn't flip tab B off Claude.
             session_config = self.config.model_copy(deep=True)
+            if model:
+                session_config.model_name = model
             session = Session(
                 event_queue, config=session_config, tool_router=tool_router,
                 hf_token=hf_token,

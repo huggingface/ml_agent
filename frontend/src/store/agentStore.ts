@@ -108,6 +108,8 @@ interface AgentStore {
   user: User | null;
   error: string | null;
   llmHealthError: LLMHealthError | null;
+  /** Set when a Claude-send hits the daily quota — ChatInput opens the cap dialog in response. */
+  claudeQuotaExhausted: boolean;
 
   // Right panel (single-artifact pattern)
   panelData: PanelData | null;
@@ -153,6 +155,7 @@ interface AgentStore {
   setUser: (user: User | null) => void;
   setError: (error: string | null) => void;
   setLlmHealthError: (error: LLMHealthError | null) => void;
+  setClaudeQuotaExhausted: (exhausted: boolean) => void;
 
   setPanel: (data: PanelData, view?: PanelView, editable?: boolean) => void;
   setPanelView: (view: PanelView) => void;
@@ -247,6 +250,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   user: null,
   error: null,
   llmHealthError: null,
+  claudeQuotaExhausted: false,
 
   panelData: null,
   panelView: 'script',
@@ -358,6 +362,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   setUser: (user) => set({ user }),
   setError: (error) => set({ error }),
   setLlmHealthError: (error) => set({ llmHealthError: error }),
+  setClaudeQuotaExhausted: (exhausted) => set({ claudeQuotaExhausted: exhausted }),
 
   // ── Panel (single-artifact) ───────────────────────────────────────
   // Each setter also patches the active session's snapshot so that

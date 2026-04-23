@@ -4,11 +4,13 @@ from agent.core.llm_params import _resolve_llm_params
 from agent.core.provider_adapters import (
     UnsupportedEffortError,
     build_model_catalog,
+    is_suggested_model_name,
     is_valid_model_name,
 )
 
 
 # -- Anthropic adapter -------------------------------------------------------
+
 
 def test_anthropic_adapter_builds_thinking_config():
     params = _resolve_llm_params("anthropic/claude-opus-4-6", reasoning_effort="high")
@@ -21,7 +23,9 @@ def test_anthropic_adapter_builds_thinking_config():
 
 
 def test_anthropic_adapter_normalizes_minimal_to_low():
-    params = _resolve_llm_params("anthropic/claude-opus-4-7", reasoning_effort="minimal")
+    params = _resolve_llm_params(
+        "anthropic/claude-opus-4-7", reasoning_effort="minimal"
+    )
 
     assert params["output_config"] == {"effort": "low"}
 
@@ -49,6 +53,7 @@ def test_anthropic_adapter_nonstrict_drops_invalid():
 
 # -- OpenAI adapter -----------------------------------------------------------
 
+
 def test_openai_adapter_passes_reasoning_effort():
     params = _resolve_llm_params("openai/gpt-5", reasoning_effort="medium")
 
@@ -61,6 +66,7 @@ def test_openai_adapter_strict_rejects_max():
 
 
 # -- HF Router adapter --------------------------------------------------------
+
 
 def test_hf_adapter_builds_router_params(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "hf-test")
@@ -96,15 +102,20 @@ def test_hf_adapter_strict_rejects_max():
 
 # -- Catalog & validation -----------------------------------------------------
 
+
 def test_model_catalog_comes_from_adapters():
     catalog = build_model_catalog("anthropic/claude-opus-4-6")
 
     assert catalog["current"] == "anthropic/claude-opus-4-6"
     assert any(model["provider"] == "anthropic" for model in catalog["available"])
     assert any(model["provider"] == "huggingface" for model in catalog["available"])
-    assert any(provider["id"] == "huggingface" for provider in catalog["providers"])
-    assert any(provider["id"] == "anthropic" for provider in catalog["providers"])
-    assert catalog["currentInfo"] is not None
+    assert set(catalog) == {"current", "available"}
+
+
+def test_suggested_model_validation_is_strict():
+    assert is_suggested_model_name("anthropic/claude-opus-4-6") is True
+    assert is_suggested_model_name("moonshotai/Kimi-K2.6") is True
+    assert is_suggested_model_name("moonshotai/Kimi-K2.6:fastest") is False
 
 
 def test_model_validation_accepts_free_form_hf_ids():
