@@ -47,7 +47,7 @@ AVAILABLE_MODELS = [
         "recommended": True,
     },
     {
-        "id": "anthropic/claude-opus-4-6",
+        "id": "bedrock/us.anthropic.claude-opus-4-6-v1",
         "label": "Claude Opus 4.6",
         "provider": "anthropic",
         "tier": "pro",
@@ -68,17 +68,21 @@ AVAILABLE_MODELS = [
 ]
 
 
+def _is_anthropic_model(model_id: str) -> bool:
+    return "anthropic" in model_id
+
+
 async def _require_hf_for_anthropic(request: Request, model_id: str) -> None:
     """403 if a non-``huggingface``-org user tries to select an Anthropic model.
 
     Anthropic models are billed to the Space's ``ANTHROPIC_API_KEY``; every
     other model in ``AVAILABLE_MODELS`` is routed through HF Router and
-    billed via ``X-HF-Bill-To``. The gate only fires for ``anthropic/*`` so
+    billed via ``X-HF-Bill-To``. The gate only fires for Anthropic so
     non-HF users can still freely switch between the free models.
 
     Pattern: https://github.com/huggingface/ml-intern/pull/63
     """
-    if not model_id.startswith("anthropic/"):
+    if not _is_anthropic_model(model_id):
         return
     if not await require_huggingface_org_member(request):
         raise HTTPException(
@@ -110,7 +114,7 @@ async def _enforce_claude_quota(
     if agent_session.claude_counted:
         return
     model_name = agent_session.session.config.model_name
-    if not model_name.startswith("anthropic/"):
+    if not _is_anthropic_model(model_name):
         return
     user_id = user["user_id"]
     used = await user_quotas.get_claude_used_today(user_id)
