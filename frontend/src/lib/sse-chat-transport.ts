@@ -356,6 +356,12 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       // it can flag the session for the catch-up banner.
       this.sideChannel.onSessionDead(sessionId);
     }
+    if (response.status === 429) {
+      // Claude daily-quota gate tripped. The prefix is the detection marker
+      // for useAgentChat's onError handler, which surfaces the cap dialog
+      // instead of a generic error banner.
+      throw new Error('CLAUDE_QUOTA_EXHAUSTED');
+    }
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Request failed');
       throw new Error(`Chat request failed: ${response.status} ${errorText}`);
