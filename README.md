@@ -183,6 +183,10 @@ The agent emits the following events via `event_queue`:
 - `undo_complete` - Undo operation completed
 - `shutdown` - Agent shutting down
 
+## Session Limits
+
+Session creation is concurrency-safe and enforced server-side. If the Space is at capacity, `/api/session` returns `503` instead of oversubscribing the limit. Per-user limits are enforced the same way, so bursts of simultaneous requests cannot create extra sessions past the configured cap.
+
 ## Development
 
 ### Adding Built-in Tools
