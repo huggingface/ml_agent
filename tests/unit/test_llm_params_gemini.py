@@ -26,24 +26,22 @@ class TestGeminiParamResolution:
         params = _resolve_llm_params("gemini/gemini-2.5-pro")
         assert params == {"model": "gemini/gemini-2.5-pro"}
 
-    def test_effort_low_sets_thinking_budget(self):
+    def test_effort_low_sets_reasoning_effort(self):
         params = _resolve_llm_params("gemini/gemini-2.5-pro", reasoning_effort="low")
-        assert params["thinking"] == {
-            "type": "enabled",
-            "budget_tokens": _GEMINI_THINKING_BUDGETS["low"],
-        }
+        assert params["reasoning_effort"] == "low"
+        assert "thinking" not in params
 
-    def test_effort_medium_sets_thinking_budget(self):
+    def test_effort_medium_sets_reasoning_effort(self):
         params = _resolve_llm_params("gemini/gemini-2.5-pro", reasoning_effort="medium")
-        assert params["thinking"]["budget_tokens"] == _GEMINI_THINKING_BUDGETS["medium"]
+        assert params["reasoning_effort"] == "medium"
 
-    def test_effort_high_sets_thinking_budget(self):
+    def test_effort_high_sets_reasoning_effort(self):
         params = _resolve_llm_params("gemini/gemini-2.5-pro", reasoning_effort="high")
-        assert params["thinking"]["budget_tokens"] == _GEMINI_THINKING_BUDGETS["high"]
+        assert params["reasoning_effort"] == "high"
 
     def test_effort_minimal_normalises_to_low(self):
         params = _resolve_llm_params("gemini/gemini-2.5-pro", reasoning_effort="minimal")
-        assert params["thinking"]["budget_tokens"] == _GEMINI_THINKING_BUDGETS["low"]
+        assert params["reasoning_effort"] == "low"
 
     def test_effort_max_strict_raises(self):
         with pytest.raises(UnsupportedEffortError):
@@ -57,11 +55,12 @@ class TestGeminiParamResolution:
                 "gemini/gemini-2.5-pro", reasoning_effort="xhigh", strict=True
             )
 
-    def test_effort_max_non_strict_omits_thinking(self):
-        # Non-strict: invalid effort is silently dropped, no 'thinking' key.
+    def test_effort_max_non_strict_omits_reasoning_effort(self):
+        # Non-strict: invalid effort is silently dropped, no reasoning_effort key.
         params = _resolve_llm_params(
             "gemini/gemini-2.5-pro", reasoning_effort="max", strict=False
         )
+        assert "reasoning_effort" not in params
         assert "thinking" not in params
 
     def test_no_hf_keys_in_params(self):
@@ -73,7 +72,7 @@ class TestGeminiParamResolution:
     def test_gemini_flash_model(self):
         params = _resolve_llm_params("gemini/gemini-2.5-flash", reasoning_effort="medium")
         assert params["model"] == "gemini/gemini-2.5-flash"
-        assert params["thinking"]["budget_tokens"] == _GEMINI_THINKING_BUDGETS["medium"]
+        assert params["reasoning_effort"] == "medium"
 
     def test_thinking_budgets_are_ordered(self):
         assert (
