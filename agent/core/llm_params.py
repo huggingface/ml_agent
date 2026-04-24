@@ -171,6 +171,14 @@ def _resolve_llm_params(
                 params["output_config"] = {"effort": level}
         return params
 
+    if model_name.startswith("bedrock/"):
+        # LiteLLM routes ``bedrock/...`` through the Converse adapter, which
+        # picks up AWS credentials from the standard env vars
+        # (``AWS_ACCESS_KEY_ID`` / ``AWS_SECRET_ACCESS_KEY`` / ``AWS_REGION``).
+        # The Anthropic thinking/effort shape is not forwarded through Converse
+        # the same way, so we leave it off for now.
+        return {"model": model_name}
+
     if model_name.startswith("openai/"):
         params = {"model": model_name}
         if reasoning_effort:

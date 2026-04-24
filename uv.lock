@@ -997,6 +997,7 @@ name = "hf-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "boto3" },
     { name = "datasets" },
     { name = "fastapi" },
     { name = "fastmcp" },
@@ -1036,6 +1037,7 @@ eval = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", specifier = ">=1.35.0" },
     { name = "datasets", specifier = ">=4.4.1" },
     { name = "datasets", marker = "extra == 'eval'", specifier = ">=4.3.0" },
     { name = "fastapi", specifier = ">=0.115.0" },

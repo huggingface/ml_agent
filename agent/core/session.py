@@ -95,7 +95,7 @@ class Session:
         self.event_queue = event_queue
         self.session_id = str(uuid.uuid4())
         self.config = config or Config(
-            model_name="anthropic/claude-sonnet-4-5-20250929",
+            model_name="bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         )
         self.is_running = True
         self._cancelled = asyncio.Event()
