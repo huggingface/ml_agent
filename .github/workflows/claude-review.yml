@@ -1,7 +1,12 @@
 name: Claude PR Review
 
+# Using pull_request_target (not pull_request) so fork PRs can access secrets
+# and id-token. GitHub withholds both on the plain pull_request event for
+# security. pull_request_target runs in the base repo context, so we must
+# explicitly check out the PR's head SHA and read review rules from the base
+# branch — never trust anything the PR controls.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, ready_for_review]
 
 permissions:
@@ -21,25 +26,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+
+      - name: Fetch REVIEW.md from base branch
+        run: |
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
+          git show "origin/${{ github.event.pull_request.base.ref }}:REVIEW.md" > .review-from-base.md 2>/dev/null || true
 
       - name: Compose review prompt
         id: compose
         run: |
           {
             printf 'prompt<<PROMPT_EOF\n'
-            if [ -f REVIEW.md ]; then
-              echo '# Highest-priority review instructions (from REVIEW.md at the repo root)'
+            if [ -s .review-from-base.md ]; then
+              echo '# Highest-priority review instructions (from REVIEW.md on base branch)'
               echo 'Follow these rules as the authoritative guide for this review. If anything'
               echo 'below contradicts a more generic review habit, follow these.'
               echo
-              cat REVIEW.md
+              cat .review-from-base.md
               echo
               echo '---'
               echo
             fi
             cat <<'BASE'
-          Review this pull request against the main branch.
+          Review this pull request against the base branch.
 
           Tag every finding with a priority label: P0 (blocks merge), P1 (worth
           fixing, not blocking), or P2 (informational / pre-existing). Open the
