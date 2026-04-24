@@ -34,7 +34,11 @@ import user_quotas
 
 from agent.core.llm_errors import health_error_type, render_llm_error_message
 from agent.core.llm_params import _resolve_llm_params
-from agent.core.provider_adapters import build_model_catalog, is_valid_model_name
+from agent.core.provider_adapters import (
+    build_model_catalog,
+    is_valid_model_name,
+    resolve_adapter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +46,7 @@ router = APIRouter(prefix="/api", tags=["agent"])
 
 
 def _is_anthropic_model(model_id: str) -> bool:
-    return "anthropic" in model_id
+    return model_id.startswith(("anthropic/", "bedrock/"))
 
 
 async def _require_hf_for_anthropic(request: Request, model_id: str) -> None:
@@ -162,7 +166,9 @@ async def llm_health_check() -> LLMHealthResponse:
 @router.get("/config/model")
 async def get_model() -> dict:
     """Get current model and available models. No auth required."""
-    return build_model_catalog(session_manager.config.model_name)
+    return await asyncio.to_thread(
+        build_model_catalog, session_manager.config.model_name
+    )
 
 
 _TITLE_STRIP_CHARS = str.maketrans("", "", "`*_~#[]()")
@@ -290,6 +296,8 @@ async def restore_session_summary(
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
         raise HTTPException(status_code=400, detail="Missing 'messages' array")
+    if len(messages) > 2000:
+        raise HTTPException(status_code=400, detail="Too many messages (max 2000)")
 
     hf_token = None
     auth_header = request.headers.get("Authorization", "")
@@ -361,6 +369,11 @@ async def set_session_model(
         raise HTTPException(status_code=400, detail="Missing 'model' field")
     if not is_valid_model_name(model_id):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
+    adapter = resolve_adapter(model_id)
+    if adapter and not adapter.should_show():
+        raise HTTPException(
+            status_code=400, detail=f"Provider not configured for: {model_id}"
+        )
     await _require_hf_for_anthropic(request, model_id)
     agent_session = session_manager.sessions.get(session_id)
     if not agent_session:

@@ -186,7 +186,7 @@ def test_lm_studio_adapter_uses_raw_model_name(monkeypatch):
     params = _resolve_llm_params("lm_studio/google/gemma-3-12b")
 
     assert params == {
-        "model": "lm_studio/google/gemma-3-12b",
+        "model": "google/gemma-3-12b",
         "api_base": "http://127.0.0.1:1234/v1",
         "api_key": "lm-studio",
     }

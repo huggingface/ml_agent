@@ -1,5 +1,6 @@
 """Provider adapters for runtime params and model catalog metadata."""
 
+import functools
 import json
 import os
 import time
@@ -64,6 +65,7 @@ def _provider_avatar_url(provider_id: str) -> str:
     return avatars.get(provider_id, "https://huggingface.co/api/avatars/huggingface")
 
 
+@functools.lru_cache(maxsize=1)
 def _all_adapter_prefixes() -> tuple[str, ...]:
     prefixes: list[str] = []
     for adapter in ADAPTERS:
@@ -396,7 +398,7 @@ class OpenAICompatAdapter(ProviderAdapter):
 
         model_id = model_name.removeprefix(self.prefixes[0])
         params: dict[str, Any] = {
-            "model": model_name if self.use_raw_model_name else f"openai/{model_id}",
+            "model": model_id if self.use_raw_model_name else f"openai/{model_id}",
             "api_base": self.resolved_api_base(),
             "api_key": self.resolved_api_key(),
         }

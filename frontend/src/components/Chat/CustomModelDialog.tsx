@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState } from "react";
 import {
   Button,
   Dialog,
@@ -7,7 +7,7 @@ import {
   DialogTitle,
   TextField,
   Typography,
-} from '@mui/material';
+} from "@mui/material";
 
 interface CustomModelDialogProps {
   open: boolean;
@@ -22,14 +22,14 @@ export default function CustomModelDialog({
   onClose,
   onSubmit,
 }: CustomModelDialogProps) {
-  const [value, setValue] = useState('');
-  const [error, setError] = useState('');
+  const [value, setValue] = useState("");
+  const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!open) {
-      setValue('');
-      setError('');
+      setValue("");
+      setError("");
       setSubmitting(false);
     }
   }, [open]);
@@ -37,15 +37,15 @@ export default function CustomModelDialog({
   const handleSubmit = async () => {
     const trimmed = value.trim();
     if (!trimmed) {
-      setError('Model id is required');
+      setError("Model id is required");
       return;
     }
-    setError('');
+    setError("");
     setSubmitting(true);
     try {
       await onSubmit(trimmed);
     } catch {
-      setError('Failed to switch model');
+      setError("Failed to switch model");
     } finally {
       setSubmitting(false);
     }
@@ -56,26 +56,43 @@ export default function CustomModelDialog({
       open={open}
       onClose={submitting ? undefined : onClose}
       slotProps={{
-        backdrop: { sx: { backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' } },
+        backdrop: {
+          sx: {
+            backgroundColor: "rgba(0,0,0,0.5)",
+            backdropFilter: "blur(4px)",
+          },
+        },
       }}
       PaperProps={{
         sx: {
-          bgcolor: 'var(--panel)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-md)',
-          boxShadow: 'var(--shadow-1)',
+          bgcolor: "var(--panel)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-md)",
+          boxShadow: "var(--shadow-1)",
           maxWidth: 520,
           mx: 2,
-          width: '100%',
+          width: "100%",
         },
       }}
     >
-      <DialogTitle sx={{ color: 'var(--text)', fontWeight: 700, fontSize: '1rem', pt: 2.5, pb: 1, px: 3 }}>
+      <DialogTitle
+        sx={{
+          color: "var(--text)",
+          fontWeight: 700,
+          fontSize: "1rem",
+          pt: 2.5,
+          pb: 1,
+          px: 3,
+        }}
+      >
         Custom OpenAI-compatible model
       </DialogTitle>
       <DialogContent sx={{ px: 3, pt: 0.5, pb: 0 }}>
-        <Typography sx={{ color: 'var(--muted-text)', fontSize: '0.85rem', mb: 1.5 }}>
-          Enter model id only. We will use server env config for base URL and key.
+        <Typography
+          sx={{ color: "var(--muted-text)", fontSize: "0.85rem", mb: 1.5 }}
+        >
+          Enter model id only. We will use server env config for base URL and
+          key.
         </Typography>
         <TextField
           fullWidth
@@ -83,20 +100,31 @@ export default function CustomModelDialog({
           size="small"
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !submitting) void handleSubmit();
+          }}
           placeholder="e.g. my-model"
           disabled={submitting}
           sx={{
-            '& .MuiOutlinedInput-root': {
-              bgcolor: 'transparent',
-              color: 'var(--text)',
+            "& .MuiOutlinedInput-root": {
+              bgcolor: "transparent",
+              color: "var(--text)",
             },
           }}
         />
-        <Typography sx={{ color: 'var(--muted-text)', fontSize: '0.78rem', mt: 1 }}>
-          Final id: <code>{prefix}{value.trim() || '<model-id>'}</code>
+        <Typography
+          sx={{ color: "var(--muted-text)", fontSize: "0.78rem", mt: 1 }}
+        >
+          Final id:{" "}
+          <code>
+            {prefix}
+            {value.trim() || "<model-id>"}
+          </code>
         </Typography>
         {error && (
-          <Typography sx={{ color: 'var(--accent-red)', fontSize: '0.78rem', mt: 1 }}>
+          <Typography
+            sx={{ color: "var(--accent-red)", fontSize: "0.78rem", mt: 1 }}
+          >
             {error}
           </Typography>
         )}
@@ -107,11 +135,11 @@ export default function CustomModelDialog({
           disabled={submitting}
           size="small"
           sx={{
-            color: 'var(--muted-text)',
-            fontSize: '0.82rem',
+            color: "var(--muted-text)",
+            fontSize: "0.82rem",
             px: 2,
-            textTransform: 'none',
-            '&:hover': { bgcolor: 'var(--hover-bg)' },
+            textTransform: "none",
+            "&:hover": { bgcolor: "var(--hover-bg)" },
           }}
         >
           Cancel
@@ -122,17 +150,17 @@ export default function CustomModelDialog({
           variant="contained"
           size="small"
           sx={{
-            fontSize: '0.82rem',
+            fontSize: "0.82rem",
             px: 2.5,
-            bgcolor: 'var(--accent-yellow)',
-            color: '#000',
-            textTransform: 'none',
+            bgcolor: "var(--accent-yellow)",
+            color: "#000",
+            textTransform: "none",
             fontWeight: 700,
-            boxShadow: 'none',
-            '&:hover': { bgcolor: '#FFB340', boxShadow: 'none' },
+            boxShadow: "none",
+            "&:hover": { bgcolor: "#FFB340", boxShadow: "none" },
           }}
         >
-          {submitting ? 'Switching…' : 'Switch model'}
+          {submitting ? "Switching…" : "Switch model"}
         </Button>
       </DialogActions>
     </Dialog>
