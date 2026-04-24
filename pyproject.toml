@@ -41,6 +41,7 @@ eval = [
 # Development and testing dependencies
 dev = [
     "pytest>=9.0.2",
+    "pytest-asyncio>=1.2.0",
 ]
 
 # All dependencies (eval + dev)

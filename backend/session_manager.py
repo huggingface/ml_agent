@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from agent.config import load_config
 from agent.core.agent_loop import process_submission
+from agent.messaging.gateway import NotificationGateway
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
 
@@ -119,8 +120,17 @@ class SessionManager:
 
     def __init__(self, config_path: str | None = None) -> None:
         self.config = load_config(config_path or DEFAULT_CONFIG_PATH)
+        self.messaging_gateway = NotificationGateway(self.config.messaging)
         self.sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        """Start shared background resources."""
+        await self.messaging_gateway.start()
+
+    async def close(self) -> None:
+        """Flush and close shared background resources."""
+        await self.messaging_gateway.close()
 
     def _count_user_sessions(self, user_id: str) -> int:
         """Count active sessions owned by a specific user."""
@@ -193,6 +203,9 @@ class SessionManager:
             session = Session(
                 event_queue, config=session_config, tool_router=tool_router,
                 hf_token=hf_token,
+                notification_gateway=self.messaging_gateway,
+                notification_destinations=[],
+                session_id=session_id,
             )
             t1 = _time.monotonic()
             logger.info(f"Session initialized in {t1 - t0:.2f}s")
@@ -506,7 +519,38 @@ class SessionManager:
             "user_id": agent_session.user_id,
             "pending_approval": pending_approval,
             "model": agent_session.session.config.model_name,
+            "notification_destinations": list(
+                agent_session.session.notification_destinations
+            ),
         }
+
+    def set_notification_destinations(
+        self, session_id: str, destinations: list[str]
+    ) -> list[str]:
+        """Replace the session's opted-in auto-notification destinations."""
+        agent_session = self.sessions.get(session_id)
+        if not agent_session or not agent_session.is_active:
+            raise ValueError("Session not found or inactive")
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_name in destinations:
+            name = raw_name.strip()
+            if not name:
+                raise ValueError("Destination names must not be empty")
+            destination = self.config.messaging.get_destination(name)
+            if destination is None:
+                raise ValueError(f"Unknown destination '{name}'")
+            if not destination.allow_auto_events:
+                raise ValueError(
+                    f"Destination '{name}' is not enabled for auto events"
+                )
+            if name not in seen:
+                normalized.append(name)
+                seen.add(name)
+
+        agent_session.session.set_notification_destinations(normalized)
+        return normalized
 
     def list_sessions(self, user_id: str | None = None) -> list[dict[str, Any]]:
         """List sessions, optionally filtered by user.

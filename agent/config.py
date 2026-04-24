@@ -6,6 +6,8 @@ from typing import Any, Union
 
 from dotenv import load_dotenv
 
+from agent.messaging.models import MessagingConfig
+
 # Project root: two levels up from this file (agent/config.py -> project root)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 from fastmcp.mcp_config import (
@@ -42,6 +44,7 @@ class Config(BaseModel):
     # ``xhigh`` or ``max`` for Anthropic 4.6 / 4.7). ``None`` = thinking off.
     # Valid values: None | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
     reasoning_effort: str | None = "max"
+    messaging: MessagingConfig = MessagingConfig()
 
 
 def substitute_env_vars(obj: Any) -> Any:

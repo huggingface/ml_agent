@@ -23,6 +23,7 @@ from prompt_toolkit import PromptSession
 from agent.config import load_config
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
+from agent.messaging.gateway import NotificationGateway
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.utils.reliability_checks import check_training_script_save_pattern
@@ -847,6 +848,8 @@ async def main():
     # Start agent loop in background
     config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
     config = load_config(config_path)
+    notification_gateway = NotificationGateway(config.messaging)
+    await notification_gateway.start()
 
     # Create tool router with local mode
     tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
@@ -864,6 +867,7 @@ async def main():
             hf_token=hf_token,
             local_mode=True,
             stream=True,
+            notification_gateway=notification_gateway,
         )
     )
 
@@ -1019,6 +1023,8 @@ async def main():
         agent_task.cancel()
         # Agent didn't shut down cleanly — close MCP explicitly
         await tool_router.__aexit__(None, None, None)
+    finally:
+        await notification_gateway.close()
 
     # Now safe to cancel the listener (agent is done emitting events)
     listener_task.cancel()
@@ -1047,6 +1053,8 @@ async def headless_main(
     config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
     config = load_config(config_path)
     config.yolo_mode = True  # Auto-approve everything in headless mode
+    notification_gateway = NotificationGateway(config.messaging)
+    await notification_gateway.start()
 
     if model:
         config.model_name = model
@@ -1075,6 +1083,7 @@ async def headless_main(
             hf_token=hf_token,
             local_mode=True,
             stream=stream,
+            notification_gateway=notification_gateway,
         )
     )
 
@@ -1213,6 +1222,8 @@ async def headless_main(
     except asyncio.TimeoutError:
         agent_task.cancel()
         await tool_router.__aexit__(None, None, None)
+    finally:
+        await notification_gateway.close()
 
 
 def cli():

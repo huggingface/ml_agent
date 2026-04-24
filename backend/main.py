@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from routes.agent import router as agent_router
 from routes.auth import router as auth_router
+from session_manager import session_manager
 
 # Load .env from project root (parent directory)
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -27,8 +28,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info("Starting HF Agent backend...")
+    await session_manager.start()
     yield
     logger.info("Shutting down HF Agent backend...")
+    await session_manager.close()
 
 
 app = FastAPI(

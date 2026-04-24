@@ -5,6 +5,11 @@
   "yolo_mode": false,
   "confirm_cpu_jobs": true,
   "auto_file_upload": true,
+  "messaging": {
+    "enabled": false,
+    "auto_event_types": ["approval_required", "error"],
+    "destinations": {}
+  },
   "mcpServers": {
     "hf-mcp-server": {
       "transport": "http",

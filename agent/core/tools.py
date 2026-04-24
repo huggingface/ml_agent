@@ -46,6 +46,7 @@ from agent.tools.hf_repo_git_tool import (
     hf_repo_git_handler,
 )
 from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC, hf_jobs_handler
+from agent.tools.notify_tool import NOTIFY_TOOL_SPEC, notify_handler
 from agent.tools.papers_tool import HF_PAPERS_TOOL_SPEC, hf_papers_handler
 from agent.tools.plan_tool import PLAN_TOOL_SPEC, plan_tool_handler
 from agent.tools.research_tool import RESEARCH_TOOL_SPEC, research_handler
@@ -323,6 +324,12 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             description=PLAN_TOOL_SPEC["description"],
             parameters=PLAN_TOOL_SPEC["parameters"],
             handler=plan_tool_handler,
+        ),
+        ToolSpec(
+            name=NOTIFY_TOOL_SPEC["name"],
+            description=NOTIFY_TOOL_SPEC["description"],
+            parameters=NOTIFY_TOOL_SPEC["parameters"],
+            handler=notify_handler,
         ),
         ToolSpec(
             name=HF_JOBS_TOOL_SPEC["name"],

@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class OpType(str, Enum):
@@ -86,6 +86,13 @@ class SessionInfo(BaseModel):
     user_id: str = "dev"
     pending_approval: list[PendingApprovalTool] | None = None
     model: str | None = None
+    notification_destinations: list[str] = Field(default_factory=list)
+
+
+class SessionNotificationsRequest(BaseModel):
+    """Replace the session's auto-notification destinations."""
+
+    destinations: list[str]
 
 
 class HealthResponse(BaseModel):

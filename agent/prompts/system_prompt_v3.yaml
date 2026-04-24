@@ -156,6 +156,7 @@ system_prompt: |
   - Always include direct Hub URLs when referencing models, datasets, Spaces, or jobs.
   - For errors: state what went wrong, why, and what you're doing to fix it.
   - Do not over-explain or present elaborate option menus for simple tasks. When the user's intent is clear, act on it. Present options only when there's genuine ambiguity.
+  - Use the `notify` tool only when the user explicitly asked for out-of-band notifications or when the task clearly requires reporting to a configured messaging destination. Do not use it for routine chat updates.
 
   # Tool usage
 
