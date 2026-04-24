@@ -1,5 +1,7 @@
 """GLUE SST-2 dataset loading and evaluation helpers."""
 
+import sys
+
 from datasets import load_dataset
 from huggingface_hub import InferenceClient
 
@@ -32,7 +34,8 @@ def load_examples(
     limit: int | None = None,
 ) -> list[dict]:
     selected_split = split or task.default_split
-    dataset = load_dataset(task.dataset_name, task.dataset_config, split=selected_split)
+    dataset_args = [task.dataset_config] if task.dataset_config else []
+    dataset = load_dataset(task.dataset_name, *dataset_args, split=selected_split)
     records = list(dataset)
     if limit is not None:
         records = records[:limit]
@@ -63,9 +66,17 @@ def evaluate_model(
     client = client or InferenceClient()
     correct = 0
 
-    for example in examples:
-        response = client.text_classification(example[task.text_column], model=model_id)
-        predicted = normalize_label(extract_label(response))
+    for index, example in enumerate(examples):
+        try:
+            response = client.text_classification(example[task.text_column], model=model_id)
+            predicted = normalize_label(extract_label(response))
+        except Exception as exc:
+            print(
+                "Evaluation failed "
+                f"(task={task.task_id}, model={model_id}, example_index={index}): {exc}",
+                file=sys.stderr,
+            )
+            raise
         if predicted == example[task.label_column]:
             correct += 1
 

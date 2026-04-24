@@ -8,7 +8,7 @@ from agent.eval.artifacts import (
     build_run_record,
     write_run_artifact,
 )
-from agent.eval.compare import ComparisonResult, ModelResult
+from agent.eval.compare import ModelResult, compare_results
 
 
 def test_write_run_artifact_creates_json_file(tmp_path):
@@ -61,14 +61,11 @@ def test_append_leaderboard_row_appends_jsonl_line(tmp_path):
 
 
 def test_build_record_and_leaderboard_row_include_cost_metadata():
-    comparison = ComparisonResult(
+    comparison = compare_results(
         task_id="glue_sst2",
         primary_metric="accuracy",
         baseline=ModelResult("baseline", {"accuracy": 0.84}),
         candidate=ModelResult("candidate", {"accuracy": 0.89}),
-        baseline_score=0.84,
-        candidate_score=0.89,
-        delta=0.05,
     )
 
     record = build_run_record(
@@ -89,7 +86,7 @@ def test_build_record_and_leaderboard_row_include_cost_metadata():
     assert record["parameters"] == {"limit": 100}
     assert row["baseline_score"] == 0.84
     assert row["candidate_score"] == 0.89
-    assert row["delta"] == 0.05
+    assert row["delta"] == pytest.approx(0.05)
     assert row["training_cost"] == 12.5
     assert row["eval_cost"] == 0.25
 
@@ -98,14 +95,11 @@ def test_build_run_record_snapshots_optional_metadata_and_metrics():
     baseline_metrics = {"accuracy": 0.5}
     candidate_metrics = {"accuracy": 0.6}
     parameters = {"limit": 10}
-    comparison = ComparisonResult(
+    comparison = compare_results(
         task_id="glue_sst2",
         primary_metric="accuracy",
         baseline=ModelResult("baseline", baseline_metrics),
         candidate=ModelResult("candidate", candidate_metrics),
-        baseline_score=0.5,
-        candidate_score=0.6,
-        delta=0.1,
     )
 
     record = build_run_record(

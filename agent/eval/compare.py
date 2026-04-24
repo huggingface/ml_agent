@@ -15,9 +15,18 @@ class ComparisonResult:
     primary_metric: str
     baseline: ModelResult
     candidate: ModelResult
-    baseline_score: float
-    candidate_score: float
-    delta: float
+
+    @property
+    def baseline_score(self) -> float:
+        return self.baseline.metrics[self.primary_metric]
+
+    @property
+    def candidate_score(self) -> float:
+        return self.candidate.metrics[self.primary_metric]
+
+    @property
+    def delta(self) -> float:
+        return self.candidate_score - self.baseline_score
 
 
 def compare_results(
@@ -26,14 +35,9 @@ def compare_results(
     baseline: ModelResult,
     candidate: ModelResult,
 ) -> ComparisonResult:
-    baseline_score = baseline.metrics[primary_metric]
-    candidate_score = candidate.metrics[primary_metric]
     return ComparisonResult(
         task_id=task_id,
         primary_metric=primary_metric,
         baseline=baseline,
         candidate=candidate,
-        baseline_score=baseline_score,
-        candidate_score=candidate_score,
-        delta=candidate_score - baseline_score,
     )
