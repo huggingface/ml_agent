@@ -1,34 +1,78 @@
 #!/usr/bin/env python3
-"""Roll up the session-trajectory dataset into daily KPIs.
+"""Hourly KPI rollup for the session-trajectory dataset.
 
-Reads the source dataset (one JSONL file per session, path
-``sessions/YYYY-MM-DD/<session_id>.jsonl``) and writes one daily CSV to a
-target dataset at ``daily/YYYY-MM-DD.csv``. Designed to run as a simple cron
-via GH Actions — no framework, pandas-only, idempotent per day.
+================================================================================
+ Data flow
+================================================================================
 
-Metrics computed (one row per day):
-    sessions, turns
-    tokens_{prompt,completion,cache_read,cache_creation}
-    cost_usd
-    cache_hit_ratio   — cache_read / (cache_read + prompt)
-    llm_calls
-    tool_success_rate — tool_output success=True / total tool_output
-    regenerate_rate   — turns that followed an undo / total turns
-    time_to_first_action_s_p50 — from session_start to first tool_call
-    failure_rate      — sessions that ended with an `error` event
-    thumbs_up, thumbs_down  — counts from `feedback` events
-    hf_jobs_submitted, hf_jobs_succeeded
-    gpu_hours_by_flavor   — dict serialised as JSON string
+    ┌────────────────────┐   heartbeat      ┌────────────────────────────────┐
+    │  agent (CLI/web)   │ ───────────────▶ │  hf-agent-sessions  (dataset)  │
+    │  Session.send_event│                  │  sessions/YYYY-MM-DD/<id>.jsonl│
+    └────────────────────┘                  └───────────────┬────────────────┘
+                                                            │ cron @:05 each hour
+                                                            ▼
+                                         ┌──────────────────────────────────┐
+                                         │   scripts/build_kpis.py          │
+                                         │   (GitHub Actions)               │
+                                         └───────────────┬──────────────────┘
+                                                         │ upload CSV
+                                                         ▼
+                                         ┌──────────────────────────────────┐
+                                         │  hf-agent-kpis  (dataset)        │
+                                         │  hourly/YYYY-MM-DD/HH.csv        │
+                                         └──────────────────────────────────┘
 
-Usage::
+Each hourly run reads today's + yesterday's session folders (to cover sessions
+that crossed midnight), filters events into the target hour window
+``[hour, hour+1h)``, computes aggregates, and writes one CSV at
+``hourly/<date>/<HH>.csv`` in the target dataset. Uploads are idempotent —
+re-running the same hour overwrites.
 
-    python scripts/build_kpis.py \\
-        --source akseljoonas/hf-agent-sessions \\
-        --target akseljoonas/hf-agent-kpis \\
-        --days 7                      # rolls up the last 7 days
+================================================================================
+ Metrics (one row per hour)
+================================================================================
+
+    sessions            — distinct session_ids with ≥1 event in window
+    users               — distinct user ids (when present on session rows)
+    turns               — sum of user-message counts across active sessions
+    llm_calls           — count of llm_call events
+    tokens_prompt / _completion / _cache_read / _cache_creation
+    cost_usd            — sum of llm_call.cost_usd
+    cache_hit_ratio     — cache_read / (cache_read + prompt)
+    tool_success_rate   — tool_output success=True / total tool_output
+    failure_rate        — sessions that ended with an `error` event / sessions
+    regenerate_rate     — sessions with any `undo_complete` event / sessions
+    time_to_first_action_s_p50 / _p95  — from session_start to first tool_call
+    thumbs_up / thumbs_down
+    hf_jobs_submitted / _succeeded
+    gpu_hours_by_flavor_json   — JSON-serialised {flavor: gpu-hours}
+
+================================================================================
+ Usage
+================================================================================
+
+    # Run for the most recently completed hour (default — the cron path):
+    python scripts/build_kpis.py
+
+    # Backfill last 24 hours:
+    python scripts/build_kpis.py --hours 24
+
+    # Explicit hour (UTC):
+    python scripts/build_kpis.py --datetime 2026-04-24T14
 
 Env:
-    HF_TOKEN  (or HF_KPI_WRITE_TOKEN) — write access to target dataset.
+    HF_TOKEN (or HF_KPI_WRITE_TOKEN) — write access to the target dataset.
+
+================================================================================
+ Deploy
+================================================================================
+
+See ``.github/workflows/build-kpis.yml`` — runs every hour at :05. To provision:
+
+    1. Create the target dataset (once):
+         huggingface-cli repo create hf-agent-kpis --type dataset
+    2. Put ``HF_KPI_WRITE_TOKEN`` (or ``HF_TOKEN``) into repo Actions secrets.
+    3. Merge this file; the first scheduled run fires within the hour.
 """
 
 from __future__ import annotations
@@ -72,8 +116,21 @@ def _percentile(values: list[float], p: float) -> float:
     return float(values[f] + (values[c] - values[f]) * (k - f))
 
 
+def _parse_ts(s: Any) -> datetime | None:
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return None
+    # Normalise to aware UTC so comparisons work against window bounds.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _iter_session_files(api, repo_id: str, day: date, token: str) -> Iterable[str]:
-    """Yield repo-relative paths for all sessions on a given day."""
+    """Yield repo-relative paths for all sessions under ``sessions/YYYY-MM-DD/``."""
     prefix = f"sessions/{day.isoformat()}/"
     try:
         files = api.list_repo_files(repo_id=repo_id, repo_type="dataset", token=token)
@@ -83,7 +140,12 @@ def _iter_session_files(api, repo_id: str, day: date, token: str) -> Iterable[st
     return [f for f in files if f.startswith(prefix) and f.endswith(".jsonl")]
 
 
-def _download_session(api, repo_id: str, path: str, token: str) -> dict | None:
+def _download_session(repo_id: str, path: str, token: str) -> dict | None:
+    """Fetch one session JSONL and decode its single row.
+
+    ``hf_hub_download`` caches; second run within the same process / runner
+    directory is near-free.
+    """
     from huggingface_hub import hf_hub_download
     try:
         local = hf_hub_download(
@@ -99,18 +161,45 @@ def _download_session(api, repo_id: str, path: str, token: str) -> dict | None:
             return None
         row = json.loads(line)
         # Session uploader stores messages/events as JSON strings — unpack.
-        if isinstance(row.get("messages"), str):
-            row["messages"] = json.loads(row["messages"])
-        if isinstance(row.get("events"), str):
-            row["events"] = json.loads(row["events"])
+        for key in ("messages", "events", "tools"):
+            v = row.get(key)
+            if isinstance(v, str):
+                try:
+                    row[key] = json.loads(v)
+                except Exception:
+                    row[key] = []
         return row
     except Exception as e:
         logger.warning("parse(%s) failed: %s", path, e)
         return None
 
 
+def _filter_session_to_window(
+    session: dict, start: datetime, end: datetime,
+) -> dict | None:
+    """Return a copy of ``session`` whose events are only those in ``[start, end)``.
+
+    ``None`` if no event falls in the window — the caller drops the session
+    from this hour's aggregate.
+    """
+    events = session.get("events") or []
+    in_window = []
+    for ev in events:
+        ts = _parse_ts(ev.get("timestamp"))
+        if ts is None:
+            continue
+        if start <= ts < end:
+            in_window.append(ev)
+    if not in_window:
+        return None
+    return {**session, "events": in_window}
+
+
 def _session_metrics(session: dict) -> dict:
-    """Reduce a single session trajectory to its KPI contributions."""
+    """Reduce a single session trajectory to its KPI contributions.
+
+    Assumes ``events`` are already filtered to the target window by the caller.
+    """
     # Pre-seed every numeric key so downstream aggregation can sum without
     # having to special-case empty sessions.
     out: dict = {
@@ -127,7 +216,6 @@ def _session_metrics(session: dict) -> dict:
     events = session.get("events") or []
     messages = session.get("messages") or []
 
-    # Turn count: count user messages (same proxy as Session.turn_count).
     turn_count = sum(1 for m in messages if m.get("role") == "user")
     out["turns"] = turn_count
     out["sessions"] = 1
@@ -143,14 +231,6 @@ def _session_metrics(session: dict) -> dict:
     jobs_succeeded = 0
     thumbs_up = 0
     thumbs_down = 0
-
-    def _parse_ts(s):
-        if not s:
-            return None
-        try:
-            return datetime.fromisoformat(s)
-        except Exception:
-            return None
 
     start_dt = _parse_ts(session_start)
 
@@ -212,15 +292,15 @@ def _session_metrics(session: dict) -> dict:
     out["hf_jobs_submitted"] = jobs_submitted
     out["hf_jobs_succeeded"] = jobs_succeeded
     out["first_tool_s"] = first_tool_ts if first_tool_ts is not None else -1
-    out["_gpu_hours_by_flavor"] = dict(gpu_hours_by_flavor)  # aggregated later
-    out["_user"] = session.get("user_id") or session.get("session_id")  # fallback
+    out["_gpu_hours_by_flavor"] = dict(gpu_hours_by_flavor)
+    out["_user"] = session.get("user_id") or session.get("session_id")
     return dict(out)
 
 
-def _aggregate_day(per_session: list[dict]) -> dict:
-    """Collapse a day's worth of session rollups into the final KPI row."""
+def _aggregate(per_session: list[dict]) -> dict:
+    """Collapse a bucket's worth of session rollups into the final KPI row."""
     ttfa_values = [s["first_tool_s"] for s in per_session if s.get("first_tool_s", -1) >= 0]
-    gpu_hours = defaultdict(float)
+    gpu_hours: dict[str, float] = defaultdict(float)
     for s in per_session:
         for f, h in (s.get("_gpu_hours_by_flavor") or {}).items():
             gpu_hours[f] += h
@@ -264,13 +344,30 @@ def _aggregate_day(per_session: list[dict]) -> dict:
     }
 
 
-def _write_daily_csv(row: dict, day: date, target_repo: str, token: str) -> None:
+# Back-compat alias: older tests call _aggregate_day.
+_aggregate_day = _aggregate
+
+
+def _csv_cell(v: Any) -> str:
+    s = str(v)
+    if "," in s or '"' in s or "\n" in s:
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
+def _write_csv(row: dict, bucket_key: str, path_in_repo: str, target_repo: str, token: str) -> None:
+    """Render ``row`` to CSV with a leading ``bucket`` column and upload.
+
+    ``bucket_key`` is the hour string (ISO ``YYYY-MM-DDTHH``) or date string;
+    written as the ``bucket`` column so downstream consumers can union all
+    CSVs without date-parsing paths.
+    """
     from huggingface_hub import HfApi
     api = HfApi()
     columns = list(row.keys())
     buf = io.StringIO()
-    buf.write(",".join(["date", *columns]) + "\n")
-    buf.write(",".join([day.isoformat(), *[_csv_cell(row[c]) for c in columns]]) + "\n")
+    buf.write(",".join(["bucket", *columns]) + "\n")
+    buf.write(",".join([bucket_key, *[_csv_cell(row[c]) for c in columns]]) + "\n")
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
         tmp.write(buf.getvalue())
@@ -282,11 +379,11 @@ def _write_daily_csv(row: dict, day: date, target_repo: str, token: str) -> None
         )
         api.upload_file(
             path_or_fileobj=tmp_path,
-            path_in_repo=f"daily/{day.isoformat()}.csv",
+            path_in_repo=path_in_repo,
             repo_id=target_repo,
             repo_type="dataset",
             token=token,
-            commit_message=f"KPIs for {day.isoformat()}",
+            commit_message=f"KPIs for {bucket_key}",
         )
     finally:
         try:
@@ -295,30 +392,72 @@ def _write_daily_csv(row: dict, day: date, target_repo: str, token: str) -> None
             pass
 
 
-def _csv_cell(v: Any) -> str:
-    s = str(v)
-    if "," in s or '"' in s or "\n" in s:
-        return '"' + s.replace('"', '""') + '"'
-    return s
+def run_for_hour(
+    api, source_repo: str, target_repo: str, hour_dt: datetime, token: str,
+) -> dict:
+    """Roll up one UTC hour [hour_dt, hour_dt+1h).
+
+    Reads today's + yesterday's session folders so sessions that crossed
+    midnight land in the right hourly bucket.
+    """
+    if hour_dt.tzinfo is None:
+        hour_dt = hour_dt.replace(tzinfo=timezone.utc)
+    window_start = hour_dt.replace(minute=0, second=0, microsecond=0)
+    window_end = window_start + timedelta(hours=1)
+
+    # Sessions partition by session_start_time date. A session that started
+    # at 23:50 yesterday can still emit events in today's first hours, so we
+    # look at both folders.
+    candidate_dates = {window_start.date(), (window_start - timedelta(days=1)).date()}
+
+    per_session: list[dict] = []
+    for d in sorted(candidate_dates):
+        for path in _iter_session_files(api, source_repo, d, token):
+            sess = _download_session(source_repo, path, token)
+            if not sess:
+                continue
+            windowed = _filter_session_to_window(sess, window_start, window_end)
+            if windowed is None:
+                continue
+            per_session.append(_session_metrics(windowed))
+
+    if not per_session:
+        logger.info("No sessions in window %s — skipping", window_start.isoformat())
+        return {}
+
+    row = _aggregate(per_session)
+    bucket_key = window_start.strftime("%Y-%m-%dT%H")
+    path_in_repo = f"hourly/{window_start.strftime('%Y-%m-%d')}/{window_start.strftime('%H')}.csv"
+    _write_csv(row, bucket_key, path_in_repo, target_repo, token)
+    logger.info("Wrote KPIs for %s (%d sessions): %s",
+                bucket_key, per_session and len(per_session), row)
+    return row
 
 
+# Back-compat for daily backfills — unchanged behaviour.
 def run_for_day(api, source_repo: str, target_repo: str, day: date, token: str) -> dict:
     paths = _iter_session_files(api, source_repo, day, token)
     per_session: list[dict] = []
     for path in paths:
-        sess = _download_session(api, source_repo, path, token)
+        sess = _download_session(source_repo, path, token)
         if not sess:
             continue
         per_session.append(_session_metrics(sess))
-
     if not per_session:
         logger.info("No sessions found for %s — skipping", day)
         return {}
-
-    row = _aggregate_day(per_session)
-    _write_daily_csv(row, day, target_repo, token)
-    logger.info("Wrote KPIs for %s: %s", day, row)
+    row = _aggregate(per_session)
+    path_in_repo = f"daily/{day.isoformat()}.csv"
+    _write_csv(row, day.isoformat(), path_in_repo, target_repo, token)
     return row
+
+
+def _parse_hour_arg(s: str) -> datetime:
+    """Accept ``YYYY-MM-DDTHH`` or full ISO — always pinned to the start of the hour, UTC."""
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.replace(minute=0, second=0, microsecond=0)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -327,12 +466,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--source", default="akseljoonas/hf-agent-sessions")
     ap.add_argument("--target", default="akseljoonas/hf-agent-kpis")
     ap.add_argument(
-        "--days", type=int, default=1,
-        help="Number of trailing days to roll up (default: 1 = yesterday).",
+        "--hours", type=int, default=1,
+        help="Number of trailing hours to roll up (default: 1 = last completed hour).",
     )
     ap.add_argument(
-        "--date", type=str, default=None,
-        help="Single YYYY-MM-DD to roll up; overrides --days.",
+        "--datetime", type=str, default=None,
+        help="Single hour, ISO ``YYYY-MM-DDTHH`` (UTC); overrides --hours.",
+    )
+    ap.add_argument(
+        "--daily-backfill", type=str, default=None,
+        help="Escape hatch: aggregate a whole day at once (YYYY-MM-DD). "
+             "Writes to daily/<date>.csv. Use for historical backfill only.",
     )
     args = ap.parse_args(argv)
 
@@ -344,14 +488,19 @@ def main(argv: list[str] | None = None) -> int:
     from huggingface_hub import HfApi
     api = HfApi()
 
-    if args.date:
-        target_days = [date.fromisoformat(args.date)]
-    else:
-        today = datetime.now(timezone.utc).date()
-        target_days = [today - timedelta(days=i) for i in range(1, args.days + 1)]
+    if args.daily_backfill:
+        run_for_day(api, args.source, args.target, date.fromisoformat(args.daily_backfill), token)
+        return 0
 
-    for day in target_days:
-        run_for_day(api, args.source, args.target, day, token)
+    if args.datetime:
+        target_hours = [_parse_hour_arg(args.datetime)]
+    else:
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        # Roll up *completed* hours: start from the hour before ``now``.
+        target_hours = [now - timedelta(hours=i) for i in range(1, args.hours + 1)]
+
+    for hour in target_hours:
+        run_for_hour(api, args.source, args.target, hour, token)
     return 0
 
 

@@ -1,0 +1,59 @@
+name: build-kpis
+
+# Hourly rollup of the session-trajectory dataset into per-hour KPI CSVs.
+# See scripts/build_kpis.py for the data-flow diagram and metric definitions.
+
+on:
+  schedule:
+    # Every hour at :05 (UTC). The script rolls up the most recently
+    # *completed* hour, so running at :05 gives the previous hour a 5-minute
+    # grace window for late heartbeat uploads.
+    - cron: "5 * * * *"
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Trailing hours to roll up (backfill)"
+        required: false
+        default: "1"
+      datetime:
+        description: "Single UTC hour to roll up (YYYY-MM-DDTHH)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-kpis
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir "huggingface_hub>=0.24"
+
+      - name: Run hourly KPI rollup
+        env:
+          HF_KPI_WRITE_TOKEN: ${{ secrets.HF_KPI_WRITE_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SOURCE_REPO: ${{ vars.KPI_SOURCE_REPO || 'akseljoonas/hf-agent-sessions' }}
+          TARGET_REPO: ${{ vars.KPI_TARGET_REPO || 'akseljoonas/hf-agent-kpis' }}
+        run: |
+          set -euo pipefail
+          ARGS="--source ${SOURCE_REPO} --target ${TARGET_REPO}"
+          if [ -n "${{ inputs.datetime }}" ]; then
+            ARGS="${ARGS} --datetime ${{ inputs.datetime }}"
+          else
+            ARGS="${ARGS} --hours ${{ inputs.hours || 1 }}"
+          fi
+          python scripts/build_kpis.py ${ARGS}

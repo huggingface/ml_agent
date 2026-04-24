@@ -128,3 +128,37 @@ def test_failure_and_regenerate_rates():
     row = mod._aggregate_day([s1, s2, s3])
     assert row["failure_rate"] == round(1 / 3, 4)
     assert row["regenerate_rate"] == round(1 / 3, 4)
+
+
+def test_window_filter_keeps_only_events_in_range():
+    from datetime import datetime, timezone
+    mod = _load()
+    events = [
+        _ev("llm_call", {"prompt_tokens": 100}, ts="2026-04-24T09:45:00"),
+        _ev("llm_call", {"prompt_tokens": 200}, ts="2026-04-24T10:05:00"),
+        _ev("tool_call", {"tool": "bash"}, ts="2026-04-24T10:30:00"),
+        _ev("llm_call", {"prompt_tokens": 400}, ts="2026-04-24T11:10:00"),
+    ]
+    session = _session(events, start="2026-04-24T09:44:00")
+    # Only events in [10:00, 11:00) should remain.
+    window_start = datetime(2026, 4, 24, 10, 0, 0, tzinfo=timezone.utc)
+    window_end = datetime(2026, 4, 24, 11, 0, 0, tzinfo=timezone.utc)
+    windowed = mod._filter_session_to_window(session, window_start, window_end)
+    assert windowed is not None
+    types = [e["event_type"] for e in windowed["events"]]
+    assert types == ["llm_call", "tool_call"]
+    # Metrics only reflect in-window events.
+    m = mod._session_metrics(windowed)
+    assert m["tokens_prompt"] == 200
+    assert m["llm_calls"] == 1
+    assert m["tool_calls_total"] == 0  # tool_call not tool_output
+
+
+def test_window_filter_returns_none_when_nothing_in_range():
+    from datetime import datetime, timezone
+    mod = _load()
+    events = [_ev("llm_call", {"prompt_tokens": 100}, ts="2026-04-24T09:45:00")]
+    session = _session(events)
+    window_start = datetime(2026, 4, 24, 10, 0, 0, tzinfo=timezone.utc)
+    window_end = datetime(2026, 4, 24, 11, 0, 0, tzinfo=timezone.utc)
+    assert mod._filter_session_to_window(session, window_start, window_end) is None
