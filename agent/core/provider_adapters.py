@@ -50,6 +50,7 @@ def _normalize_openai_api_base(api_base: str) -> str:
 def _provider_avatar_url(provider_id: str) -> str:
     avatars = {
         "anthropic": "https://huggingface.co/api/avatars/Anthropic",
+        "gemini": "https://www.gstatic.com/lamda/images/gemini_favicon_f069958c85030456e93de685481c559f160ea06.svg",
         "openai": "https://openai.com/favicon.ico",
         "ollama": "https://ollama.com/public/ollama.png",
         "lm_studio": "https://avatars.githubusercontent.com/u/16906759?s=200&v=4",
@@ -288,6 +289,62 @@ class BedrockAdapter(ProviderAdapter):
         strict: bool = False,
     ) -> dict:
         return {"model": model_name}
+
+
+@dataclass(frozen=True)
+class GeminiAdapter(ProviderAdapter):
+    """Google Gemini via LiteLLM's native Gemini adapter.
+
+    GEMINI_API_KEY picked up automatically by LiteLLM.
+    reasoning_effort forwarded directly — LiteLLM maps to thinking_config.
+    """
+
+    prefixes: tuple[str, ...] = ("gemini/",)
+    _EFFORTS: ClassVar[frozenset[str]] = frozenset({"low", "medium", "high"})
+
+    def suggested_models(self) -> tuple[SuggestedModel, ...]:
+        return (
+            SuggestedModel(
+                id="gemini/gemini-2.5-pro",
+                label="Gemini 2.5 Pro",
+                description="Google Gemini",
+                provider="gemini",
+                provider_label="Google Gemini",
+                avatar_url=_provider_avatar_url("gemini"),
+                recommended=True,
+            ),
+            SuggestedModel(
+                id="gemini/gemini-2.5-flash",
+                label="Gemini 2.5 Flash",
+                description="Google Gemini",
+                provider="gemini",
+                provider_label="Google Gemini",
+                avatar_url=_provider_avatar_url("gemini"),
+            ),
+        )
+
+    def allows_model_name(self, model_name: str) -> bool:
+        return _has_model_suffix(model_name, "gemini/")
+
+    def build_params(
+        self,
+        model_name: str,
+        *,
+        session_hf_token: str | None = None,
+        reasoning_effort: str | None = None,
+        strict: bool = False,
+    ) -> dict:
+        params: dict[str, Any] = {"model": model_name}
+        if reasoning_effort:
+            level = "low" if reasoning_effort == "minimal" else reasoning_effort
+            if level not in self._EFFORTS:
+                if strict:
+                    raise UnsupportedEffortError(
+                        f"Gemini doesn't accept effort={level!r}"
+                    )
+            else:
+                params["reasoning_effort"] = level
+        return params
 
 
 @dataclass(frozen=True)
@@ -563,6 +620,7 @@ class HfRouterAdapter(ProviderAdapter):
 ADAPTERS: tuple[ProviderAdapter, ...] = (
     AnthropicAdapter(provider_id="anthropic", provider_label="Anthropic"),
     BedrockAdapter(provider_id="bedrock", provider_label="AWS Bedrock"),
+    GeminiAdapter(provider_id="gemini", provider_label="Google Gemini"),
     OpenAIAdapter(provider_id="openai", provider_label="OpenAI"),
     OllamaAdapter(provider_id="ollama", provider_label="Ollama"),
     LmStudioAdapter(provider_id="lm_studio", provider_label="LM Studio"),

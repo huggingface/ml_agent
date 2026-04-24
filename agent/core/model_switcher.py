@@ -166,6 +166,7 @@ def print_invalid_id(arg: str, console) -> None:
         "  • anthropic/<model>\n"
         "  • openai/<model>\n"
         "  • bedrock/<model>\n"
+        "  • gemini/<model>\n"
         "  • openrouter/<model>\n"
         "  • opencode/<model>\n"
         "  • opencode-go/<model>\n"

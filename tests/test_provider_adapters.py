@@ -85,6 +85,36 @@ def test_bedrock_validation():
     assert is_valid_model_name("bedrock/") is False
 
 
+# -- Gemini adapter -----------------------------------------------------------
+
+
+def test_gemini_adapter_passes_reasoning_effort():
+    params = _resolve_llm_params("gemini/gemini-2.5-pro", reasoning_effort="medium")
+    assert params == {"model": "gemini/gemini-2.5-pro", "reasoning_effort": "medium"}
+
+
+def test_gemini_adapter_normalizes_minimal():
+    params = _resolve_llm_params("gemini/gemini-2.5-flash", reasoning_effort="minimal")
+    assert params == {"model": "gemini/gemini-2.5-flash", "reasoning_effort": "low"}
+
+
+def test_gemini_adapter_no_effort():
+    params = _resolve_llm_params("gemini/gemini-2.5-pro")
+    assert params == {"model": "gemini/gemini-2.5-pro"}
+
+
+def test_gemini_adapter_strict_rejects_invalid():
+    with pytest.raises(UnsupportedEffortError):
+        _resolve_llm_params("gemini/gemini-2.5-pro", reasoning_effort="max", strict=True)
+    with pytest.raises(UnsupportedEffortError):
+        _resolve_llm_params("gemini/gemini-2.5-pro", reasoning_effort="xhigh", strict=True)
+
+
+def test_gemini_validation():
+    assert is_valid_model_name("gemini/gemini-2.5-pro") is True
+    assert is_valid_model_name("gemini/") is False
+
+
 # -- HF Router adapter --------------------------------------------------------
 
 
@@ -246,6 +276,7 @@ def test_model_validation_accepts_direct_provider_ids():
     assert is_valid_model_name("anthropic/claude-opus-4-7") is True
     assert is_valid_model_name("openai/gpt-5") is True
     assert is_valid_model_name("bedrock/us.anthropic.claude-opus-4-7") is True
+    assert is_valid_model_name("gemini/gemini-2.5-pro") is True
     assert is_valid_model_name("ollama/llama3.1") is True
     assert is_valid_model_name("lm_studio/google/gemma-3-12b") is True
     assert is_valid_model_name("vllm/Qwen3-32B") is True
@@ -260,6 +291,7 @@ def test_model_validation_rejects_garbage():
     assert is_valid_model_name("no-slash") is False
     assert is_valid_model_name("anthropic/") is False
     assert is_valid_model_name("openai/") is False
+    assert is_valid_model_name("gemini/") is False
     assert is_valid_model_name("ollama/") is False
     assert is_valid_model_name("lm_studio/") is False
     assert is_valid_model_name("vllm/") is False
