@@ -682,6 +682,17 @@ class Sandbox:
                 if resp.status_code == 200:
                     log(f"API is responsive at {self._base_url}")
                     return
+                # A reachable server that rejects auth will keep returning
+                # 401/403 for the full timeout — fail fast with a clear message
+                # instead of looping until TimeoutError hides the real cause.
+                if resp.status_code in (401, 403):
+                    raise RuntimeError(
+                        f"Sandbox API at {self._base_url} rejected auth "
+                        f"(HTTP {resp.status_code}). Check that HF_TOKEN is set "
+                        f"as a Space secret and matches the client token."
+                    )
+            except RuntimeError:
+                raise
             except Exception as e:
                 last_err = e
             time.sleep(3)
