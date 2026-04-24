@@ -54,7 +54,13 @@ ml-intern --model anthropic/claude-opus-4-6 "your prompt"
 ml-intern --model openai/gpt-5.5 "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
+ml-intern --notify-on-block --notify-method auto
 ```
+
+`--notify-on-block` adds an attention ping when the interactive CLI is blocked
+waiting for approval. `--notify-method auto` prefers desktop notifications when
+supported (`osascript` on macOS, `notify-send` on Linux) and falls back to the
+terminal bell.
 
 ## Supported Gateways
 

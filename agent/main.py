@@ -11,11 +11,13 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+from shutil import which
 
 import litellm
 from prompt_toolkit import PromptSession
@@ -142,6 +144,69 @@ class Submission:
 def _create_rich_console():
     """Get the shared rich Console."""
     return get_console()
+
+
+def _ring_terminal_bell() -> None:
+    """Emit a terminal bell without depending on stderr visibility."""
+    try:
+        sys.stdout.write("\a")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _desktop_notification_command(title: str, message: str) -> list[str] | None:
+    """Return a best-effort desktop notification command for this platform."""
+    if sys.platform == "darwin" and which("osascript"):
+        script = (
+            f'display notification "{message.replace(chr(34), chr(92) + chr(34))}" '
+            f'with title "{title.replace(chr(34), chr(92) + chr(34))}"'
+        )
+        return ["osascript", "-e", script]
+
+    if sys.platform.startswith("linux") and which("notify-send"):
+        return ["notify-send", title, message]
+
+    return None
+
+
+def _notify_attention_needed(
+    *,
+    enabled: bool,
+    method: str = "auto",
+    title: str = "ml-intern needs input",
+    message: str = "Approval required. Return to the terminal to continue.",
+) -> None:
+    """Alert the user when the CLI is blocked waiting for input."""
+    if not enabled:
+        return
+
+    if method == "bell":
+        _ring_terminal_bell()
+        return
+
+    if method in {"auto", "desktop"}:
+        cmd = _desktop_notification_command(title, message)
+        if cmd:
+            try:
+                subprocess.run(
+                    cmd,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                return
+            except Exception:
+                if method == "desktop":
+                    _ring_terminal_bell()
+                    return
+
+        if method == "auto":
+            _ring_terminal_bell()
+            return
+
+    _ring_terminal_bell()
 
 
 class _ThinkingShimmer:
@@ -271,6 +336,8 @@ async def event_listener(
     prompt_session: PromptSession,
     config=None,
     session_holder=None,
+    notify_on_block: bool = False,
+    notification_method: str = "auto",
 ) -> None:
     """Background task that listens for events and displays them"""
     submission_id = [1000]
@@ -397,6 +464,14 @@ async def event_listener(
                     await submission_queue.put(approval_submission)
                     continue
 
+                _notify_attention_needed(
+                    enabled=notify_on_block,
+                    method=notification_method,
+                    message=(
+                        "Approval required. "
+                        f"{count} item{'s' if count != 1 else ''} waiting in the terminal."
+                    ),
+                )
                 print_approval_header(count)
                 approvals = []
 
@@ -811,7 +886,12 @@ async def _handle_slash_command(
     return None
 
 
-async def main(model: str | None = None):
+async def main(
+    model: str | None = None,
+    *,
+    notify_on_block: bool = False,
+    notification_method: str = "auto",
+):
     """Interactive chat with the agent"""
 
     # Clear screen
@@ -883,6 +963,8 @@ async def main(model: str | None = None):
             prompt_session,
             config,
             session_holder=session_holder,
+            notify_on_block=notify_on_block,
+            notification_method=notification_method,
         )
     )
 
@@ -1255,6 +1337,10 @@ def cli():
                         help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
     parser.add_argument("--no-stream", action="store_true",
                         help="Disable token streaming (use non-streaming LLM calls)")
+    parser.add_argument("--notify-on-block", action="store_true",
+                        help="Alert when interactive CLI is waiting for approval or other input")
+    parser.add_argument("--notify-method", choices=["auto", "bell", "desktop"], default="auto",
+                        help="Notification transport for --notify-on-block (default: auto)")
     args = parser.parse_args()
 
     try:
@@ -1264,7 +1350,11 @@ def cli():
                 max_iter = 10_000  # effectively unlimited
             asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
         else:
-            asyncio.run(main(model=args.model))
+            asyncio.run(main(
+                model=args.model,
+                notify_on_block=args.notify_on_block,
+                notification_method=args.notify_method,
+            ))
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
 
