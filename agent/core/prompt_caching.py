@@ -28,7 +28,7 @@ def with_prompt_caching(
     that share the underlying ``ContextManager.items`` list don't see their
     persisted history rewritten.
     """
-    if not model_name or not model_name.startswith("anthropic/"):
+    if not model_name or "anthropic" not in model_name:
         return messages, tools
 
     if tools:

@@ -26,8 +26,8 @@ from agent.core.provider_adapters import is_valid_model_name
 # ":cheapest" / ":preferred" / ":<provider>" to override the default
 # routing policy (auto = fastest with failover).
 SUGGESTED_MODELS = [
-    {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7"},
-    {"id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6"},
+    {"id": "bedrock/us.anthropic.claude-opus-4-7", "label": "Claude Opus 4.7"},
+    {"id": "bedrock/us.anthropic.claude-opus-4-6-v1", "label": "Claude Opus 4.6"},
     {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
     {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6"},
     {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
@@ -61,7 +61,7 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     Anthropic / OpenAI ids return ``True`` without printing anything —
     the probe below covers "does this model exist".
     """
-    if model_id.startswith(("anthropic/", "openai/")):
+    if model_id.startswith(("anthropic/", "openai/", "bedrock/")):
         return True
 
     from agent.core import hf_router_catalog as cat
@@ -142,7 +142,8 @@ def print_invalid_id(arg: str, console) -> None:
         "[dim]Expected:\n"
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
         "  • anthropic/<model>\n"
-        "  • openai/<model>[/dim]"
+        "  • openai/<model>\n"
+        "  • bedrock/<model>[/dim]"
     )
 
 

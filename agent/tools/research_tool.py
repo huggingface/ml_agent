@@ -216,8 +216,8 @@ RESEARCH_TOOL_SPEC = {
 
 def _get_research_model(main_model: str) -> str:
     """Pick a cheaper model for research based on the main model."""
-    if "anthropic/" in main_model:
-        return "anthropic/claude-sonnet-4-6"
+    if "anthropic" in main_model:
+        return "bedrock/us.anthropic.claude-sonnet-4-6"
     # For non-Anthropic models (HF router etc.), use the same model
     return main_model
 

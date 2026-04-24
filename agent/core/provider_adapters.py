@@ -21,7 +21,7 @@ def _has_model_suffix(model_name: str, prefix: str) -> bool:
 
 
 def _is_hf_model_name(model_name: str) -> bool:
-    if model_name.startswith(("anthropic/", "openai/")):
+    if model_name.startswith(("anthropic/", "openai/", "bedrock/")):
         return False
     bare = model_name.removeprefix("huggingface/").split(":", 1)[0]
     parts = bare.split("/")
@@ -115,13 +115,37 @@ class OpenAIAdapter(ProviderAdapter):
 
 
 @dataclass(frozen=True)
+class BedrockAdapter(ProviderAdapter):
+    """AWS Bedrock models via LiteLLM Converse adapter.
+
+    Picks up AWS credentials from standard env vars.
+    Thinking/effort not forwarded through Converse for now.
+    """
+
+    prefixes: tuple[str, ...] = ("bedrock/",)
+
+    def allows_model_name(self, model_name: str) -> bool:
+        return _has_model_suffix(model_name, "bedrock/")
+
+    def build_params(
+        self,
+        model_name: str,
+        *,
+        session_hf_token: str | None = None,
+        reasoning_effort: str | None = None,
+        strict: bool = False,
+    ) -> dict:
+        return {"model": model_name}
+
+
+@dataclass(frozen=True)
 class HfRouterAdapter(ProviderAdapter):
     """HuggingFace router — OpenAI-compat endpoint with HF token chain."""
 
     _EFFORTS: ClassVar[frozenset[str]] = frozenset({"low", "medium", "high"})
 
     def matches(self, model_name: str) -> bool:
-        return not model_name.startswith(("anthropic/", "openai/"))
+        return not model_name.startswith(("anthropic/", "openai/", "bedrock/"))
 
     def allows_model_name(self, model_name: str) -> bool:
         return _is_hf_model_name(model_name)
@@ -163,6 +187,7 @@ class HfRouterAdapter(ProviderAdapter):
 
 ADAPTERS: tuple[ProviderAdapter, ...] = (
     AnthropicAdapter(provider_id="anthropic"),
+    BedrockAdapter(provider_id="bedrock"),
     OpenAIAdapter(provider_id="openai"),
     HfRouterAdapter(provider_id="huggingface"),
 )
