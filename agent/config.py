@@ -95,7 +95,7 @@ def load_config(config_path: str = "config.json") -> Config:
     """
     # Load .env from project root first (so it works from any directory),
     # then CWD .env can override if present
-    load_dotenv(_PROJECT_ROOT / ".env")
+    load_dotenv(_PROJECT_ROOT / ".env", override=True)
     load_dotenv(override=False)
 
     with open(config_path, "r") as f:
