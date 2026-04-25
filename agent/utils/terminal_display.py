@@ -99,7 +99,7 @@ def print_banner(model: str | None = None, hf_user: str | None = None) -> None:
     _console.file.write("\033[2J\033[H")
     _console.file.flush()
 
-    model_label = model or "bedrock/us.anthropic.claude-opus-4-6-v1"
+    model_label = model or "unknown"
     user_label = hf_user or "not logged in"
 
     # Warm gold palette matching the shimmer highlight (255, 200, 80)
