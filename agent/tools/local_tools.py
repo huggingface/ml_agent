@@ -143,8 +143,16 @@ async def _read_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     _files_read.add(_resolve_path(file_path))
 
     lines = raw_content.splitlines()
-    offset = max((args.get("offset") or 1), 1)
-    limit = args.get("limit") or DEFAULT_READ_LINES
+    # Coerce: some models occasionally pass these as strings despite the schema.
+    try:
+        offset = int(args.get("offset") or 1)
+    except (TypeError, ValueError):
+        offset = 1
+    try:
+        limit = int(args.get("limit") or DEFAULT_READ_LINES)
+    except (TypeError, ValueError):
+        limit = DEFAULT_READ_LINES
+    offset = max(offset, 1)
 
     selected = lines[offset - 1 : offset - 1 + limit]
     numbered = []
