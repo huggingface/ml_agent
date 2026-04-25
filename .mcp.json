@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "ml-intern-tools": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PROJECT_DIR}",
+        "python",
+        "-m",
+        "packages.mcp_server.server"
+      ],
+      "env": {
+        "HF_TOKEN": "${HF_TOKEN}",
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+        "ML_INTERN_LOCAL_MODE": "${ML_INTERN_LOCAL_MODE}"
+      }
+    },
+    "hf-mcp-server": {
+      "type": "http",
+      "url": "https://huggingface.co/mcp?login",
+      "headers": {
+        "Authorization": "Bearer ${HF_TOKEN}"
+      }
+    }
+  }
+}

@@ -60,7 +60,14 @@ session_logs/
 /logs
 hf-agent-leaderboard/
 skills/
-.claude/
+
+# Claude Code project mode: track shared config + commands + agents + hooks,
+# but never track per-user local overrides or runtime state.
+.claude/settings.local.json
+.claude/projects/
+.claude/__pycache__/
+.claude/**/__pycache__/
+
 *.jsonl
 *.csv
 

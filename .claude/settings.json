@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "WebFetch",
+      "TodoWrite",
+      "Task",
+      "mcp__ml-intern-tools__explore_hf_docs",
+      "mcp__ml-intern-tools__fetch_hf_docs",
+      "mcp__ml-intern-tools__hf_papers",
+      "mcp__ml-intern-tools__hf_inspect_dataset",
+      "mcp__ml-intern-tools__github_find_examples",
+      "mcp__ml-intern-tools__github_list_repos",
+      "mcp__ml-intern-tools__github_read_file",
+      "mcp__ml-intern-tools__hf_repo_files",
+      "mcp__ml-intern-tools__hf_repo_git",
+      "mcp__ml-intern-tools__hf_jobs",
+      "mcp__ml-intern-tools__sandbox_create",
+      "mcp__ml-intern-tools__bash",
+      "mcp__ml-intern-tools__read",
+      "mcp__ml-intern-tools__write",
+      "mcp__ml-intern-tools__edit",
+      "mcp__hf-mcp-server__*"
+    ]
+  },
+  "env": {
+    "ML_INTERN_SAVE_SESSIONS": "1",
+    "ML_INTERN_SESSION_REPO": "smolagents/ml-intern-sessions",
+    "ML_INTERN_CONFIRM_CPU_JOBS": "1",
+    "ML_INTERN_YOLO": "0",
+    "ML_INTERN_LOCAL_MODE": "0"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python ${CLAUDE_PROJECT_DIR}/.claude/hooks/session_start_context.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__ml-intern-tools__.*|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python ${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_tool_use_approval.py"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python ${CLAUDE_PROJECT_DIR}/.claude/hooks/session_end_upload.py"
+          }
+        ]
+      }
+    ]
+  }
+}
