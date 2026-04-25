@@ -771,8 +771,9 @@ async def _handle_slash_command(
                     console.print(f"  [dim]{m}: {eff or 'off'}[/dim]")
             console.print(
                 "[dim]Set with '/effort minimal|low|medium|high|xhigh|max|off'. "
-                "'max' and 'xhigh' are Anthropic-only; the cascade falls back "
-                "to whatever the model actually accepts.[/dim]"
+                "'max' is Anthropic-only; 'xhigh' is also supported by current "
+                "OpenAI GPT-5 models. The cascade falls back to whatever the "
+                "model actually accepts.[/dim]"
             )
             return None
         level = arg.lower()
