@@ -5,6 +5,8 @@ can import it without pulling in the whole agent loop / tool router and
 creating circular imports.
 """
 
+import os
+
 from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
 
 
@@ -98,6 +100,10 @@ def _resolve_llm_params(
     """
     Build LiteLLM kwargs for a given model id.
 
+    • ``ollama/<model>`` — local inference via Ollama.  Hits the
+      OpenAI-compatible /v1 endpoint on localhost for improved tool calling.
+      Restricted to localhost/loopback to mitigate SSRF risk.
+
     • ``anthropic/<model>`` — native thinking config. We bypass LiteLLM's
       ``reasoning_effort`` → ``thinking`` mapping (which lags new Claude
       releases like 4.7 and sends the wrong API shape). Instead we pass
@@ -137,6 +143,29 @@ def _resolve_llm_params(
       3. huggingface_hub cache — ``HF_TOKEN`` / ``HUGGING_FACE_HUB_TOKEN`` /
          local ``hf auth login`` cache.
     """
+    if model_name.startswith("ollama/"):
+        # Use OpenAI compatible endpoint for Ollama to get better tool calling support
+        actual_model = model_name.replace("ollama/", "", 1)
+        api_base = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
+
+        # SSRF Mitigation: Restrict local models to localhost/loopback
+        from urllib.parse import urlparse
+
+        parsed = urlparse(api_base)
+        hostname = parsed.hostname or ""
+        if hostname not in ("localhost", "127.0.0.1"):
+            raise ValueError(
+                f"Security error: local model API base '{api_base}' must point to localhost or 127.0.0.1"
+            )
+
+        if not api_base.endswith("/v1"):
+            api_base = f"{api_base.rstrip('/')}/v1"
+        return {
+            "model": f"openai/{actual_model}",
+            "api_base": api_base,
+            "api_key": "ollama",
+        }
+
     if model_name.startswith("anthropic/"):
         params: dict = {"model": model_name}
         if reasoning_effort:

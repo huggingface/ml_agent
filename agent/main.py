@@ -29,6 +29,7 @@ from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.messaging.gateway import NotificationGateway
 from agent.utils.reliability_checks import check_training_script_save_pattern
+from agent.utils.ollama_utils import ensure_ollama_readiness
 from agent.utils.terminal_display import (
     get_console,
     print_approval_header,
@@ -76,6 +77,7 @@ def _configure_runtime_logging() -> None:
 
     logging.getLogger("LiteLLM").setLevel(logging.ERROR)
     logging.getLogger("litellm").setLevel(logging.ERROR)
+
 
 def _safe_get_args(arguments: dict) -> dict:
     """Safely extract args dict from arguments, handling cases where LLM passes string."""
@@ -729,6 +731,7 @@ async def _handle_slash_command(
     session_holder: list,
     submission_queue: asyncio.Queue,
     submission_id: list[int],
+    prompt_session: PromptSession,
 ) -> Submission | None:
     """
     Handle a slash command. Returns a Submission to enqueue, or None if
@@ -770,8 +773,33 @@ async def _handle_slash_command(
         normalized = arg.removeprefix("huggingface/")
         session = session_holder[0] if session_holder else None
         await model_switcher.probe_and_switch_model(
-            normalized, config, session, console, resolve_hf_token(),
+            normalized, config, session, console, resolve_hf_token(), prompt_session,
         )
+        return None
+
+    if command == "/add-model":
+        if not arg:
+            print("Usage: /add-model <id>")
+            print("Example: /add-model ollama/mistral")
+            return None
+        model_id = arg
+        if not model_id.startswith("ollama/"):
+            model_id = f"ollama/{model_id}"
+        
+        # Check if it's already in suggested models
+        from agent.core.model_switcher import SUGGESTED_MODELS
+        if any(m["id"] == model_id for m in SUGGESTED_MODELS):
+            print(f"Model {model_id} is already available.")
+            return None
+            
+        # Check if Ollama is running and model is available (prompt to pull if not)
+        if not await ensure_ollama_readiness(model_id, prompt_session):
+            return None
+
+        label = model_id.replace("ollama/", "", 1).capitalize() + " (Local)"
+        SUGGESTED_MODELS.append({"id": model_id, "label": label})
+        print(f"Added local model: {model_id}")
+        print(f"Switch to it with: /model {model_id}")
         return None
 
     if command == "/yolo":
@@ -948,14 +976,22 @@ async def main(model: str | None = None):
     # Create prompt session for input (needed early for token prompt)
     prompt_session = PromptSession()
 
-    # HF token — required, prompt if missing
-    hf_token = resolve_hf_token()
-    if not hf_token:
-        hf_token = await _prompt_and_save_hf_token(prompt_session)
-
+    # Load config early to check model name
     config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     if model:
         config.model_name = model
+
+    # Check if Ollama is running and model is available (prompt to pull if not)
+    if config.model_name.startswith("ollama/"):
+        if not await ensure_ollama_readiness(config.model_name, prompt_session):
+            print("\nExiting: Local model not ready.")
+            return
+
+    # HF token — required, prompt if missing (unless it's a local model)
+    hf_token = resolve_hf_token()
+    is_local = config.model_name.startswith("ollama/")
+    if not hf_token and not is_local:
+        hf_token = await _prompt_and_save_hf_token(prompt_session)
 
     # Resolve username for banner
     hf_user = _get_hf_user(hf_token)
@@ -1014,7 +1050,24 @@ async def main(model: str | None = None):
         )
     )
 
-    await ready_event.wait()
+    # Wait for ready or agent task failure
+    ready_task = asyncio.create_task(ready_event.wait())
+    done, pending = await asyncio.wait(
+        [ready_task, agent_task],
+        return_when=asyncio.FIRST_COMPLETED
+    )
+    if agent_task in done:
+        # Agent task died before ready
+        ready_task.cancel()
+        try:
+            await agent_task
+        except Exception as e:
+            print_error(f"Agent failed to initialize: {e}")
+            listener_task.cancel()
+            return
+    else:
+        # ready_task is done
+        pass
 
     submission_id = [0]
     # Mirrors codex-rs/tui/src/bottom_pane/mod.rs:137
@@ -1110,7 +1163,12 @@ async def main(model: str | None = None):
             # Handle slash commands
             if user_input.strip().startswith("/"):
                 sub = await _handle_slash_command(
-                    user_input.strip(), config, session_holder, submission_queue, submission_id
+                    user_input.strip(),
+                    config,
+                    session_holder,
+                    submission_queue,
+                    submission_id,
+                    prompt_session,
                 )
                 if sub is None:
                     # Command handled locally, loop back for input
@@ -1174,14 +1232,32 @@ async def headless_main(
     logging.basicConfig(level=logging.WARNING)
     _configure_runtime_logging()
 
+    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
+
+    if model:
+        config.model_name = model
+
+    # Check if Ollama is running and model is available
+    if config.model_name.startswith("ollama/"):
+        from agent.utils.ollama_utils import is_ollama_running, is_model_available
+        
+        if not await is_ollama_running():
+            print(f"ERROR: Ollama server is not reachable for local model {config.model_name}", file=sys.stderr)
+            sys.exit(1)
+        if not await is_model_available(config.model_name):
+            print(f"ERROR: Model {config.model_name} is not available on Ollama. Run 'ollama pull {config.model_name.replace('ollama/', '', 1)}' first.", file=sys.stderr)
+            sys.exit(1)
+
+    # HF token — required, prompt if missing (unless it's a local model)
     hf_token = resolve_hf_token()
-    if not hf_token:
+    is_local = config.model_name.startswith("ollama/")
+    if not hf_token and not is_local:
         print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"HF token loaded", file=sys.stderr)
+    if hf_token:
+        print(f"HF token loaded", file=sys.stderr)
 
-    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     config.yolo_mode = True  # Auto-approve everything in headless mode
     notification_gateway = NotificationGateway(config.messaging)
     await notification_gateway.start()

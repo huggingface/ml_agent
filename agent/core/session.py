@@ -18,6 +18,12 @@ from agent.messaging.models import NotificationRequest
 
 logger = logging.getLogger(__name__)
 
+# Local max-token overrides — used for models not yet in the litellm catalog
+# or when we want to pin a specific window.
+# NOTE: Ollama models not listed here will fall back to _DEFAULT_MAX_TOKENS (200k).
+_MAX_TOKENS_MAP: dict[str, int] = {
+    "ollama/qwen3.6": 128_000,
+}
 _DEFAULT_MAX_TOKENS = 200_000
 _TURN_COMPLETE_NOTIFICATION_CHARS = 39000
 
@@ -32,6 +38,10 @@ def _get_max_tokens_safe(model_name: str) -> int:
     look up the bare model. Falls back to a conservative 200k default for
     models not in the catalog (typically HF-router-only models).
     """
+    # Check local overrides first
+    if model_name in _MAX_TOKENS_MAP:
+        return _MAX_TOKENS_MAP[model_name]
+
     from litellm import get_model_info
 
     candidates = [model_name]

@@ -301,6 +301,28 @@ async def get_model() -> dict:
     }
 
 
+@router.post("/config/model")
+async def set_model(body: dict, user: dict = Depends(get_current_user)) -> dict:
+    """Set the LLM model. Applies to new conversations."""
+    model_id = body.get("model")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="Missing 'model' field")
+
+    # Security: Ollama models are for local CLI use only to prevent SSRF in hosted environments.
+    if model_id.startswith("ollama/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Local models (ollama/) can only be used via the CLI for security reasons."
+        )
+
+    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
+    if model_id not in valid_ids:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
+    session_manager.config.model_name = model_id
+    logger.info(f"Model changed to {model_id} by {user.get('username', 'unknown')}")
+    return {"model": model_id}
+
+
 _TITLE_STRIP_CHARS = str.maketrans("", "", "`*_~#[]()")
 
 
@@ -394,6 +416,12 @@ async def create_session(
     if isinstance(body, dict):
         model = body.get("model")
 
+    if model and model.startswith("ollama/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Local models (ollama/) can only be used via the CLI for security reasons."
+        )
+
     valid_ids = {m["id"] for m in AVAILABLE_MODELS}
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
@@ -439,6 +467,12 @@ async def restore_session_summary(
     hf_token = resolve_hf_request_token(request)
 
     model = body.get("model")
+    if model and model.startswith("ollama/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Local models (ollama/) can only be used via the CLI for security reasons."
+        )
+
     valid_ids = {m["id"] for m in AVAILABLE_MODELS}
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
@@ -505,6 +539,13 @@ async def set_session_model(
     model_id = body.get("model")
     if not model_id:
         raise HTTPException(status_code=400, detail="Missing 'model' field")
+    
+    if model_id.startswith("ollama/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Local models (ollama/) can only be used via the CLI for security reasons."
+        )
+
     valid_ids = {m["id"] for m in AVAILABLE_MODELS}
     if model_id not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")

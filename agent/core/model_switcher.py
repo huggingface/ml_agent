@@ -15,7 +15,12 @@ glues it to CLI output + session state.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from prompt_toolkit import PromptSession
+
 from agent.core.effort_probe import ProbeInconclusive, probe_effort
+from agent.utils.ollama_utils import ensure_ollama_readiness
 
 
 # Suggested models shown by `/model` (not a gate). Users can paste any HF
@@ -33,6 +38,7 @@ SUGGESTED_MODELS = [
     {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6"},
     {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
     {"id": "deepseek-ai/DeepSeek-V4-Pro:deepinfra", "label": "DeepSeek V4 Pro"},
+    {"id": "ollama/qwen3.6", "label": "Qwen 3.6 (Local)"},
 ]
 
 
@@ -160,6 +166,7 @@ async def probe_and_switch_model(
     session,
     console,
     hf_token: str | None,
+    prompt_session: PromptSession,
 ) -> None:
     """Validate model+effort with a 1-token ping, cache the effective effort,
     then commit the switch.
@@ -175,8 +182,15 @@ async def probe_and_switch_model(
     Transient errors (5xx, timeout) complete the switch with a yellow
     warning; the next real call re-surfaces the error if it's persistent.
     """
+    normalized = model_id.removeprefix("huggingface/")
+
+    # Local model pre-flight
+    if normalized.startswith("ollama/"):
+        if not await ensure_ollama_readiness(normalized, prompt_session):
+            return
+
     preference = config.reasoning_effort
-    if not _print_hf_routing_info(model_id, console):
+    if not _print_hf_routing_info(normalized, console):
         return
 
     if not preference:
