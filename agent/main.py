@@ -831,6 +831,8 @@ async def main():
     if not hf_token:
         hf_token = await _prompt_and_save_hf_token(prompt_session)
 
+    config = load_config(CLI_CONFIG_PATH)
+
     # Resolve username for banner
     hf_user = None
     try:
@@ -839,7 +841,7 @@ async def main():
     except Exception:
         pass
 
-    print_banner(hf_user=hf_user)
+    print_banner(model=config.model_name, hf_user=hf_user)
 
     # Pre-warm the HF router catalog in the background so /model switches
     # don't block on a network fetch.
@@ -854,9 +856,6 @@ async def main():
     turn_complete_event = asyncio.Event()
     turn_complete_event.set()
     ready_event = asyncio.Event()
-
-    # Start agent loop in background
-    config = load_config(CLI_CONFIG_PATH)
 
     # Create tool router with local mode
     tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
