@@ -7,7 +7,7 @@ import { apiFetch } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
 import { useAgentStore } from '@/store/agentStore';
-import { FIRST_FREE_MODEL_PATH } from '@/utils/model';
+import { CLAUDE_MODEL_PATH, FIRST_FREE_MODEL_PATH, isClaudePath } from '@/utils/model';
 
 // Model configuration
 interface ModelOption {
@@ -37,7 +37,7 @@ const MODEL_OPTIONS: ModelOption[] = [
     id: 'claude-opus',
     name: 'Claude Opus 4.6',
     description: 'Anthropic',
-    modelPath: 'anthropic/claude-opus-4-6',
+    modelPath: CLAUDE_MODEL_PATH,
     avatarUrl: 'https://huggingface.co/api/avatars/Anthropic',
     recommended: true,
   },
@@ -70,7 +70,7 @@ interface ChatInputProps {
   placeholder?: string;
 }
 
-const isClaudeModel = (m: ModelOption) => m.modelPath.startsWith('anthropic/');
+const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
 const firstFreeModel = () => MODEL_OPTIONS.find(m => !isClaudeModel(m)) ?? MODEL_OPTIONS[0];
 
 export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {

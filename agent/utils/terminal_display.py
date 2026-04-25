@@ -180,10 +180,8 @@ class SubAgentDisplayManager:
     def __init__(self):
         self._agents: dict[str, dict] = {}  # agent_id -> state dict
         self._lines_on_screen = 0
-        self._ticker_task = None
 
     def start(self, agent_id: str, label: str = "research") -> None:
-        import asyncio
         import time
         self._agents[agent_id] = {
             "label": label,
@@ -192,8 +190,6 @@ class SubAgentDisplayManager:
             "token_count": 0,
             "start_time": time.monotonic(),
         }
-        if not self._ticker_task:
-            self._ticker_task = asyncio.ensure_future(self._tick())
         self._redraw()
 
     def set_tokens(self, agent_id: str, tokens: int) -> None:
@@ -222,11 +218,7 @@ class SubAgentDisplayManager:
             _console.file.write(line + "\n")
             _console.file.flush()
         self._lines_on_screen = 0
-        if not self._agents:
-            if self._ticker_task:
-                self._ticker_task.cancel()
-                self._ticker_task = None
-        else:
+        if self._agents:
             self._redraw()
 
     @staticmethod
@@ -238,16 +230,6 @@ class SubAgentDisplayManager:
         if stats:
             line += f"  \033[2m({stats})\033[0m"
         return line
-
-    async def _tick(self) -> None:
-        import asyncio
-        try:
-            while True:
-                await asyncio.sleep(1.0)
-                if self._agents:
-                    self._redraw()
-        except asyncio.CancelledError:
-            pass
 
     @staticmethod
     def _format_stats(agent: dict) -> str:

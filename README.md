@@ -212,7 +212,8 @@ def create_builtin_tools() -> list[ToolSpec]:
 
 ### Adding MCP Servers
 
-Edit `configs/main_agent_config.json`:
+Edit `configs/cli_agent_config.json` for CLI defaults, or
+`configs/frontend_agent_config.json` for web-session defaults:
 
 ```json
 {

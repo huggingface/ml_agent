@@ -15,7 +15,7 @@ from agent.core.tools import ToolRouter
 
 # Get project root (parent of backend directory)
 PROJECT_ROOT = Path(__file__).parent.parent
-DEFAULT_CONFIG_PATH = str(PROJECT_ROOT / "configs" / "main_agent_config.json")
+DEFAULT_CONFIG_PATH = str(PROJECT_ROOT / "configs" / "frontend_agent_config.json")
 
 
 # These dataclasses match agent/main.py structure
