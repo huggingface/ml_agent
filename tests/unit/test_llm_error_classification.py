@@ -13,6 +13,7 @@ Covers two regressions on 2026-04-25:
 """
 
 from agent.core.agent_loop import (
+    _MAX_LLM_RETRIES,
     _LLM_RATE_LIMIT_RETRY_DELAYS,
     _LLM_RETRY_DELAYS,
     _is_context_overflow_error,
@@ -95,4 +96,5 @@ def test_non_transient_returns_none():
 def test_rate_limit_total_budget_covers_bedrock_bucket_recovery():
     """The whole point of the rate-limit schedule: total wait time should
     exceed the ~60s Bedrock TPM bucket recovery window."""
+    assert len(_LLM_RATE_LIMIT_RETRY_DELAYS) == _MAX_LLM_RETRIES - 1
     assert sum(_LLM_RATE_LIMIT_RETRY_DELAYS) > 60

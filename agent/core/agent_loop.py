@@ -176,7 +176,7 @@ def _needs_approval(
 # -- LLM retry constants --------------------------------------------------
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_DELAYS = [5, 15, 30]  # seconds between retries
-_LLM_RATE_LIMIT_RETRY_DELAYS = [15, 30, 45]  # exceed Bedrock's ~60s TPM bucket window
+_LLM_RATE_LIMIT_RETRY_DELAYS = [30, 60]  # exceed Bedrock's ~60s TPM bucket window
 
 
 def _is_rate_limit_error(error: Exception) -> bool:
