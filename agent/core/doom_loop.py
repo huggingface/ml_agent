@@ -17,10 +17,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ToolCallSignature:
-    """Hashable signature for a single tool call (name + args hash)."""
+    """Hashable signature for a single tool call plus its observed result."""
 
     name: str
     args_hash: str
+    result_hash: str | None = None
 
 
 def _hash_args(args_str: str) -> str:
@@ -31,11 +32,16 @@ def _hash_args(args_str: str) -> str:
 def extract_recent_tool_signatures(
     messages: list[Message], lookback: int = 30
 ) -> list[ToolCallSignature]:
-    """Extract tool call signatures from recent assistant messages."""
+    """Extract tool call signatures from recent assistant messages.
+
+    Includes the immediate tool result hash when present. This prevents
+    legitimate polling from being classified as a doom loop when the poll
+    arguments stay constant but the observed result keeps changing.
+    """
     signatures: list[ToolCallSignature] = []
     recent = messages[-lookback:] if len(messages) > lookback else messages
 
-    for msg in recent:
+    for idx, msg in enumerate(recent):
         if getattr(msg, "role", None) != "assistant":
             continue
         tool_calls = getattr(msg, "tool_calls", None)
@@ -47,7 +53,21 @@ def extract_recent_tool_signatures(
                 continue
             name = getattr(fn, "name", "") or ""
             args_str = getattr(fn, "arguments", "") or ""
-            signatures.append(ToolCallSignature(name=name, args_hash=_hash_args(args_str)))
+            result_hash = None
+            for follow in recent[idx + 1:]:
+                role = getattr(follow, "role", None)
+                if role == "tool" and getattr(follow, "tool_call_id", None) == getattr(tc, "id", None):
+                    result_hash = _hash_args(str(getattr(follow, "content", "") or ""))
+                    break
+                if role in {"assistant", "user"}:
+                    break
+            signatures.append(
+                ToolCallSignature(
+                    name=name,
+                    args_hash=_hash_args(args_str),
+                    result_hash=result_hash,
+                )
+            )
 
     return signatures
 
