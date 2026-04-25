@@ -2,7 +2,29 @@
 HF Agent - Main agent module
 """
 
+import sys
+from pathlib import Path
+
 import litellm
+
+
+def resource_root() -> Path:
+    """Return the directory that contains ``agent/``, ``configs/``, etc.
+
+    Normally this is the repository root (``Path(agent.__file__).parent.parent``).
+    Inside a PyInstaller frozen binary (``--onefile``) the source's
+    ``__file__`` is reported as a relative path like ``agent/main.py``,
+    so ``parent.parent`` collapses to the process CWD instead of the
+    extracted bundle. We detect that case via ``sys._MEIPASS`` (set by
+    PyInstaller's bootstrapper) and use the bundle root, where the
+    ``--add-data agent/prompts:agent/prompts`` and ``configs:configs``
+    payloads are extracted at startup.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass)
+    return Path(__file__).resolve().parent.parent
+
 
 # Global LiteLLM behavior — set once at package import so both CLI and
 # backend entries share the same config.

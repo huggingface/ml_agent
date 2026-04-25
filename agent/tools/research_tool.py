@@ -13,6 +13,7 @@ from typing import Any
 
 from litellm import Message, acompletion
 
+from agent.core import rate_limiter
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
@@ -325,6 +326,7 @@ async def research_handler(
             ))
             try:
                 _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
+                await rate_limiter.acquire(research_model)
                 response = await acompletion(
                     messages=_msgs,
                     tools=None,  # no tools — force text response
@@ -353,6 +355,7 @@ async def research_handler(
             _msgs, _tools = with_prompt_caching(
                 messages, tool_specs if tool_specs else None, llm_params.get("model")
             )
+            await rate_limiter.acquire(research_model)
             response = await acompletion(
                 messages=_msgs,
                 tools=_tools,
@@ -452,6 +455,7 @@ async def research_handler(
     ))
     try:
         _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
+        await rate_limiter.acquire(research_model)
         response = await acompletion(
             messages=_msgs,
             tools=None,

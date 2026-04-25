@@ -14,6 +14,7 @@ from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
 from agent.core import telemetry
+from agent.core import rate_limiter
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
@@ -201,7 +202,10 @@ def _friendly_error_message(error: Exception) -> str | None:
             "To fix this, set the API key for your model provider:\n"
             "  • Anthropic:   export ANTHROPIC_API_KEY=sk-...\n"
             "  • OpenAI:      export OPENAI_API_KEY=sk-...\n"
-            "  • HF Router:   export HF_TOKEN=hf_...\n\n"
+            "  • HF Router:   export HF_TOKEN=hf_...\n"
+            "  • OpenCode:    export OPENCODE_API_KEY=sk-...\n"
+            "  • Copilot:     export GITHUB_COPILOT_TOKEN=...  "
+            "(or run `litellm github-copilot login` for OAuth)\n\n"
             "You can also add it to a .env file in the project root.\n"
             "To switch models, use the /model command."
         )
@@ -304,6 +308,7 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     t_start = time.monotonic()
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
+            await rate_limiter.acquire(session.config.model_name)
             response = await acompletion(
                 messages=messages,
                 tools=tools,
@@ -412,6 +417,7 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     t_start = time.monotonic()
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
+            await rate_limiter.acquire(session.config.model_name)
             response = await acompletion(
                 messages=messages,
                 tools=tools,

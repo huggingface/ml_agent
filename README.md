@@ -26,11 +26,24 @@ ml-intern
 Create a `.env` file in the project root (or export these in your shell):
 
 ```bash
-ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
+# At least ONE of the following LLM providers (cascade order: Anthropic → Copilot → OpenCode):
+ANTHROPIC_API_KEY=<your-anthropic-api-key>     # preferred
+GITHUB_COPILOT_TOKEN=<your-copilot-token>      # GitHub Copilot (or run `litellm github-copilot login`)
+OPENCODE_API_KEY=<your-opencode-zen-api-key>   # OpenCode Zen free fallback (50 req/min cap)
+
+# Optional but recommended for HF-related tools (datasets, jobs, papers):
 HF_TOKEN=<your-hugging-face-token>
-GITHUB_TOKEN=<github-personal-access-token> 
+GITHUB_TOKEN=<github-personal-access-token>
 ```
-If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
+
+The CLI auto-selects the model on launch based on which provider credentials are
+present, walking the cascade `ANTHROPIC_API_KEY → GITHUB_COPILOT_TOKEN →
+OPENCODE_API_KEY`. Override the auto-selection by passing `--model <id>` or
+setting `ML_INTERN_MODEL=<id>` in the environment. OpenCode's documented free-tier
+rate limit (50 req/min) is enforced client-side in `agent/core/rate_limiter.py`,
+so the agent paces itself rather than tripping 429s.
+
+If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch (you can also skip it if you only want non-HF tools). To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
 
 ### Usage
 
@@ -49,7 +62,9 @@ ml-intern "fine-tune llama on my dataset"
 **Options:**
 
 ```bash
-ml-intern --model anthropic/claude-opus-4-6 "your prompt"
+ml-intern --model anthropic/claude-opus-4-7 "your prompt"
+ml-intern --model copilot/gpt-5 "your prompt"
+ml-intern --model opencode/qwen3.6-plus-free "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```

@@ -24,15 +24,28 @@ from agent.core.effort_probe import ProbeInconclusive, probe_effort
 # ":cheapest" / ":preferred" / ":<provider>" to override the default
 # routing policy (auto = fastest with failover).
 SUGGESTED_MODELS = [
-    {"id": "bedrock/us.anthropic.claude-opus-4-7", "label": "Claude Opus 4.7"},
-    {"id": "bedrock/us.anthropic.claude-opus-4-6-v1", "label": "Claude Opus 4.6"},
-    {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
-    {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6"},
-    {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
+    {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7 (Anthropic API)"},
+    {"id": "anthropic/claude-sonnet-4-5-20250929", "label": "Claude Sonnet 4.5 (Anthropic API)"},
+    {"id": "bedrock/us.anthropic.claude-opus-4-7", "label": "Claude Opus 4.7 (Bedrock)"},
+    {"id": "copilot/gpt-5", "label": "GPT-5 via GitHub Copilot"},
+    {"id": "copilot/claude-sonnet-4.5", "label": "Claude Sonnet 4.5 via GitHub Copilot"},
+    {"id": "opencode/minimax-m2.5-free", "label": "MiniMax M2.5 (OpenCode Zen, free)"},
+    {"id": "opencode/nemotron-3-super-free", "label": "Nemotron 3 Super (OpenCode Zen, free)"},
+    {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7 (HF router)"},
+    {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6 (HF router)"},
 ]
 
 
 _ROUTING_POLICIES = {"fastest", "cheapest", "preferred"}
+
+# Provider prefixes that bypass the HF router catalog lookup. These have
+# their own auth / endpoint resolution in :mod:`agent.core.llm_params` and
+# don't appear in the HF catalog. Matched against the head of the id
+# (before the first ``/``).
+_DIRECT_PROVIDER_PREFIXES = (
+    "anthropic/", "bedrock/", "openai/",
+    "opencode/", "copilot/", "github_copilot/",
+)
 
 
 def is_valid_model_id(model_id: str) -> bool:
@@ -60,10 +73,10 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     proceed with the switch, ``False`` to indicate a hard problem the user
     should notice before we fire the effort probe.
 
-    Anthropic / OpenAI ids return ``True`` without printing anything —
-    the probe below covers "does this model exist".
+    Anthropic / OpenAI / Copilot / OpenCode ids return ``True`` without
+    printing anything — the probe below covers "does this model exist".
     """
-    if model_id.startswith(("anthropic/", "openai/")):
+    if model_id.startswith(_DIRECT_PROVIDER_PREFIXES):
         return True
 
     from agent.core import hf_router_catalog as cat
@@ -136,7 +149,8 @@ def print_model_listing(config, console) -> None:
     console.print(
         "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
         "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
-        "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.[/dim]"
+        "Direct-provider prefixes: 'anthropic/<model>', 'openai/<model>',\n"
+        "  'copilot/<model>' (GitHub Copilot), 'opencode/<model>' (OpenCode Zen free tier).[/dim]"
     )
 
 
@@ -146,7 +160,9 @@ def print_invalid_id(arg: str, console) -> None:
         "[dim]Expected:\n"
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
         "  • anthropic/<model>\n"
-        "  • openai/<model>[/dim]"
+        "  • openai/<model>\n"
+        "  • copilot/<model>        (GitHub Copilot)\n"
+        "  • opencode/<model>       (OpenCode Zen free tier)[/dim]"
     )
 
 

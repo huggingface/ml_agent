@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from litellm import acompletion
 
+from agent.core import rate_limiter
 from agent.core.llm_params import UnsupportedEffortError, _resolve_llm_params
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ async def probe_effort(
 
         attempts += 1
         try:
+            await rate_limiter.acquire(model_name)
             await asyncio.wait_for(
                 acompletion(
                     messages=[{"role": "user", "content": "ping"}],

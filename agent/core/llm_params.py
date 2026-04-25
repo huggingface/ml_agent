@@ -65,15 +65,19 @@ _patch_litellm_effort_validation()
 
 
 # Effort levels accepted on the wire.
-#   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
-#   OpenAI direct:     minimal | low | medium | high       (reasoning_effort top-level)
-#   HF router:         low | medium | high                 (extra_body.reasoning_effort)
+#   Anthropic (4.6+):     low | medium | high | xhigh | max   (output_config.effort)
+#   OpenAI direct:        minimal | low | medium | high       (reasoning_effort top-level)
+#   HF router:            low | medium | high                 (extra_body.reasoning_effort)
+#   OpenCode Zen:         low | medium | high                 (extra_body.reasoning_effort)
+#   GitHub Copilot:       low | medium | high                 (extra_body.reasoning_effort)
 #
 # We validate *shape* here and let the probe cascade walk down on rejection;
 # we deliberately do NOT maintain a per-model capability table.
 _ANTHROPIC_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _OPENAI_EFFORTS = {"minimal", "low", "medium", "high"}
 _HF_EFFORTS = {"low", "medium", "high"}
+_OPENCODE_EFFORTS = {"low", "medium", "high"}
+_COPILOT_EFFORTS = {"low", "medium", "high"}
 
 
 class UnsupportedEffortError(ValueError):
@@ -108,6 +112,18 @@ def _resolve_llm_params(
 
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
+
+    • ``opencode/<model>`` — OpenCode Zen's OpenAI-compatible free
+      endpoint at ``https://opencode.ai/zen/v1``. Auth via
+      ``OPENCODE_API_KEY``. Free tier is rate-limited to 50 req/min;
+      enforcement lives in :mod:`agent.core.rate_limiter` and is applied
+      around every ``acompletion`` call site.
+
+    • ``copilot/<model>`` (alias ``github_copilot/<model>``) — routed
+      through LiteLLM's native ``github_copilot/`` provider, which runs
+      its own OAuth device-flow on first use and caches tokens under
+      ``~/.config/litellm/github_copilot/``. ``GITHUB_COPILOT_TOKEN`` /
+      ``GH_COPILOT_TOKEN`` skip the prompt when already provisioned.
 
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
@@ -172,6 +188,68 @@ def _resolve_llm_params(
                     )
             else:
                 params["reasoning_effort"] = reasoning_effort
+        return params
+
+    if model_name.startswith("opencode/"):
+        # OpenCode Zen — OpenAI-compatible endpoint at ``/zen/v1``. Free
+        # tier is documented at 50 req/min; we enforce that client-side
+        # in :mod:`agent.core.rate_limiter`. Model id on the wire is the
+        # bare suffix (e.g. ``qwen3.6-plus-free``). LiteLLM dispatches
+        # this through its OpenAI adapter via ``openai/<model>`` + a
+        # custom ``api_base``.
+        bare = model_name.removeprefix("opencode/")
+        api_key = os.environ.get("OPENCODE_API_KEY")
+        params: dict = {
+            "model": f"openai/{bare}",
+            "api_base": "https://opencode.ai/zen/v1",
+        }
+        if api_key:
+            params["api_key"] = api_key
+        else:
+            # OpenCode Zen serves the ``-free`` model ids anonymously, but
+            # LiteLLM's OpenAI adapter refuses to instantiate without an
+            # ``api_key``. We pass a placeholder and explicitly blank the
+            # ``Authorization`` header so the upstream sees no credentials
+            # and routes the request to the free anonymous tier instead of
+            # 401-ing on an "Invalid API key.".
+            params["api_key"] = "anonymous"
+            params["extra_headers"] = {"Authorization": ""}
+        if reasoning_effort:
+            level = "low" if reasoning_effort == "minimal" else reasoning_effort
+            if level not in _OPENCODE_EFFORTS:
+                if strict:
+                    raise UnsupportedEffortError(
+                        f"OpenCode doesn't accept effort={level!r}"
+                    )
+            else:
+                params.setdefault("extra_body", {})["reasoning_effort"] = level
+        return params
+
+    if model_name.startswith(("copilot/", "github_copilot/")):
+        # GitHub Copilot — LiteLLM ships a native ``github_copilot/``
+        # provider that handles the device-flow OAuth dance and token
+        # refresh on its own (state cached under ``~/.config/litellm/
+        # github_copilot/``). We accept the ergonomic ``copilot/`` alias
+        # in this codebase but normalize to LiteLLM's canonical prefix
+        # so its provider router takes over. ``GITHUB_COPILOT_TOKEN`` /
+        # ``GH_COPILOT_TOKEN``, when set, short-circuits the OAuth flow.
+        bare = model_name.split("/", 1)[1]
+        params = {"model": f"github_copilot/{bare}"}
+        token = (
+            os.environ.get("GITHUB_COPILOT_TOKEN")
+            or os.environ.get("GH_COPILOT_TOKEN")
+        )
+        if token:
+            params["api_key"] = token
+        if reasoning_effort:
+            level = "low" if reasoning_effort == "minimal" else reasoning_effort
+            if level not in _COPILOT_EFFORTS:
+                if strict:
+                    raise UnsupportedEffortError(
+                        f"Copilot doesn't accept effort={level!r}"
+                    )
+            else:
+                params["extra_body"] = {"reasoning_effort": level}
         return params
 
     hf_model = model_name.removeprefix("huggingface/")

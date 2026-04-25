@@ -1,0 +1,192 @@
+name: Build Executables
+
+# Cross-platform PyInstaller build for the ``ml-intern`` CLI.
+#
+# Produces a single self-contained binary per OS:
+#   * ml-intern-linux-x86_64
+#   * ml-intern-windows-x86_64.exe
+#
+# Triggers:
+#   * Tag push (v*) — also creates a GitHub Release and uploads the binaries.
+#   * Manual dispatch — useful for smoke-testing the build before tagging.
+#   * PR / push touching this workflow or the agent code — sanity check that
+#     the freeze still works; no Release is created.
+#
+# Notes on the build:
+#   * Data files (``agent/prompts/*.yaml``, ``configs/*.json``) are bundled
+#     via ``--add-data``. Path lookups in the code are
+#     ``Path(__file__).parent.parent`` style — PyInstaller's bootstrapper
+#     rewrites those to point inside the extracted bundle, so no source
+#     change is needed.
+#   * ``litellm`` ships its model_prices_and_context_window.json and a few
+#     other JSON tables that PyInstaller doesn't pick up via static
+#     analysis. We bundle the entire installed ``litellm`` package as data
+#     to avoid playing whack-a-mole with hidden imports.
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+      - 'copilot/**'
+    paths:
+      - 'agent/**'
+      - 'configs/**'
+      - 'pyproject.toml'
+      - '.github/workflows/build-executables.yml'
+  pull_request:
+    paths:
+      - 'agent/**'
+      - 'configs/**'
+      - 'pyproject.toml'
+      - '.github/workflows/build-executables.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to create a release on tag push
+
+concurrency:
+  group: build-executables-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: ml-intern-linux-x86_64
+            binary_suffix: ''
+          - os: windows-latest
+            artifact_name: ml-intern-windows-x86_64.exe
+            binary_suffix: '.exe'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install project + PyInstaller
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # Install the project itself so ``agent`` and friends are importable.
+          # PyInstaller follows imports from ``agent.main`` to pick up the rest.
+          pip install -e .
+          pip install pyinstaller==6.11.1
+
+      - name: Build executable with PyInstaller
+        shell: bash
+        run: |
+          # ``--collect-all`` picks up data files + hidden imports for
+          # packages that use dynamic / lazy loading. Litellm, tiktoken,
+          # huggingface_hub, jsonschema (and its referenced
+          # ``rfc3987_syntax`` + ``lark`` grammars) all fall in that
+          # bucket.
+          #
+          # ``--copy-metadata`` brings in the dist-info directories that
+          # ``importlib.metadata.version("<pkg>")`` looks up at runtime.
+          # Fastmcp / litellm / huggingface_hub all do this on import.
+          #
+          # ``--runtime-hook`` wires in a tiny shim that fixes
+          # ``importlib.metadata.MetadataPathFinder.invalidate_caches``
+          # (missing ``@classmethod``) so ``beartype.claw``, called at
+          # import time by ``key_value`` (a fastmcp dep), doesn't crash.
+          # See the hook source for the full backstory.
+          #
+          # Prompt YAML / config JSON are added with ``--add-data`` using
+          # the platform-specific separator (``:`` on POSIX, ``;`` on
+          # Windows). ``agent/__init__.resource_root`` redirects path
+          # lookups inside the bundle.
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            sep=';'
+          else
+            sep=':'
+          fi
+
+          pyinstaller \
+            --name ml-intern \
+            --onefile \
+            --console \
+            --noconfirm \
+            --clean \
+            --runtime-hook scripts/pyinstaller/rth_metadatapathfinder_classmethod.py \
+            --add-data "agent/prompts${sep}agent/prompts" \
+            --add-data "configs${sep}configs" \
+            --collect-all litellm \
+            --collect-all tiktoken \
+            --collect-all tiktoken_ext \
+            --collect-all huggingface_hub \
+            --collect-all jsonschema \
+            --collect-all jsonschema_specifications \
+            --collect-all rfc3987_syntax \
+            --collect-all lark \
+            --collect-submodules agent \
+            --collect-submodules backend \
+            --copy-metadata fastmcp \
+            --copy-metadata litellm \
+            --copy-metadata huggingface_hub \
+            agent/main.py
+
+      - name: Smoke test the binary (--help)
+        shell: bash
+        run: |
+          # The frozen binary should at minimum print usage without
+          # touching the network or LLM APIs. This catches missing data
+          # files / hidden imports at build time rather than at first run.
+          binary="dist/ml-intern${{ matrix.binary_suffix }}"
+          if [[ ! -f "$binary" ]]; then
+            echo "ERROR: expected binary $binary not found"
+            ls -la dist/
+            exit 1
+          fi
+          "$binary" --help
+
+      - name: Rename for upload
+        shell: bash
+        run: |
+          mv "dist/ml-intern${{ matrix.binary_suffix }}" "dist/${{ matrix.artifact_name }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish Release
+    # Only fire on a tag push, after both matrix jobs succeed. Manual
+    # dispatch / PR runs upload artifacts but skip the Release creation.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifact directories
+        run: |
+          mkdir -p release
+          # ``actions/upload-artifact@v4`` puts each artifact in its own
+          # subdir; flatten everything into a single ``release/`` for the
+          # gh release upload step.
+          find artifacts -type f -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

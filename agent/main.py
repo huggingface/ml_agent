@@ -845,8 +845,21 @@ async def main():
     ready_event = asyncio.Event()
 
     # Start agent loop in background
-    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
+    from agent import resource_root
+    config_path = resource_root() / "configs" / "main_agent_config.json"
     config = load_config(config_path)
+
+    # Auto-select model from available credentials (Anthropic → Copilot →
+    # OpenCode). The cascade only fires when at least one of those
+    # provider credentials is set; otherwise we keep the model baked into
+    # the config (useful for users on AWS / HF router).
+    from agent.core.provider_select import apply_provider_cascade
+    _provider_source = apply_provider_cascade(config)
+    if _provider_source:
+        get_console().print(
+            f"[dim]Model auto-selected from {_provider_source} credentials: "
+            f"{config.model_name}[/dim]"
+        )
 
     # Create tool router with local mode
     tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
@@ -1039,17 +1052,46 @@ async def headless_main(
 
     hf_token = _get_hf_token()
     if not hf_token:
-        print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
-        sys.exit(1)
+        # Only abort when none of our LLM providers are configured. With
+        # ANTHROPIC_API_KEY / GITHUB_COPILOT_TOKEN / OPENCODE_API_KEY the
+        # core agent still runs; HF-specific tools (datasets, jobs, etc.)
+        # will surface their own errors when invoked.
+        from agent.core.provider_select import auto_select_model
+        _, _src = auto_select_model()
+        if _src == "none":
+            print(
+                "ERROR: No HF token found. Set HF_TOKEN or run "
+                "`huggingface-cli login`. Alternatively, set one of: "
+                "ANTHROPIC_API_KEY, GITHUB_COPILOT_TOKEN, OPENCODE_API_KEY.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            "WARN: No HF token found — HF-specific tools (datasets, jobs) "
+            "will be unavailable. Set HF_TOKEN to enable them.",
+            file=sys.stderr,
+        )
 
-    print(f"HF token loaded", file=sys.stderr)
+    if hf_token:
+        print(f"HF token loaded", file=sys.stderr)
 
-    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
+    from agent import resource_root
+    config_path = resource_root() / "configs" / "main_agent_config.json"
     config = load_config(config_path)
     config.yolo_mode = True  # Auto-approve everything in headless mode
 
+    # Apply the provider cascade unless --model was explicitly passed.
+    # CLI flag wins over env-driven auto-selection.
+    from agent.core.provider_select import apply_provider_cascade
     if model:
         config.model_name = model
+    else:
+        _provider_source = apply_provider_cascade(config)
+        if _provider_source:
+            print(
+                f"Model auto-selected from {_provider_source} credentials",
+                file=sys.stderr,
+            )
 
     if max_iterations is not None:
         config.max_iterations = max_iterations
