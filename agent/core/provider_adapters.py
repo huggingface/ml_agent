@@ -89,7 +89,9 @@ class OpenAIAdapter(ProviderAdapter):
     """OpenAI models via native API (reasoning_effort top-level kwarg)."""
 
     prefixes: tuple[str, ...] = ("openai/",)
-    _EFFORTS: ClassVar[frozenset[str]] = frozenset({"minimal", "low", "medium", "high"})
+    _EFFORTS: ClassVar[frozenset[str]] = frozenset(
+        {"minimal", "low", "medium", "high", "xhigh"}
+    )
 
     def allows_model_name(self, model_name: str) -> bool:
         return _has_model_suffix(model_name, "openai/")

@@ -102,6 +102,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
       <MessageList
         messages={messages}
         isProcessing={busy}
+        sessionId={sessionId}
         approveTools={approveTools}
         onUndoLastTurn={undoLastTurn}
         onEditAndRegenerate={editAndRegenerate}

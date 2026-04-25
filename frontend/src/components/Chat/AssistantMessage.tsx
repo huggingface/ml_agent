@@ -1,13 +1,19 @@
-import { useMemo } from 'react';
-import { Box, Stack, Typography } from '@mui/material';
+import { useMemo, useState } from 'react';
+import { Box, IconButton, Stack, Tooltip, Typography } from '@mui/material';
+import ThumbUpOutlined from '@mui/icons-material/ThumbUpOutlined';
+import ThumbUp from '@mui/icons-material/ThumbUp';
+import ThumbDownOutlined from '@mui/icons-material/ThumbDownOutlined';
+import ThumbDown from '@mui/icons-material/ThumbDown';
 import MarkdownContent from './MarkdownContent';
 import ToolCallGroup from './ToolCallGroup';
+import { apiFetch } from '@/utils/api';
 import type { UIMessage } from 'ai';
 import type { MessageMeta } from '@/types/agent';
 
 interface AssistantMessageProps {
   message: UIMessage;
   isStreaming?: boolean;
+  sessionId?: string | null;
   approveTools: (approvals: Array<{ tool_call_id: string; approved: boolean; feedback?: string | null }>) => Promise<boolean>;
 }
 
@@ -43,8 +49,27 @@ function groupParts(parts: UIMessage['parts']) {
   return groups;
 }
 
-export default function AssistantMessage({ message, isStreaming = false, approveTools }: AssistantMessageProps) {
+export default function AssistantMessage({ message, isStreaming = false, sessionId, approveTools }: AssistantMessageProps) {
   const groups = useMemo(() => groupParts(message.parts), [message.parts]);
+  const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+
+  const sendFeedback = async (rating: 'up' | 'down') => {
+    if (!sessionId || feedbackBusy) return;
+    setFeedbackBusy(true);
+    // Optimistic toggle — feedback is observability, not a hard requirement.
+    setFeedback(rating);
+    try {
+      await apiFetch(`/api/feedback/${sessionId}`, {
+        method: 'POST',
+        body: JSON.stringify({ rating, message_id: message.id }),
+      });
+    } catch {
+      // Silently swallow — don't block chat UX on a telemetry write.
+    } finally {
+      setFeedbackBusy(false);
+    }
+  };
 
   // Find the last text group index for streaming cursor
   let lastTextIdx = -1;
@@ -114,6 +139,24 @@ export default function AssistantMessage({ message, isStreaming = false, approve
           return null;
         })}
       </Box>
+      {!isStreaming && sessionId && (
+        <Stack
+          direction="row"
+          spacing={0.5}
+          sx={{ mt: 0.5, ml: 0.5, opacity: feedback ? 1 : 0.5, '&:hover': { opacity: 1 } }}
+        >
+          <Tooltip title="Helpful">
+            <IconButton size="small" disabled={feedbackBusy} onClick={() => sendFeedback('up')}>
+              {feedback === 'up' ? <ThumbUp fontSize="inherit" /> : <ThumbUpOutlined fontSize="inherit" />}
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Not helpful">
+            <IconButton size="small" disabled={feedbackBusy} onClick={() => sendFeedback('down')}>
+              {feedback === 'down' ? <ThumbDown fontSize="inherit" /> : <ThumbDownOutlined fontSize="inherit" />}
+            </IconButton>
+          </Tooltip>
+        </Stack>
+      )}
     </Box>
   );
 }

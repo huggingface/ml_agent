@@ -672,3 +672,41 @@ async def shutdown_session(
     return {"status": "shutdown_requested", "session_id": session_id}
 
 
+@router.post("/feedback/{session_id}")
+async def submit_feedback(
+    session_id: str,
+    body: dict,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Attach a user feedback signal to a session's event log.
+
+    Body: {rating: "up"|"down"|"outcome_success"|"outcome_fail",
+           turn_index?: int, comment?: str, message_id?: str}
+    Appended as a `feedback` event and saved with the session trajectory.
+    """
+    _check_session_access(session_id, user)
+    agent_session = session_manager.sessions.get(session_id)
+    if not agent_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    rating = body.get("rating")
+    if rating not in {"up", "down", "outcome_success", "outcome_fail"}:
+        raise HTTPException(status_code=400, detail="invalid rating")
+
+    from agent.core import telemetry
+    await telemetry.record_feedback(
+        agent_session.session,
+        rating=rating,
+        turn_index=body.get("turn_index"),
+        message_id=body.get("message_id"),
+        comment=body.get("comment"),
+    )
+    # Fire-and-forget save so feedback reaches the dataset even if the user
+    # closes the tab right after clicking.
+    if agent_session.session.config.save_sessions:
+        agent_session.session.save_and_upload_detached(
+            agent_session.session.config.session_dataset_repo
+        )
+    return {"status": "ok"}
+
+

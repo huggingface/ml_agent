@@ -131,6 +131,8 @@ async def _ensure_sandbox(
     }
     if hardware != "cpu-basic":
         kwargs["sleep_time"] = 2700
+    import time as _t
+    _t_start = _t.monotonic()
     try:
         sb = await asyncio.to_thread(Sandbox.create, **kwargs)
     except Sandbox.Cancelled:
@@ -138,6 +140,13 @@ async def _ensure_sandbox(
     finally:
         watcher_task.cancel()
     session.sandbox = sb
+
+    # Telemetry: sandbox creation (infra consumption signal)
+    from agent.core import telemetry
+    await telemetry.record_sandbox_create(
+        session, sb, hardware=hardware,
+        create_latency_s=int(_t.monotonic() - _t_start),
+    )
 
     # Set a descriptive title (template title is inherited on duplicate)
     from huggingface_hub import metadata_update

@@ -291,11 +291,14 @@ class SessionManager:
         """Delete the sandbox Space if one was created for this session."""
         sandbox = getattr(session, "sandbox", None)
         if sandbox and getattr(sandbox, "_owns_space", False):
+            space_id = getattr(sandbox, "space_id", None)
             try:
-                logger.info(f"Deleting sandbox {sandbox.space_id}...")
+                logger.info(f"Deleting sandbox {space_id}...")
                 await asyncio.to_thread(sandbox.delete)
+                from agent.core import telemetry
+                await telemetry.record_sandbox_destroy(session, sandbox)
             except Exception as e:
-                logger.warning(f"Failed to delete sandbox {sandbox.space_id}: {e}")
+                logger.warning(f"Failed to delete sandbox {space_id}: {e}")
 
     async def _run_session(
         self,
@@ -356,6 +359,15 @@ class SessionManager:
                 pass
 
             await self._cleanup_sandbox(session)
+
+            # Final-flush: always save on session death so we capture ended
+            # sessions even if the client disconnects without /shutdown.
+            # Idempotent via session_id key; detached subprocess.
+            if session.config.save_sessions:
+                try:
+                    session.save_and_upload_detached(session.config.session_dataset_repo)
+                except Exception as e:
+                    logger.warning(f"Final-flush failed for {session_id}: {e}")
 
             async with self._lock:
                 if session_id in self.sessions:

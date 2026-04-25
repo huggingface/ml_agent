@@ -528,14 +528,16 @@ class HfJobsTool:
                 job_type = "Docker"
 
             # Run the job
+            flavor = args.get("hardware_flavor", "cpu-basic")
+            timeout_str = args.get("timeout", "30m")
             job = await _async_call(
                 self.api.run_job,
                 image=image,
                 command=command,
                 env=_add_default_env(args.get("env")),
                 secrets=_add_environment_variables(args.get("secrets"), self.hf_token),
-                flavor=args.get("hardware_flavor", "cpu-basic"),
-                timeout=args.get("timeout", "30m"),
+                flavor=flavor,
+                timeout=timeout_str,
                 namespace=self.namespace,
             )
 
@@ -557,6 +559,16 @@ class HfJobsTool:
                     )
                 )
 
+            # Telemetry: job submission + completion (infra consumption signal).
+            submit_ts = None
+            if self.session:
+                from agent.core import telemetry
+                submit_ts = await telemetry.record_hf_job_submit(
+                    self.session, job,
+                    {**args, "hardware_flavor": flavor, "timeout": timeout_str},
+                    image=image, job_type=job_type,
+                )
+
             # Wait for completion and stream logs
             logger.info(f"{job_type} job started: {job.url}")
             logger.info("Streaming logs...")
@@ -565,6 +577,13 @@ class HfJobsTool:
                 job_id=job.id,
                 namespace=self.namespace,
             )
+
+            if self.session and submit_ts is not None:
+                from agent.core import telemetry
+                await telemetry.record_hf_job_complete(
+                    self.session, job,
+                    flavor=flavor, final_status=final_status, submit_ts=submit_ts,
+                )
 
             # Untrack job ID (completed or failed, no longer needs cancellation)
             if self.session:

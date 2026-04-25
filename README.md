@@ -4,7 +4,7 @@
 
 # ML Intern
 
-An ML intern that autonomously researches, writes, and ships good quality ML releated code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
+An ML intern that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
 
 ## Quick Start
 
@@ -27,6 +27,7 @@ Create a `.env` file in the project root (or export these in your shell):
 
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
+OPENAI_API_KEY=<your-openai-api-key> # if using openai models
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
@@ -50,6 +51,7 @@ ml-intern "fine-tune llama on my dataset"
 
 ```bash
 ml-intern --model anthropic/claude-opus-4-6 "your prompt"
+ml-intern --model openai/gpt-5.5 "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```

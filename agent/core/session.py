@@ -108,6 +108,11 @@ class Session:
         self.session_start_time = datetime.now().isoformat()
         self.turn_count: int = 0
         self.last_auto_save_turn: int = 0
+        # Stable local save path so heartbeat saves overwrite one file instead
+        # of spamming session_logs/. ``_last_heartbeat_ts`` is owned by
+        # ``agent.core.telemetry.HeartbeatSaver`` and lazily initialised there.
+        self._local_save_path: Optional[str] = None
+        self._last_heartbeat_ts: Optional[float] = None
 
         # Per-model probed reasoning-effort cache. Populated by the probe
         # on /model switch, read by ``effective_effort_for`` below. Keys are
@@ -131,6 +136,10 @@ class Session:
                 "data": event.data,
             }
         )
+
+        # Mid-turn heartbeat flush (owned by telemetry module).
+        from agent.core.telemetry import HeartbeatSaver
+        HeartbeatSaver.maybe_fire(self)
 
     def cancel(self) -> None:
         """Signal cancellation to the running agent loop."""
@@ -184,6 +193,12 @@ class Session:
 
     def get_trajectory(self) -> dict:
         """Serialize complete session trajectory for logging"""
+        tools: list = []
+        if self.tool_router is not None:
+            try:
+                tools = self.tool_router.get_tool_specs_for_llm() or []
+            except Exception:
+                tools = []
         return {
             "session_id": self.session_id,
             "session_start_time": self.session_start_time,
@@ -191,6 +206,7 @@ class Session:
             "model_name": self.config.model_name,
             "messages": [msg.model_dump() for msg in self.context_manager.items],
             "events": self.logged_events,
+            "tools": tools,
         }
 
     def save_trajectory_local(
@@ -216,16 +232,42 @@ class Session:
 
             trajectory = self.get_trajectory()
 
+            # Scrub secrets at save time so session_logs/ never holds raw
+            # tokens on disk — a log aggregator, crash dump, or filesystem
+            # snapshot between heartbeats would otherwise leak them.
+            try:
+                from agent.core.redact import scrub
+                for key in ("messages", "events", "tools"):
+                    if key in trajectory:
+                        trajectory[key] = scrub(trajectory[key])
+            except Exception as _e:
+                logger.debug("Redact-on-save failed (non-fatal): %s", _e)
+
             # Add upload metadata
             trajectory["upload_status"] = upload_status
             trajectory["upload_url"] = dataset_url
             trajectory["last_save_time"] = datetime.now().isoformat()
 
-            filename = f"session_{self.session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            filepath = log_dir / filename
+            # Reuse one stable path per session so heartbeat saves overwrite
+            # the same file instead of creating a new timestamped file every
+            # minute. The timestamp in the filename is kept for first-save
+            # ordering; subsequent saves just rewrite that file.
+            if self._local_save_path and Path(self._local_save_path).parent == log_dir:
+                filepath = Path(self._local_save_path)
+            else:
+                filename = (
+                    f"session_{self.session_id}_"
+                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                )
+                filepath = log_dir / filename
+                self._local_save_path = str(filepath)
 
-            with open(filepath, "w") as f:
+            # Atomic-ish write: stage to .tmp then rename so a crash mid-write
+            # doesn't leave a truncated JSON that breaks the retry scanner.
+            tmp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+            with open(tmp_path, "w") as f:
                 json.dump(trajectory, f, indent=2)
+            tmp_path.replace(filepath)
 
             return str(filepath)
         except Exception as e:

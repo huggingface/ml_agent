@@ -1,5 +1,5 @@
 [project]
-name = "hf-agent"
+name = "ml-intern"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -26,6 +26,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "httpx>=0.27.0",
     "websockets>=13.0",
+    "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]
@@ -45,7 +46,7 @@ dev = [
 
 # All dependencies (eval + dev)
 all = [
-    "hf-agent[eval,dev]",
+    "ml-intern[eval,dev]",
 ]
 
 [project.scripts]

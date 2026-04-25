@@ -229,6 +229,18 @@ wheels = [
 ]
 
 [[package]]
+name = "apscheduler"
+version = "3.11.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tzlocal" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/07/12/3e4389e5920b4c1763390c6d371162f3784f86f85cd6d6c1bfe68eef14e2/apscheduler-3.11.2.tar.gz", hash = "sha256:2a9966b052ec805f020c8c4c3ae6e6a06e24b1bf19f2e11d91d8cca0473eef41", size = 108683, upload-time = "2025-12-22T00:39:34.884Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9f/64/2e54428beba8d9992aa478bb8f6de9e4ecaa5f8f513bcfd567ed7fb0262d/apscheduler-3.11.2-py3-none-any.whl", hash = "sha256:ce005177f741409db4e4dd40a7431b76feb856b9dd69d57e0da49d6715bfd26d", size = 64439, upload-time = "2025-12-22T00:39:33.303Z" },
+]
+
+[[package]]
 name = "attrs"
 version = "25.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -993,78 +1005,6 @@ wheels = [
 ]
 
 [[package]]
-name = "hf-agent"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "boto3" },
-    { name = "datasets" },
-    { name = "fastapi" },
-    { name = "fastmcp" },
-    { name = "httpx" },
-    { name = "huggingface-hub" },
-    { name = "litellm" },
-    { name = "nbconvert" },
-    { name = "nbformat" },
-    { name = "prompt-toolkit" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "thefuzz" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "websockets" },
-    { name = "whoosh" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "datasets" },
-    { name = "inspect-ai" },
-    { name = "pandas" },
-    { name = "pytest" },
-    { name = "tenacity" },
-]
-dev = [
-    { name = "pytest" },
-]
-eval = [
-    { name = "datasets" },
-    { name = "inspect-ai" },
-    { name = "pandas" },
-    { name = "tenacity" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boto3", specifier = ">=1.35.0" },
-    { name = "datasets", specifier = ">=4.4.1" },
-    { name = "datasets", marker = "extra == 'eval'", specifier = ">=4.3.0" },
-    { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "fastmcp", specifier = ">=3.2.0" },
-    { name = "hf-agent", extras = ["eval", "dev"], marker = "extra == 'all'" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "huggingface-hub", specifier = ">=1.0.1" },
-    { name = "inspect-ai", marker = "extra == 'eval'", specifier = ">=0.3.149" },
-    { name = "litellm", specifier = ">=1.83.0" },
-    { name = "nbconvert", specifier = ">=7.16.6" },
-    { name = "nbformat", specifier = ">=5.10.4" },
-    { name = "pandas", marker = "extra == 'eval'", specifier = ">=2.3.3" },
-    { name = "prompt-toolkit", specifier = ">=3.0.0" },
-    { name = "pydantic", specifier = ">=2.12.3" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.2" },
-    { name = "python-dotenv", specifier = ">=1.2.1" },
-    { name = "requests", specifier = ">=2.33.0" },
-    { name = "rich", specifier = ">=13.0.0" },
-    { name = "tenacity", marker = "extra == 'eval'", specifier = ">=8.0.0" },
-    { name = "thefuzz", specifier = ">=0.22.1" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
-    { name = "websockets", specifier = ">=13.0" },
-    { name = "whoosh", specifier = ">=2.7.4" },
-]
-provides-extras = ["eval", "dev", "all"]
-
-[[package]]
 name = "hf-xet"
 version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1826,6 +1766,80 @@ sdist = { url = "https://files.pythonhosted.org/packages/9d/55/d01f0c4b45ade6536
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9b/f7/4a5e785ec9fbd65146a27b6b70b6cdc161a66f2024e4b04ac06a67f5578b/mistune-3.2.0-py3-none-any.whl", hash = "sha256:febdc629a3c78616b94393c6580551e0e34cc289987ec6c35ed3f4be42d0eee1", size = 53598, upload-time = "2025-12-23T11:36:33.211Z" },
 ]
+
+[[package]]
+name = "ml-intern"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "apscheduler" },
+    { name = "boto3" },
+    { name = "datasets" },
+    { name = "fastapi" },
+    { name = "fastmcp" },
+    { name = "httpx" },
+    { name = "huggingface-hub" },
+    { name = "litellm" },
+    { name = "nbconvert" },
+    { name = "nbformat" },
+    { name = "prompt-toolkit" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "thefuzz" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
+    { name = "whoosh" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "datasets" },
+    { name = "inspect-ai" },
+    { name = "pandas" },
+    { name = "pytest" },
+    { name = "tenacity" },
+]
+dev = [
+    { name = "pytest" },
+]
+eval = [
+    { name = "datasets" },
+    { name = "inspect-ai" },
+    { name = "pandas" },
+    { name = "tenacity" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "apscheduler", specifier = ">=3.10,<4" },
+    { name = "boto3", specifier = ">=1.35.0" },
+    { name = "datasets", specifier = ">=4.4.1" },
+    { name = "datasets", marker = "extra == 'eval'", specifier = ">=4.3.0" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "fastmcp", specifier = ">=3.2.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "huggingface-hub", specifier = ">=1.0.1" },
+    { name = "inspect-ai", marker = "extra == 'eval'", specifier = ">=0.3.149" },
+    { name = "litellm", specifier = ">=1.83.0" },
+    { name = "ml-intern", extras = ["eval", "dev"], marker = "extra == 'all'" },
+    { name = "nbconvert", specifier = ">=7.16.6" },
+    { name = "nbformat", specifier = ">=5.10.4" },
+    { name = "pandas", marker = "extra == 'eval'", specifier = ">=2.3.3" },
+    { name = "prompt-toolkit", specifier = ">=3.0.0" },
+    { name = "pydantic", specifier = ">=2.12.3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.2" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "requests", specifier = ">=2.33.0" },
+    { name = "rich", specifier = ">=13.0.0" },
+    { name = "tenacity", marker = "extra == 'eval'", specifier = ">=8.0.0" },
+    { name = "thefuzz", specifier = ">=0.22.1" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
+    { name = "websockets", specifier = ">=13.0" },
+    { name = "whoosh", specifier = ">=2.7.4" },
+]
+provides-extras = ["eval", "dev", "all"]
 
 [[package]]
 name = "mmh3"
@@ -3617,6 +3631,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/95/32/1a225d6164441be760d75c2c42e2780dc0873fe382da3e98a2e1e48361e5/tzdata-2025.2.tar.gz", hash = "sha256:b60a638fcc0daffadf82fe0f57e53d06bdec2f36c4df66280ae79bce6bd6f2b9", size = 196380, upload-time = "2025-03-23T13:54:43.652Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5c/23/c7abc0ca0a1526a0774eca151daeb8de62ec457e77262b66b359c3c7679e/tzdata-2025.2-py2.py3-none-any.whl", hash = "sha256:1a403fada01ff9221ca8044d701868fa132215d84beb92242d9acd2147f667a8", size = 347839, upload-time = "2025-03-23T13:54:41.845Z" },
+]
+
+[[package]]
+name = "tzlocal"
+version = "5.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8b/2e/c14812d3d4d9cd1773c6be938f89e5735a1f11a9f184ac3639b93cef35d5/tzlocal-5.3.1.tar.gz", hash = "sha256:cceffc7edecefea1f595541dbd6e990cb1ea3d19bf01b2809f362a03dd7921fd", size = 30761, upload-time = "2025-03-05T21:17:41.549Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c2/14/e2a54fabd4f08cd7af1c07030603c3356b74da07f7cc056e600436edfa17/tzlocal-5.3.1-py3-none-any.whl", hash = "sha256:eb1a66c3ef5847adf7a834f1be0800581b683b5608e74f86ecbcef8ab91bb85d", size = 18026, upload-time = "2025-03-05T21:17:39.857Z" },
 ]
 
 [[package]]

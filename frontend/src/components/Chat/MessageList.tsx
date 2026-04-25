@@ -8,6 +8,7 @@ import type { UIMessage } from 'ai';
 interface MessageListProps {
   messages: UIMessage[];
   isProcessing: boolean;
+  sessionId?: string | null;
   approveTools: (approvals: Array<{ tool_call_id: string; approved: boolean; feedback?: string | null }>) => Promise<boolean>;
   onUndoLastTurn: () => void | Promise<void>;
   onEditAndRegenerate?: (messageId: string, newText: string) => void | Promise<void>;
@@ -57,7 +58,7 @@ function WelcomeGreeting() {
   );
 }
 
-export default function MessageList({ messages, isProcessing, approveTools, onUndoLastTurn, onEditAndRegenerate }: MessageListProps) {
+export default function MessageList({ messages, isProcessing, sessionId, approveTools, onUndoLastTurn, onEditAndRegenerate }: MessageListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -139,6 +140,7 @@ export default function MessageList({ messages, isProcessing, approveTools, onUn
               onEditAndRegenerate={onEditAndRegenerate}
               isProcessing={isProcessing}
               isStreaming={isProcessing && msg.id === lastAssistantId}
+              sessionId={sessionId}
               approveTools={approveTools}
             />
           ))
