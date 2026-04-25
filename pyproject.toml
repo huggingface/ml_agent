@@ -1,5 +1,5 @@
 [project]
-name = "hf-agent"
+name = "ml-intern"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -46,7 +46,7 @@ dev = [
 
 # All dependencies (eval + dev)
 all = [
-    "hf-agent[eval,dev]",
+    "ml-intern[eval,dev]",
 ]
 
 [project.scripts]
