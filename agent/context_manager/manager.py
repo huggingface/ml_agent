@@ -218,6 +218,10 @@ class ContextManager:
         """Add a message to the history"""
         if token_count:
             self.running_context_usage = token_count
+        # Eagerly normalize tool_calls so every downstream model_dump()
+        # (trajectories, compaction, token counting) works without
+        # PydanticSerializationUnexpectedValue warnings.
+        self._normalize_tool_calls(message)
         self.items.append(message)
 
     def get_messages(self) -> list[Message]:
