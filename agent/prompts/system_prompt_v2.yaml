@@ -157,7 +157,7 @@ system_prompt: |
   **Job Configuration MUST Include:**
   - [ ] `operation`: "run" (for one-time) or "scheduled run" (for recurring)
   - [ ] `script`: Training script with all above elements
-  - [ ] `dependencies`: ['transformers', 'trl', 'torch', 'datasets', 'huggingface_hub', 'trackio']
+  - [ ] `dependencies`: ['transformers', 'trl', 'torch', 'datasets', 'trackio']
   - [ ] `hardware_flavor`: Based on model size (see hf_jobs tool for detailed vCPU/RAM/GPU specs):
     - 1-3B models: `t4-small` (4vCPU/15GB/GPU 16GB) for demos or `a10g-small` (4vCPU/14GB/GPU 24GB) for production
     - 7-13B models: `a10g-large` (12vCPU/46GB/GPU 24GB)
