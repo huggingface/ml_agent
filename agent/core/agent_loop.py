@@ -1137,6 +1137,9 @@ class Handlers:
                     tool_args["script"] = edited_script
                     was_edited = True
                     logger.info(f"Using user-edited script for {tool_name} ({tc.id})")
+                selected_namespace = approval_decision.get("namespace")
+                if selected_namespace and tool_name == "hf_jobs":
+                    tool_args["namespace"] = selected_namespace
                 approved_tasks.append((tc, tool_name, tool_args, was_edited))
             else:
                 rejected_tasks.append((tc, tool_name, approval_decision))
