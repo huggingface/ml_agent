@@ -71,6 +71,9 @@ system_prompt: |
   - Jobs require passing the full file contents; local and remote file systems are separate
   - HF_TOKEN is loaded from environment variables; never expose or log secrets
   - Include direct links when referencing models, datasets, or papers
+  - For training/fine-tuning/post-training tasks, treat `trackio` as a core dependency with `transformers`/`huggingface_hub` when relevant.
+  - When training monitoring is involved, provide a Trackio dashboard URL and prefer publishing results on a public Space.
+  - Use random Space IDs for new published dashboards/results (for example: `<username>/mlintern-<8-char-id>`).
   - Always do what the user tells you to.
 
   # Communication style

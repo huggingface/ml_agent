@@ -201,16 +201,34 @@ def _wrap_inline_script(
     return f'echo "{encoded}" | base64 -d | {uv_command_str}'
 
 
-def _ensure_hf_transfer_dependency(deps: list[str] | None) -> list[str]:
-    """Ensure hf-transfer is included in the dependencies list"""
+_TRAINING_SIGNAL_RE = re.compile(
+    r"\b("
+    r"trainer|trainingarguments|sftconfig|sfttrainer|dpotrainer|grpotrainer|"
+    r"accelerator|train_dataset|eval_dataset|per_device_train_batch_size|"
+    r"push_to_hub|hub_model_id|finetun|fine-tun|post-train|posttrain|pretrain"
+    r")\b",
+    re.IGNORECASE,
+)
 
-    if isinstance(deps, list):
-        deps_copy = deps.copy()  # Don't modify the original
-        if "hf-transfer" not in deps_copy:
-            deps_copy.append("hf-transfer")
-        return deps_copy
 
-    return ["hf-transfer"]
+def _looks_like_training_script(script: str) -> bool:
+    return bool(_TRAINING_SIGNAL_RE.search(script))
+
+
+def _ensure_core_dependencies(deps: list[str] | None, script: str | None = None) -> list[str]:
+    """Ensure baseline runtime dependencies and training essentials are present."""
+    deps_copy = deps.copy() if isinstance(deps, list) else []
+    normalized = {dep.lower() for dep in deps_copy}
+
+    core = ["hf-transfer", "huggingface_hub"]
+    if script and _looks_like_training_script(script):
+        core.append("trackio")
+
+    for dep in core:
+        if dep.lower() not in normalized:
+            deps_copy.append(dep)
+            normalized.add(dep.lower())
+    return deps_copy
 
 
 def _resolve_uv_command(
@@ -507,8 +525,8 @@ class HfJobsTool:
 
             # Python mode: script provided
             if script:
-                # Get dependencies and ensure hf-transfer is included
-                deps = _ensure_hf_transfer_dependency(args.get("dependencies"))
+                # Get dependencies and ensure baseline/training core deps are included
+                deps = _ensure_core_dependencies(args.get("dependencies"), script)
 
                 # Resolve the command based on script type (URL, inline, or file)
                 command = _resolve_uv_command(
@@ -779,8 +797,8 @@ To verify, call this tool with `{{"operation": "inspect", "job_id": "{job_id}"}}
 
             # Python mode: script provided
             if script:
-                # Get dependencies and ensure hf-transfer is included
-                deps = _ensure_hf_transfer_dependency(args.get("dependencies"))
+                # Get dependencies and ensure baseline/training core deps are included
+                deps = _ensure_core_dependencies(args.get("dependencies"), script)
 
                 # Resolve the command based on script type
                 command = _resolve_uv_command(
@@ -974,7 +992,9 @@ HF_JOBS_TOOL_SPEC = {
         "- You MUST have validated dataset format via hf_inspect_dataset or hub_repo_details.\n"
         "- Training config MUST include push_to_hub=True and hub_model_id. "
         "Job storage is EPHEMERAL — all files are deleted when the job ends. Without push_to_hub, trained models are lost permanently.\n"
-        "- Include trackio monitoring and provide the dashboard URL to the user.\n\n"
+        "- Include trackio monitoring and provide the dashboard URL to the user.\n"
+        "- Publish a public Space with the training dashboard/results whenever feasible. "
+        "Generate a random Space id (example: '<username>/mlintern-<8-char-id>') instead of reusing a fixed id.\n\n"
         "BATCH/ABLATION JOBS: Submit ONE job first. Check logs to confirm it starts training successfully. "
         "Only then submit the remaining jobs. Never submit all at once — if there's a bug, all jobs fail.\n\n"
         "Operations: run, ps, logs, inspect, cancel, scheduled run/ps/inspect/delete/suspend/resume.\n\n"
@@ -987,7 +1007,7 @@ HF_JOBS_TOOL_SPEC = {
         "3. Upgrade to larger GPU (a10g→a100→h100)\n"
         "Do NOT switch training methods (e.g. full SFT to LoRA) or reduce max_length — those change what the user gets and require explicit approval.\n\n"
         "Examples:\n"
-        "Training: {'operation': 'run', 'script': '/app/train.py', 'dependencies': ['transformers', 'trl', 'torch', 'datasets', 'trackio'], 'hardware_flavor': 'a100-large', 'timeout': '8h'}\n"
+        "Training: {'operation': 'run', 'script': '/app/train.py', 'dependencies': ['transformers', 'trl', 'torch', 'datasets', 'huggingface_hub', 'trackio'], 'hardware_flavor': 'a100-large', 'timeout': '8h'}\n"
         "Monitor: {'operation': 'ps'}, {'operation': 'logs', 'job_id': 'xxx'}, {'operation': 'cancel', 'job_id': 'xxx'}"
         "Docker: {'operation': 'run', 'command': ['duckdb', '-c', 'select 1 + 2'], 'image': 'duckdb/duckdb', 'hardware_flavor': 'cpu-basic', 'timeout': '1h'}\n"
     ),
@@ -1024,7 +1044,7 @@ HF_JOBS_TOOL_SPEC = {
                 "items": {"type": "string"},
                 "description": (
                     "Pip packages to install. Include ALL required packages. "
-                    "Common training set: ['transformers', 'trl', 'torch', 'datasets', 'trackio', 'accelerate']. "
+                    "Common training set: ['transformers', 'trl', 'torch', 'datasets', 'huggingface_hub', 'trackio', 'accelerate']. "
                     "Only used with 'script'."
                 ),
             },

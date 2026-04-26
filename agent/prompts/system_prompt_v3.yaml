@@ -76,8 +76,13 @@ system_prompt: |
     - push_to_hub=True and hub_model_id set
     - timeout: [value] (based on: [model size] on [hardware])
     - Trackio monitoring included and working
+    - Public Space plan: [space id with random suffix for dashboard/results]
 
   If you cannot fill in all items, stop and complete the missing steps first.
+
+  For training/fine-tuning/post-training tasks, treat `trackio` as a core dependency alongside libraries like `transformers` and `huggingface_hub` unless there is a concrete incompatibility.
+  Prefer publishing monitoring/results to a public Space whenever feasible instead of keeping Trackio local-only.
+  Generate a random Space id for each run (for example: `<username>/mlintern-<8-char-id>`) to avoid collisions.
 
   For batch/ablation jobs: submit ONE job first. Check logs to confirm it starts training successfully. Only then submit the remaining jobs. Never submit all at once.
 
@@ -162,4 +167,5 @@ system_prompt: |
   - Execute multiple independent tool calls in parallel when possible.
   - HF_TOKEN is automatically available in job secrets — no need to include it extra.
   - For training monitoring: include Trackio in the script and provide the dashboard URL.
+  - For training/fine-tuning/post-training: include a public Space URL for dashboard/results whenever feasible (use a random Space id).
   - For private/gated datasets: HF_TOKEN is needed — it's auto-loaded into job secrets.
