@@ -121,6 +121,8 @@ class SessionManager:
         self.config = load_config(config_path or DEFAULT_CONFIG_PATH)
         self.sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
+        self._pending_session_count = 0
+        self._pending_sessions_by_user: dict[str, int] = {}
 
     def _count_user_sessions(self, user_id: str) -> int:
         """Count active sessions owned by a specific user."""
@@ -129,6 +131,28 @@ class SessionManager:
             for s in self.sessions.values()
             if s.user_id == user_id and s.is_active
         )
+
+    def _count_pending_user_sessions(self, user_id: str) -> int:
+        """Count session slots reserved but not yet activated for a user."""
+        return self._pending_sessions_by_user.get(user_id, 0)
+
+    def _reserve_session_slot(self, user_id: str) -> None:
+        """Reserve a session slot before the blocking constructors run."""
+        self._pending_session_count += 1
+        if user_id != "dev":
+            self._pending_sessions_by_user[user_id] = (
+                self._pending_sessions_by_user.get(user_id, 0) + 1
+            )
+
+    def _release_session_slot(self, user_id: str) -> None:
+        """Release a previously reserved session slot."""
+        self._pending_session_count = max(0, self._pending_session_count - 1)
+        if user_id != "dev":
+            pending = self._pending_sessions_by_user.get(user_id, 0) - 1
+            if pending > 0:
+                self._pending_sessions_by_user[user_id] = pending
+            else:
+                self._pending_sessions_by_user.pop(user_id, None)
 
     async def create_session(
         self,
@@ -153,9 +177,11 @@ class SessionManager:
             SessionCapacityError: If the server or user has reached the
                 maximum number of concurrent sessions.
         """
+        reserved = False
+
         # ── Capacity checks ──────────────────────────────────────────
         async with self._lock:
-            active_count = self.active_session_count
+            active_count = self.active_session_count + self._pending_session_count
             if active_count >= MAX_SESSIONS:
                 raise SessionCapacityError(
                     f"Server is at capacity ({active_count}/{MAX_SESSIONS} sessions). "
@@ -163,13 +189,15 @@ class SessionManager:
                     error_type="global",
                 )
             if user_id != "dev":
-                user_count = self._count_user_sessions(user_id)
+                user_count = self._count_user_sessions(user_id) + self._count_pending_user_sessions(user_id)
                 if user_count >= MAX_SESSIONS_PER_USER:
                     raise SessionCapacityError(
                         f"You have reached the maximum of {MAX_SESSIONS_PER_USER} "
                         "concurrent sessions. Please close an existing session first.",
                         error_type="per_user",
                     )
+            self._reserve_session_slot(user_id)
+            reserved = True
 
         session_id = str(uuid.uuid4())
 
@@ -198,7 +226,14 @@ class SessionManager:
             logger.info(f"Session initialized in {t1 - t0:.2f}s")
             return tool_router, session
 
-        tool_router, session = await asyncio.to_thread(_create_session_sync)
+        try:
+            tool_router, session = await asyncio.to_thread(_create_session_sync)
+        except Exception:
+            async with self._lock:
+                if reserved:
+                    self._release_session_slot(user_id)
+                    reserved = False
+            raise
 
         # Create wrapper
         agent_session = AgentSession(
@@ -214,10 +249,20 @@ class SessionManager:
             self.sessions[session_id] = agent_session
 
         # Start the agent loop task
-        task = asyncio.create_task(
-            self._run_session(session_id, submission_queue, event_queue, tool_router)
-        )
+        try:
+            task = asyncio.create_task(
+                self._run_session(session_id, submission_queue, event_queue, tool_router)
+            )
+        except Exception:
+            async with self._lock:
+                self.sessions.pop(session_id, None)
+            raise
         agent_session.task = task
+
+        async with self._lock:
+            if reserved:
+                self._release_session_slot(user_id)
+                reserved = False
 
         logger.info(f"Created session {session_id} for user {user_id}")
         return session_id

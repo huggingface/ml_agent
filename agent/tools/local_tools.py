@@ -126,7 +126,7 @@ async def _bash_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
         return f"bash error: {e}", False
 
 
-async def _read_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
+async def _read_handler(args: dict[str, Any], session: Any = None, **_kw) -> tuple[str, bool]:
     file_path = args.get("path", "")
     if not file_path:
         return "No path provided.", False
@@ -140,7 +140,11 @@ async def _read_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     except Exception as e:
         return f"read error: {e}", False
 
-    _files_read.add(_resolve_path(file_path))
+    resolved = _resolve_path(file_path)
+    if session and hasattr(session, '_local_files_read'):
+        session._local_files_read.add(resolved)
+    else:
+        _files_read.add(resolved)
 
     lines = raw_content.splitlines()
     offset = max((args.get("offset") or 1), 1)
@@ -156,20 +160,27 @@ async def _read_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     return "\n".join(numbered), True
 
 
-async def _write_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
+async def _write_handler(args: dict[str, Any], session: Any = None, **_kw) -> tuple[str, bool]:
     file_path = args.get("path", "")
     content = args.get("content", "")
     if not file_path:
         return "No path provided.", False
     p = Path(file_path)
-    if p.exists() and _resolve_path(file_path) not in _files_read:
+    resolved = _resolve_path(file_path)
+    
+    # Check if file was read in this session (or globally as fallback)
+    files_read = session._local_files_read if session and hasattr(session, '_local_files_read') else _files_read
+    if p.exists() and resolved not in files_read:
         return (
             f"You must read {file_path} before overwriting it. "
             f"Use the read tool first to see current contents."
         ), False
     try:
         _atomic_write(p, content)
-        _files_read.add(_resolve_path(file_path))
+        if session and hasattr(session, '_local_files_read'):
+            session._local_files_read.add(resolved)
+        else:
+            _files_read.add(resolved)
         msg = f"Wrote {len(content)} bytes to {file_path}"
         # Syntax validation for Python files
         if p.suffix == ".py":
@@ -182,7 +193,7 @@ async def _write_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
         return f"write error: {e}", False
 
 
-async def _edit_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
+async def _edit_handler(args: dict[str, Any], session: Any = None, **_kw) -> tuple[str, bool]:
     from agent.tools.edit_utils import apply_edit, validate_python
 
     file_path = args.get("path", "")
@@ -199,7 +210,10 @@ async def _edit_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     p = Path(file_path)
     if not p.exists():
         return f"File not found: {file_path}", False
-    if _resolve_path(file_path) not in _files_read:
+    
+    resolved = _resolve_path(file_path)
+    files_read = session._local_files_read if session and hasattr(session, '_local_files_read') else _files_read
+    if resolved not in files_read:
         return (
             f"You must read {file_path} before editing it. "
             f"Use the read tool first to see current contents."

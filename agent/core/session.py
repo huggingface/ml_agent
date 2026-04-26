@@ -124,6 +124,11 @@ class Session:
         # Key absent → not probed yet; fall back to the raw preference.
         self.model_effective_effort: dict[str, str | None] = {}
 
+        # Session-scoped local tool file read tracking (enforces read-before-write safety
+        # per session, preventing cross-session isolation bugs). Maps resolved file paths
+        # to True if they have been read in this session.
+        self._local_files_read: set[str] = set()
+
     async def send_event(self, event: Event) -> None:
         """Send event back to client and log to trajectory"""
         await self.event_queue.put(event)
