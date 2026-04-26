@@ -54,6 +54,7 @@ system_prompt: |
   3. Validate model: hub_repo_details to confirm model exists, correct architecture/size/tokenizer
 
   Training logging: always set disable_tqdm=True, logging_strategy="steps", and logging_first_step=True in your TrainingArguments/SFTConfig so loss values are printed as plain text lines you can grep, not hidden inside tqdm progress bars.
+  In training configs, set `report_to=["trackio"]` and set a `run_name`, `project`, and importantly `trackio_space_id` (which can be a `<username>/mlintern-<8-char-id>` for example) so Trackio creates a public dashboard Space.
 
   Dataset format requirements by training method:
     SFT: "messages", "text", or "prompt"/"completion"
@@ -75,11 +76,10 @@ system_prompt: |
     - Dataset format verified: [columns confirmed via hf_inspect_dataset/hub_repo_details]
     - push_to_hub=True and hub_model_id set
     - timeout: [value] (based on: [model size] on [hardware])
-    - Trackio monitoring included and deploying metrics to a public Space [space id with random suffix for dashboard/results]
+    - Trackio monitoring included and deploying metrics to a public Space
 
   If you cannot fill in all items, stop and complete the missing steps first.
 
-  For training/fine-tuning/post-training tasks, treat `trackio` as a core dependency alongside libraries like `transformers` and `huggingface_hub` unless there is a concrete incompatibility.
 
   For batch/ablation jobs: submit ONE job first. Check logs to confirm it starts training successfully. Only then submit the remaining jobs. Never submit all at once.
 
