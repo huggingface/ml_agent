@@ -1,0 +1,56 @@
+{
+  "model_name": "anthropic/claude-opus-4-6",
+  "save_sessions": true,
+  "session_dataset_repo": "akseljoonas/hf-agent-sessions",
+  "yolo_mode": false,
+  "confirm_cpu_jobs": true,
+  "auto_file_upload": true,
+  "mcpServers": {
+    "hf-mcp-server": {
+      "transport": "http",
+      "url": "https://huggingface.co/mcp?login"
+    }
+  },
+  "notifications": [
+    {
+      "provider": "email",
+      "enabled": true,
+      "events": ["approval_required", "job_complete", "job_failed", "error"],
+      "email_to": "your@email.com",
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 587,
+      "smtp_user": "your@email.com",
+      "smtp_password": "${SMTP_PASSWORD}"
+    },
+    {
+      "provider": "pushbullet",
+      "enabled": false,
+      "events": ["approval_required", "job_complete", "error"],
+      "pushbullet_api_key": "${PUSHBULLET_API_KEY}"
+    },
+    {
+      "provider": "telegram",
+      "enabled": false,
+      "events": ["approval_required", "job_complete", "error"],
+      "telegram_bot_token": "${TELEGRAM_BOT_TOKEN}",
+      "telegram_chat_id": "${TELEGRAM_CHAT_ID}"
+    },
+    {
+      "provider": "slack",
+      "enabled": false,
+      "events": ["approval_required", "job_complete", "error"],
+      "slack_webhook_url": "${SLACK_WEBHOOK_URL}"
+    },
+    {
+      "provider": "discord",
+      "enabled": false,
+      "events": ["approval_required", "job_complete", "error"],
+      "discord_webhook_url": "${DISCORD_WEBHOOK_URL}"
+    },
+    {
+      "provider": "system",
+      "enabled": false,
+      "events": ["approval_required", "job_complete", "job_failed", "error"]
+    }
+  ]
+}
