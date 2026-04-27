@@ -34,6 +34,7 @@ from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, se
 import user_quotas
 
 from agent.core.hf_access import get_jobs_access
+from agent.core.hf_tokens import resolve_hf_request_token, resolve_hf_router_token
 from agent.core.llm_params import _resolve_llm_params
 
 logger = logging.getLogger(__name__)
@@ -333,10 +334,8 @@ async def generate_title(
     reasoning model — reasoning_effort=low keeps the reasoning budget small
     so the 60-token output budget isn't consumed before the title is written.
     """
-    api_key = (
-        os.environ.get("INFERENCE_TOKEN")
-        or (user.get("hf_token") if isinstance(user, dict) else None)
-        or os.environ.get("HF_TOKEN")
+    api_key = resolve_hf_router_token(
+        user.get("hf_token") if isinstance(user, dict) else None
     )
     try:
         response = await acompletion(
@@ -392,14 +391,7 @@ async def create_session(
     Returns 503 if the server or user has reached the session limit.
     """
     # Extract the user's HF token (Bearer header, HttpOnly cookie, or env var)
-    hf_token = None
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        hf_token = auth_header[7:]
-    if not hf_token:
-        hf_token = request.cookies.get("hf_access_token")
-    if not hf_token:
-        hf_token = os.environ.get("HF_TOKEN")
+    hf_token = resolve_hf_request_token(request)
 
     # Optional model override. Empty body falls back to the config default.
     model: str | None = None
@@ -445,14 +437,7 @@ async def restore_session_summary(
     if not isinstance(messages, list) or not messages:
         raise HTTPException(status_code=400, detail="Missing 'messages' array")
 
-    hf_token = None
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        hf_token = auth_header[7:]
-    if not hf_token:
-        hf_token = request.cookies.get("hf_access_token")
-    if not hf_token:
-        hf_token = os.environ.get("HF_TOKEN")
+    hf_token = resolve_hf_request_token(request)
 
     model = body.get("model")
     valid_ids = {m["id"] for m in AVAILABLE_MODELS}
@@ -566,14 +551,7 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
 @router.get("/user/jobs-access")
 async def get_jobs_access_info(request: Request, user: dict = Depends(get_current_user)) -> dict:
     """Return whether the current token can run HF Jobs and under which namespaces."""
-    token = None
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-    if not token:
-        token = request.cookies.get("hf_access_token")
-    if not token:
-        token = os.environ.get("HF_TOKEN")
+    token = resolve_hf_request_token(request)
 
     access = await get_jobs_access(token or "")
     return {

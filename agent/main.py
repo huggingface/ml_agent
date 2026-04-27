@@ -23,9 +23,10 @@ from prompt_toolkit import PromptSession
 from agent.config import load_config
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
-from agent.messaging.gateway import NotificationGateway
+from agent.core.hf_tokens import resolve_hf_token
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
+from agent.messaging.gateway import NotificationGateway
 from agent.utils.reliability_checks import check_training_script_save_pattern
 from agent.utils.terminal_display import (
     get_console,
@@ -68,28 +69,6 @@ def _safe_get_args(arguments: dict) -> dict:
     if isinstance(args, str):
         return {}
     return args if isinstance(args, dict) else {}
-
-
-def _get_hf_token() -> str | None:
-    """Get HF token from environment, huggingface_hub API, or cached token file."""
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        return token
-    try:
-        from huggingface_hub import HfApi
-        api = HfApi()
-        token = api.token
-        if token:
-            return token
-    except Exception:
-        pass
-    # Fallback: read the cached token file directly
-    token_path = Path.home() / ".cache" / "huggingface" / "token"
-    if token_path.exists():
-        token = token_path.read_text().strip()
-        if token:
-            return token
-    return None
 
 
 def _get_hf_user(token: str | None) -> str | None:
@@ -773,7 +752,7 @@ async def _handle_slash_command(
         normalized = arg.removeprefix("huggingface/")
         session = session_holder[0] if session_holder else None
         await model_switcher.probe_and_switch_model(
-            normalized, config, session, console, _get_hf_token(),
+            normalized, config, session, console, resolve_hf_token(),
         )
         return None
 
@@ -842,7 +821,7 @@ async def main():
     prompt_session = PromptSession()
 
     # HF token — required, prompt if missing
-    hf_token = _get_hf_token()
+    hf_token = resolve_hf_token()
     if not hf_token:
         hf_token = await _prompt_and_save_hf_token(prompt_session)
 
@@ -1065,7 +1044,7 @@ async def headless_main(
     logging.basicConfig(level=logging.WARNING)
     _configure_runtime_logging()
 
-    hf_token = _get_hf_token()
+    hf_token = resolve_hf_token()
     if not hf_token:
         print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
         sys.exit(1)
