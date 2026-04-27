@@ -306,8 +306,10 @@ async def research_handler(
         # ── Doom-loop detection ──
         doom_prompt = check_for_doom_loop(messages)
         if doom_prompt:
-            logger.warning("Research sub-agent doom loop detected at iteration %d", _iteration)
-            await _log("Doom loop detected — injecting corrective prompt")
+            logger.warning(
+                "Research sub-agent repetition guard activated at iteration %d",
+                _iteration,
+            )
             messages.append(Message(role="user", content=doom_prompt))
 
         # ── Context budget: warn at 75%, hard-stop at 95% ──

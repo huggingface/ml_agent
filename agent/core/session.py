@@ -79,8 +79,10 @@ class Session:
         hf_token: str | None = None,
         local_mode: bool = False,
         stream: bool = True,
+        user_id: str | None = None,
     ):
         self.hf_token: Optional[str] = hf_token
+        self.user_id: Optional[str] = user_id
         self.tool_router = tool_router
         self.stream = stream
         tool_specs = tool_router.get_tool_specs_for_llm() if tool_router else []
@@ -199,11 +201,21 @@ class Session:
                 tools = self.tool_router.get_tool_specs_for_llm() or []
             except Exception:
                 tools = []
+        # Sum per-call cost from llm_call events so analyzers don't have to
+        # walk the events array themselves. Each `llm_call` event already
+        # carries cost_usd from `agent.core.telemetry.record_llm_call`.
+        total_cost_usd = sum(
+            float((e.get("data") or {}).get("cost_usd") or 0.0)
+            for e in self.logged_events
+            if e.get("event_type") == "llm_call"
+        )
         return {
             "session_id": self.session_id,
+            "user_id": self.user_id,
             "session_start_time": self.session_start_time,
             "session_end_time": datetime.now().isoformat(),
             "model_name": self.config.model_name,
+            "total_cost_usd": total_cost_usd,
             "messages": [msg.model_dump() for msg in self.context_manager.items],
             "events": self.logged_events,
             "tools": tools,

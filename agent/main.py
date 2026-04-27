@@ -91,6 +91,17 @@ def _get_hf_token() -> str | None:
     return None
 
 
+def _get_hf_user(token: str | None) -> str | None:
+    """Resolve the HF username for a token, if available."""
+    if not token:
+        return None
+    try:
+        from huggingface_hub import HfApi
+        return HfApi(token=token).whoami().get("name")
+    except Exception:
+        return None
+
+
 async def _prompt_and_save_hf_token(prompt_session: PromptSession) -> str:
     """Prompt user for HF token, validate it, save via huggingface_hub.login(). Loops until valid."""
     from prompt_toolkit.formatted_text import HTML
@@ -834,12 +845,7 @@ async def main():
     config = load_config(CLI_CONFIG_PATH)
 
     # Resolve username for banner
-    hf_user = None
-    try:
-        from huggingface_hub import HfApi
-        hf_user = HfApi(token=hf_token).whoami().get("name")
-    except Exception:
-        pass
+    hf_user = _get_hf_user(hf_token)
 
     print_banner(model=config.model_name, hf_user=hf_user)
 
@@ -871,6 +877,7 @@ async def main():
             tool_router=tool_router,
             session_holder=session_holder,
             hf_token=hf_token,
+            user_id=hf_user,
             local_mode=True,
             stream=True,
         )
@@ -1056,6 +1063,7 @@ async def headless_main(
 
     config = load_config(CLI_CONFIG_PATH)
     config.yolo_mode = True  # Auto-approve everything in headless mode
+    hf_user = _get_hf_user(hf_token)
 
     if model:
         config.model_name = model
@@ -1082,6 +1090,7 @@ async def headless_main(
             tool_router=tool_router,
             session_holder=session_holder,
             hf_token=hf_token,
+            user_id=hf_user,
             local_mode=True,
             stream=stream,
         )
