@@ -6,12 +6,14 @@ import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 from litellm import ChatCompletionMessageToolCall, Message, acompletion
 from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
+from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
@@ -22,6 +24,61 @@ from agent.tools.jobs_tool import CPU_FLAVORS
 logger = logging.getLogger(__name__)
 
 ToolCall = ChatCompletionMessageToolCall
+
+_MALFORMED_TOOL_PREFIX = "ERROR: Tool call to '"
+_MALFORMED_TOOL_SUFFIX = "' had malformed JSON arguments"
+
+
+def _malformed_tool_name(message: Message) -> str | None:
+    """Return the tool name for malformed-json tool-result messages."""
+    if getattr(message, "role", None) != "tool":
+        return None
+    content = getattr(message, "content", None)
+    if not isinstance(content, str):
+        return None
+    if not content.startswith(_MALFORMED_TOOL_PREFIX):
+        return None
+    end = content.find(_MALFORMED_TOOL_SUFFIX, len(_MALFORMED_TOOL_PREFIX))
+    if end == -1:
+        return None
+    return content[len(_MALFORMED_TOOL_PREFIX):end]
+
+
+def _detect_repeated_malformed(
+    items: list[Message], threshold: int = 2,
+) -> str | None:
+    """Return the repeated malformed tool name if the tail contains a streak.
+
+    Walk backward over the current conversation tail. A streak counts only
+    consecutive malformed tool-result messages for the same tool; any other
+    tool result breaks it.
+    """
+    if threshold <= 0:
+        return None
+
+    streak_tool: str | None = None
+    streak = 0
+
+    for item in reversed(items):
+        if getattr(item, "role", None) != "tool":
+            continue
+
+        malformed_tool = _malformed_tool_name(item)
+        if malformed_tool is None:
+            break
+
+        if streak_tool is None:
+            streak_tool = malformed_tool
+            streak = 1
+        elif malformed_tool == streak_tool:
+            streak += 1
+        else:
+            break
+
+        if streak >= threshold:
+            return streak_tool
+
+    return None
 
 
 def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
@@ -119,6 +176,54 @@ def _needs_approval(
 # -- LLM retry constants --------------------------------------------------
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_DELAYS = [5, 15, 30]  # seconds between retries
+_LLM_RATE_LIMIT_RETRY_DELAYS = [30, 60]  # exceed Bedrock's ~60s TPM bucket window
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    """Return True for rate-limit / quota-bucket style provider errors."""
+    err_str = str(error).lower()
+    rate_limit_patterns = [
+        "429",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "too many tokens",
+        "request limit",
+        "throttl",
+    ]
+    return any(pattern in err_str for pattern in rate_limit_patterns)
+
+
+def _is_context_overflow_error(error: Exception) -> bool:
+    """Return True when the prompt exceeded the model's context window."""
+    if isinstance(error, ContextWindowExceededError):
+        return True
+
+    err_str = str(error).lower()
+    overflow_patterns = [
+        "context window exceeded",
+        "maximum context length",
+        "max context length",
+        "prompt is too long",
+        "context length exceeded",
+        "too many input tokens",
+        "input is too long",
+    ]
+    return any(pattern in err_str for pattern in overflow_patterns)
+
+
+def _retry_delay_for(error: Exception, attempt_index: int) -> int | None:
+    """Return the delay for this retry attempt, or None if it should not retry."""
+    if _is_rate_limit_error(error):
+        schedule = _LLM_RATE_LIMIT_RETRY_DELAYS
+    elif _is_transient_error(error):
+        schedule = _LLM_RETRY_DELAYS
+    else:
+        return None
+
+    if attempt_index >= len(schedule):
+        return None
+    return schedule[attempt_index]
 
 
 def _is_transient_error(error: Exception) -> bool:
@@ -126,7 +231,6 @@ def _is_transient_error(error: Exception) -> bool:
     err_str = str(error).lower()
     transient_patterns = [
         "timeout", "timed out",
-        "429", "rate limit", "rate_limit",
         "503", "service unavailable",
         "502", "bad gateway",
         "500", "internal server error",
@@ -134,7 +238,7 @@ def _is_transient_error(error: Exception) -> bool:
         "connection reset", "connection refused", "connection error",
         "eof", "broken pipe",
     ]
-    return any(pattern in err_str for pattern in transient_patterns)
+    return _is_rate_limit_error(error) or any(pattern in err_str for pattern in transient_patterns)
 
 
 def _is_effort_config_error(error: Exception) -> bool:
@@ -291,6 +395,7 @@ class LLMResult:
     tool_calls_acc: dict[int, dict]
     token_count: int
     finish_reason: str | None
+    usage: dict = field(default_factory=dict)
 
 
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
@@ -298,6 +403,7 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     response = None
     _healed_effort = False  # one-shot safety net per call
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
+    t_start = time.monotonic()
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
             response = await acompletion(
@@ -313,6 +419,8 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         except ContextWindowExceededError:
             raise
         except Exception as e:
+            if _is_context_overflow_error(e):
+                raise ContextWindowExceededError(str(e)) from e
             if not _healed_effort and _is_effort_config_error(e):
                 _healed_effort = True
                 llm_params = await _heal_effort_and_rebuild_params(session, e, llm_params)
@@ -321,8 +429,8 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
                     data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
                 ))
                 continue
-            if _llm_attempt < _MAX_LLM_RETRIES - 1 and _is_transient_error(e):
-                _delay = _LLM_RETRY_DELAYS[_llm_attempt]
+            _delay = _retry_delay_for(e, _llm_attempt)
+            if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
                 logger.warning(
                     "Transient LLM error (attempt %d/%d): %s — retrying in %ds",
                     _llm_attempt + 1, _MAX_LLM_RETRIES, e, _delay,
@@ -339,6 +447,7 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     tool_calls_acc: dict[int, dict] = {}
     token_count = 0
     finish_reason = None
+    final_usage_chunk = None
 
     async for chunk in response:
         if session.is_cancelled:
@@ -349,6 +458,7 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         if not choice:
             if hasattr(chunk, "usage") and chunk.usage:
                 token_count = chunk.usage.total_tokens
+                final_usage_chunk = chunk
             continue
 
         delta = choice.delta
@@ -379,12 +489,22 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
 
         if hasattr(chunk, "usage") and chunk.usage:
             token_count = chunk.usage.total_tokens
+            final_usage_chunk = chunk
+
+    usage = await telemetry.record_llm_call(
+        session,
+        model=llm_params.get("model", session.config.model_name),
+        response=final_usage_chunk,
+        latency_ms=int((time.monotonic() - t_start) * 1000),
+        finish_reason=finish_reason,
+    )
 
     return LLMResult(
         content=full_content or None,
         tool_calls_acc=tool_calls_acc,
         token_count=token_count,
         finish_reason=finish_reason,
+        usage=usage,
     )
 
 
@@ -393,6 +513,7 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     response = None
     _healed_effort = False
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
+    t_start = time.monotonic()
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
             response = await acompletion(
@@ -407,6 +528,8 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
         except ContextWindowExceededError:
             raise
         except Exception as e:
+            if _is_context_overflow_error(e):
+                raise ContextWindowExceededError(str(e)) from e
             if not _healed_effort and _is_effort_config_error(e):
                 _healed_effort = True
                 llm_params = await _heal_effort_and_rebuild_params(session, e, llm_params)
@@ -415,8 +538,8 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
                     data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
                 ))
                 continue
-            if _llm_attempt < _MAX_LLM_RETRIES - 1 and _is_transient_error(e):
-                _delay = _LLM_RETRY_DELAYS[_llm_attempt]
+            _delay = _retry_delay_for(e, _llm_attempt)
+            if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
                 logger.warning(
                     "Transient LLM error (attempt %d/%d): %s — retrying in %ds",
                     _llm_attempt + 1, _MAX_LLM_RETRIES, e, _delay,
@@ -454,11 +577,20 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
             Event(event_type="assistant_message", data={"content": content})
         )
 
+    usage = await telemetry.record_llm_call(
+        session,
+        model=llm_params.get("model", session.config.model_name),
+        response=response,
+        latency_ms=int((time.monotonic() - t_start) * 1000),
+        finish_reason=finish_reason,
+    )
+
     return LLMResult(
         content=content,
         tool_calls_acc=tool_calls_acc,
         token_count=token_count,
         finish_reason=finish_reason,
+        usage=usage,
     )
 
 
@@ -555,6 +687,31 @@ class Handlers:
                         data={
                             "tool": "system",
                             "log": "Doom loop detected — injecting corrective prompt",
+                        },
+                    )
+                )
+
+            malformed_tool = _detect_repeated_malformed(session.context_manager.items)
+            if malformed_tool:
+                recovery_prompt = (
+                    "[SYSTEM: Repeated malformed tool arguments detected for "
+                    f"'{malformed_tool}'. Stop retrying the same tool call shape. "
+                    "Use a different strategy that produces smaller, valid JSON. "
+                    "For large file writes, prefer bash with a heredoc or split the "
+                    "edit into multiple smaller tool calls.]"
+                )
+                session.context_manager.add_message(
+                    Message(role="user", content=recovery_prompt)
+                )
+                await session.send_event(
+                    Event(
+                        event_type="tool_log",
+                        data={
+                            "tool": "system",
+                            "log": (
+                                "Repeated malformed tool arguments detected — "
+                                f"forcing a different strategy for {malformed_tool}"
+                            ),
                         },
                     )
                 )
@@ -980,6 +1137,9 @@ class Handlers:
                     tool_args["script"] = edited_script
                     was_edited = True
                     logger.info(f"Using user-edited script for {tool_name} ({tc.id})")
+                selected_namespace = approval_decision.get("namespace")
+                if selected_namespace and tool_name == "hf_jobs":
+                    tool_args["namespace"] = selected_namespace
                 approved_tasks.append((tc, tool_name, tool_args, was_edited))
             else:
                 rejected_tasks.append((tc, tool_name, approval_decision))

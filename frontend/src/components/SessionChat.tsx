@@ -26,7 +26,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
   const { updateSessionTitle, sessions } = useSessionStore();
   const isExpired = sessions.find((s) => s.id === sessionId)?.expired === true;
 
-  const { messages, sendMessage, stop, status, undoLastTurn, editAndRegenerate, approveTools } = useAgentChat({
+  const { messages, sendMessage, stop, status, undoLastTurn, editAndRegenerate, approveTools, declineBlockedJobs, continueBlockedJobsWithNamespace } = useAgentChat({
     sessionId,
     isActive,
     onReady: () => logger.log(`Session ${sessionId} ready`),
@@ -102,6 +102,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
       <MessageList
         messages={messages}
         isProcessing={busy}
+        sessionId={sessionId}
         approveTools={approveTools}
         onUndoLastTurn={undoLastTurn}
         onEditAndRegenerate={editAndRegenerate}
@@ -113,6 +114,8 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
           sessionId={sessionId}
           onSend={handleSendMessage}
           onStop={handleStop}
+          onDeclineBlockedJobs={declineBlockedJobs}
+          onContinueBlockedJobsWithNamespace={continueBlockedJobsWithNamespace}
           isProcessing={busy}
           disabled={!isConnected || activityStatus.type === 'waiting-approval'}
           placeholder={

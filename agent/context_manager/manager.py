@@ -253,45 +253,49 @@ class ContextManager:
     def _patch_dangling_tool_calls(self) -> None:
         """Add stub tool results for any tool_calls that lack a matching result.
 
-        Scans backwards to find the last assistant message with tool_calls,
-        which may not be items[-1] if some tool results were already added.
+        Ensures each assistant message's tool_calls are followed immediately
+        by matching tool-result messages. This has to work across the whole
+        history, not just the most recent turn, because a cancelled tool use
+        in an earlier turn can still poison the next provider request.
         """
         if not self.items:
             return
 
-        # Find the last assistant message with tool_calls
-        assistant_msg = None
-        for i in range(len(self.items) - 1, -1, -1):
+        i = 0
+        while i < len(self.items):
             msg = self.items[i]
-            if getattr(msg, "role", None) == "assistant" and getattr(
-                msg, "tool_calls", None
-            ):
-                assistant_msg = msg
-                break
-            # Stop scanning once we hit a user message — anything before
-            # that belongs to a previous (complete) turn.
-            if getattr(msg, "role", None) == "user":
-                break
+            if getattr(msg, "role", None) != "assistant" or not getattr(msg, "tool_calls", None):
+                i += 1
+                continue
 
-        if not assistant_msg:
-            return
+            self._normalize_tool_calls(msg)
 
-        self._normalize_tool_calls(assistant_msg)
-        answered_ids = {
-            getattr(m, "tool_call_id", None)
-            for m in self.items
-            if getattr(m, "role", None) == "tool"
-        }
-        for tc in assistant_msg.tool_calls:
-            if tc.id not in answered_ids:
-                self.items.append(
-                    Message(
-                        role="tool",
-                        content="Tool was not executed (interrupted or error).",
-                        tool_call_id=tc.id,
-                        name=tc.function.name,
+            # Consume the contiguous tool-result block that immediately follows
+            # this assistant message. Any missing tool ids must be inserted
+            # before the next non-tool message to satisfy provider ordering.
+            j = i + 1
+            immediate_ids: set[str | None] = set()
+            while j < len(self.items) and getattr(self.items[j], "role", None) == "tool":
+                immediate_ids.add(getattr(self.items[j], "tool_call_id", None))
+                j += 1
+
+            missing: list[Message] = []
+            for tc in msg.tool_calls:
+                if tc.id not in immediate_ids:
+                    missing.append(
+                        Message(
+                            role="tool",
+                            content="Tool was not executed (interrupted or error).",
+                            tool_call_id=tc.id,
+                            name=tc.function.name,
+                        )
                     )
-                )
+
+            if missing:
+                self.items[j:j] = missing
+                j += len(missing)
+
+            i = j
 
     def undo_last_turn(self) -> bool:
         """Remove the last complete turn (user msg + all assistant/tool msgs that follow).

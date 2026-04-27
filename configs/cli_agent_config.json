@@ -1,7 +1,7 @@
 {
-  "model_name": "bedrock/us.anthropic.claude-opus-4-6-v1",
+  "model_name": "anthropic/claude-opus-4-6",
   "save_sessions": true,
-  "session_dataset_repo": "akseljoonas/hf-agent-sessions",
+  "session_dataset_repo": "smolagents/ml-intern-sessions",
   "yolo_mode": false,
   "confirm_cpu_jobs": true,
   "auto_file_upload": true,

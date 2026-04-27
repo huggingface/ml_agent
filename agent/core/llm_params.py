@@ -66,13 +66,13 @@ _patch_litellm_effort_validation()
 
 # Effort levels accepted on the wire.
 #   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
-#   OpenAI direct:     minimal | low | medium | high       (reasoning_effort top-level)
+#   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
 #   HF router:         low | medium | high                 (extra_body.reasoning_effort)
 #
 # We validate *shape* here and let the probe cascade walk down on rejection;
 # we deliberately do NOT maintain a per-model capability table.
 _ANTHROPIC_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
-_OPENAI_EFFORTS = {"minimal", "low", "medium", "high"}
+_OPENAI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 _HF_EFFORTS = {"low", "medium", "high"}
 
 

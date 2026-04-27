@@ -1,0 +1,73 @@
+name: Claude PR Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  id-token: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # On pull_request_target, keep checkout on the trusted base-repo ref.
+          # The Claude action can review the PR via GitHub context/API without
+          # executing untrusted fork code with repository secrets.
+          persist-credentials: false
+
+      - name: Compose review prompt
+        id: compose
+        run: |
+          {
+            printf 'prompt<<PROMPT_EOF\n'
+            if [ -f REVIEW.md ]; then
+              echo '# Highest-priority review instructions (from REVIEW.md at the repo root)'
+              echo 'Follow these rules as the authoritative guide for this review. If anything'
+              echo 'below contradicts a more generic review habit, follow these.'
+              echo
+              cat REVIEW.md
+              echo
+              echo '---'
+              echo
+            fi
+            cat <<'BASE'
+          Review this pull request against the main branch.
+
+          Tag every finding with a priority label: P0 (blocks merge), P1 (worth
+          fixing, not blocking), or P2 (informational / pre-existing). Open the
+          review body with a one-line tally ("2 P0, 3 P1", or
+          "No blocking issues — 3 P1", or "LGTM" if nothing). Cite file:line for
+          every behavior claim. Prefer inline comments over long summaries.
+
+          Fallback focus if REVIEW.md is missing: correctness, security (auth,
+          injection, SSRF), LiteLLM/Bedrock routing breakage, agent loop / streaming
+          regressions, test coverage for new behavior. Skip anything ruff already
+          catches.
+          BASE
+            printf 'PROMPT_EOF\n'
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Bypass the OIDC -> Claude GitHub App token exchange. That exchange
+          # rejects OIDC tokens minted for pull_request_target events with
+          # "401 Invalid OIDC token", which broke every review after the switch
+          # away from pull_request. Using the workflow's GITHUB_TOKEN works for
+          # both same-repo and fork PRs; comments post as github-actions[bot]
+          # instead of claude[bot], which is the documented trade-off.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          track_progress: true
+          prompt: ${{ steps.compose.outputs.prompt }}

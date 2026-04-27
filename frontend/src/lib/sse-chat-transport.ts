@@ -320,11 +320,13 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
         const approved = p.approval?.approved ?? true;
         // Get edited script from agentStore if available
         const editedScript = useAgentStore.getState().getEditedScript(p.toolCallId);
+        const namespace = useAgentStore.getState().getApprovalNamespace(p.toolCallId);
         return {
           tool_call_id: p.toolCallId,
           approved,
           feedback: approved ? null : (p.approval?.reason || 'Rejected by user'),
           edited_script: editedScript ?? null,
+          namespace: namespace ?? null,
         };
       }).filter(Boolean);
       body = { approvals };
@@ -361,6 +363,30 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       // for useAgentChat's onError handler, which surfaces the cap dialog
       // instead of a generic error banner.
       throw new Error('CLAUDE_QUOTA_EXHAUSTED');
+    }
+    if (response.status === 402) {
+      const payload = await response.json().catch(() => null);
+      if (payload?.detail?.error === 'hf_jobs_upgrade_required') {
+        const err = new Error('HF_JOBS_UPGRADE_REQUIRED') as Error & {
+          detail?: Record<string, unknown>;
+          approvals?: Array<Record<string, unknown>>;
+        };
+        err.detail = payload.detail as Record<string, unknown>;
+        err.approvals = (body.approvals as Array<Record<string, unknown>> | undefined) || [];
+        throw err;
+      }
+    }
+    if (response.status === 409) {
+      const payload = await response.json().catch(() => null);
+      if (payload?.detail?.error === 'hf_jobs_namespace_required') {
+        const err = new Error('HF_JOBS_NAMESPACE_REQUIRED') as Error & {
+          detail?: Record<string, unknown>;
+          approvals?: Array<Record<string, unknown>>;
+        };
+        err.detail = payload.detail as Record<string, unknown>;
+        err.approvals = (body.approvals as Array<Record<string, unknown>> | undefined) || [];
+        throw err;
+      }
     }
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Request failed');

@@ -6,8 +6,9 @@ import StopIcon from '@mui/icons-material/Stop';
 import { apiFetch } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
+import JobsUpgradeDialog from '@/components/JobsUpgradeDialog';
 import { useAgentStore } from '@/store/agentStore';
-import { FIRST_FREE_MODEL_PATH } from '@/utils/model';
+import { CLAUDE_MODEL_PATH, FIRST_FREE_MODEL_PATH, isClaudePath } from '@/utils/model';
 
 // Model configuration
 interface ModelOption {
@@ -37,7 +38,7 @@ const MODEL_OPTIONS: ModelOption[] = [
     id: 'claude-opus',
     name: 'Claude Opus 4.6',
     description: 'Anthropic',
-    modelPath: 'anthropic/claude-opus-4-6',
+    modelPath: CLAUDE_MODEL_PATH,
     avatarUrl: 'https://huggingface.co/api/avatars/Anthropic',
     recommended: true,
   },
@@ -65,15 +66,17 @@ interface ChatInputProps {
   sessionId?: string;
   onSend: (text: string) => void;
   onStop?: () => void;
+  onDeclineBlockedJobs?: () => Promise<boolean>;
+  onContinueBlockedJobsWithNamespace?: (namespace: string) => Promise<boolean>;
   isProcessing?: boolean;
   disabled?: boolean;
   placeholder?: string;
 }
 
-const isClaudeModel = (m: ModelOption) => m.modelPath.startsWith('anthropic/');
+const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
 const firstFreeModel = () => MODEL_OPTIONS.find(m => !isClaudeModel(m)) ?? MODEL_OPTIONS[0];
 
-export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
+export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJobs, onContinueBlockedJobsWithNamespace, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [selectedModelId, setSelectedModelId] = useState<string>(MODEL_OPTIONS[0].id);
@@ -86,6 +89,8 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   // the hook layer can flip it without threading props through.
   const claudeQuotaExhausted = useAgentStore((s) => s.claudeQuotaExhausted);
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
+  const jobsUpgradeRequired = useAgentStore((s) => s.jobsUpgradeRequired);
+  const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
   const lastSentRef = useRef<string>('');
 
   // Model is per-session: fetch this tab's current model every time the
@@ -196,6 +201,44 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
       }
     } catch { /* ignore */ }
   }, [sessionId, onSend, setClaudeQuotaExhausted]);
+
+  const handleClaudeUpgradeClick = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      await apiFetch(`/api/pro-click/${sessionId}`, {
+        method: 'POST',
+        body: JSON.stringify({ source: 'claude_cap_dialog', target: 'pro_pricing' }),
+      });
+    } catch {
+      /* tracking is best-effort */
+    }
+  }, [sessionId]);
+
+  const handleJobsUpgradeClose = useCallback(() => {
+    setJobsUpgradeRequired(null);
+  }, [setJobsUpgradeRequired]);
+
+  const handleJobsUpgradeClick = useCallback(async () => {
+    if (!sessionId || !jobsUpgradeRequired) return;
+    try {
+      await apiFetch(`/api/pro-click/${sessionId}`, {
+        method: 'POST',
+        body: JSON.stringify({ source: 'hf_jobs_upgrade_dialog', target: 'pro_pricing' }),
+      });
+    } catch {
+      /* tracking is best-effort */
+    }
+  }, [sessionId, jobsUpgradeRequired]);
+
+  const handleDeclineBlockedJobs = useCallback(async () => {
+    if (!onDeclineBlockedJobs) return;
+    await onDeclineBlockedJobs();
+  }, [onDeclineBlockedJobs]);
+
+  const handleContinueBlockedJobsWithNamespace = useCallback(async (namespace: string) => {
+    if (!onContinueBlockedJobsWithNamespace) return;
+    await onContinueBlockedJobsWithNamespace(namespace);
+  }, [onContinueBlockedJobsWithNamespace]);
 
   // Hide the chip until the user has actually burned quota — an unused
   // Opus session shouldn't populate a counter.
@@ -435,6 +478,17 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
           cap={quota?.claudeDailyCap ?? 1}
           onClose={handleCapDialogClose}
           onUseFreeModel={handleUseFreeModel}
+          onUpgrade={handleClaudeUpgradeClick}
+        />
+        <JobsUpgradeDialog
+          open={!!jobsUpgradeRequired}
+          mode={jobsUpgradeRequired?.mode || 'upgrade'}
+          message={jobsUpgradeRequired?.message || ''}
+          eligibleNamespaces={jobsUpgradeRequired?.eligibleNamespaces || []}
+          onClose={handleJobsUpgradeClose}
+          onUpgrade={handleJobsUpgradeClick}
+          onDecline={handleDeclineBlockedJobs}
+          onContinueWithNamespace={handleContinueBlockedJobsWithNamespace}
         />
       </Box>
     </Box>

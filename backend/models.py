@@ -38,6 +38,7 @@ class ToolApproval(BaseModel):
     approved: bool
     feedback: str | None = None
     edited_script: str | None = None
+    namespace: str | None = None
 
 
 class ApprovalRequest(BaseModel):

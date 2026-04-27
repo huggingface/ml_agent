@@ -15,8 +15,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Token for session uploads — loaded from env var (never hardcode tokens in source)
-_SESSION_TOKEN = os.environ.get("HF_SESSION_UPLOAD_TOKEN", "")
+# Token for session uploads. Fallback chain (least-privilege first) — matches
+# backend/kpis_scheduler.py so one write-scoped token on the Space covers every
+# telemetry dataset. Never hardcode tokens in source.
+_SESSION_TOKEN = (
+    os.environ.get("HF_SESSION_UPLOAD_TOKEN")
+    or os.environ.get("HF_TOKEN")
+    or os.environ.get("HF_ADMIN_TOKEN")
+    or ""
+)
 
 
 def upload_session_as_file(
@@ -58,15 +65,37 @@ def upload_session_as_file(
                 json.dump(data, f, indent=2)
             return False
 
+        # Scrub secrets (HF tokens, API keys, etc.) from messages + events
+        # before they leave the local disk. Best-effort regex-based redaction —
+        # see agent/core/redact.py for the patterns covered.
+        try:
+            from agent.core.redact import scrub  # type: ignore
+        except Exception:
+            # Fallback for environments where the agent package isn't importable
+            # (shouldn't happen in our subprocess, but be defensive).
+            import importlib.util
+            _spec = importlib.util.spec_from_file_location(
+                "_redact",
+                Path(__file__).parent / "redact.py",
+            )
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)  # type: ignore
+            scrub = _mod.scrub
+        scrubbed_messages = scrub(data["messages"])
+        scrubbed_events = scrub(data["events"])
+        scrubbed_tools = scrub(data.get("tools") or [])
+
         # Prepare JSONL content (single line)
-        # Store messages and events as JSON strings to avoid schema conflicts
+        # Store messages/events/tools as JSON strings to avoid schema conflicts
+        # across sessions with different tool rosters.
         session_row = {
             "session_id": data["session_id"],
             "session_start_time": data["session_start_time"],
             "session_end_time": data["session_end_time"],
             "model_name": data["model_name"],
-            "messages": json.dumps(data["messages"]),
-            "events": json.dumps(data["events"]),
+            "messages": json.dumps(scrubbed_messages),
+            "events": json.dumps(scrubbed_events),
+            "tools": json.dumps(scrubbed_tools),
         }
 
         # Create temporary JSONL file

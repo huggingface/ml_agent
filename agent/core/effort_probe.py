@@ -32,9 +32,10 @@ logger = logging.getLogger(__name__)
 
 
 # Cascade: for each user-stated preference, the ordered list of levels to
-# try. First success wins. ``max`` / ``xhigh`` are Anthropic-only; providers
-# that don't accept them raise ``UnsupportedEffortError`` synchronously (no
-# wasted network round-trip) and we advance to the next level.
+# try. First success wins. ``max`` is Anthropic-only; ``xhigh`` is also
+# supported on current OpenAI GPT-5 models. Providers that don't accept a
+# requested level raise ``UnsupportedEffortError`` synchronously (no wasted
+# network round-trip) and we advance to the next level.
 _EFFORT_CASCADE: dict[str, list[str]] = {
     "max":     ["max", "xhigh", "high", "medium", "low"],
     "xhigh":   ["xhigh", "high", "medium", "low"],
@@ -45,7 +46,10 @@ _EFFORT_CASCADE: dict[str, list[str]] = {
 }
 
 _PROBE_TIMEOUT = 15.0
-_PROBE_MAX_TOKENS = 16
+# Keep the probe cheap, but high enough that frontier reasoning models can
+# finish a trivial reply instead of tripping a false "output limit reached"
+# error during capability detection.
+_PROBE_MAX_TOKENS = 64
 
 
 class ProbeInconclusive(Exception):

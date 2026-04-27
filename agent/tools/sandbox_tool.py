@@ -131,6 +131,8 @@ async def _ensure_sandbox(
     }
     if hardware != "cpu-basic":
         kwargs["sleep_time"] = 2700
+    import time as _t
+    _t_start = _t.monotonic()
     try:
         sb = await asyncio.to_thread(Sandbox.create, **kwargs)
     except Sandbox.Cancelled:
@@ -138,6 +140,13 @@ async def _ensure_sandbox(
     finally:
         watcher_task.cancel()
     session.sandbox = sb
+
+    # Telemetry: sandbox creation (infra consumption signal)
+    from agent.core import telemetry
+    await telemetry.record_sandbox_create(
+        session, sb, hardware=hardware,
+        create_latency_s=int(_t.monotonic() - _t_start),
+    )
 
     # Set a descriptive title (template title is inherited on duplicate)
     from huggingface_hub import metadata_update
@@ -204,16 +213,26 @@ async def sandbox_create_handler(
     args: dict[str, Any], session: Any = None
 ) -> tuple[str, bool]:
     """Handle sandbox_create tool calls."""
+    hardware = args.get("hardware", "cpu-basic")
+
     # If sandbox already exists, return its info
     if session and getattr(session, "sandbox", None):
         sb = session.sandbox
+        requested_hardware = args.get("hardware")
+        lockout_note = ""
+        if requested_hardware:
+            lockout_note = (
+                f"\nRequested hardware: {requested_hardware}\n"
+                "Hardware cannot be changed by calling sandbox_create again. "
+                "Delete the existing sandbox first if you need a different tier."
+            )
         return (
             f"Sandbox already active: {sb.space_id}\n"
             f"URL: {sb.url}\n"
+            f"{lockout_note}\n"
             f"Use bash/read/write/edit to interact with it."
         ), True
 
-    hardware = args.get("hardware", "cpu-basic")
     create_kwargs = {}
     if "private" in args:
         create_kwargs["private"] = args["private"]

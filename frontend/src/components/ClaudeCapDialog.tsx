@@ -19,6 +19,7 @@ interface ClaudeCapDialogProps {
   cap: number;
   onClose: () => void;
   onUseFreeModel: () => void;
+  onUpgrade: () => void;
 }
 
 export default function ClaudeCapDialog({
@@ -27,6 +28,7 @@ export default function ClaudeCapDialog({
   cap,
   onClose,
   onUseFreeModel,
+  onUpgrade,
 }: ClaudeCapDialogProps) {
   // plan not surfaced in copy right now — Pro users see the same dialog and
   // can upgrade their org if they're also capped.
@@ -100,6 +102,7 @@ export default function ClaudeCapDialog({
           href={HF_PRICING_URL}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={onUpgrade}
           variant="contained"
           size="small"
           sx={{

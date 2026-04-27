@@ -15,7 +15,7 @@ from agent.core.tools import ToolRouter
 
 # Get project root (parent of backend directory)
 PROJECT_ROOT = Path(__file__).parent.parent
-DEFAULT_CONFIG_PATH = str(PROJECT_ROOT / "configs" / "main_agent_config.json")
+DEFAULT_CONFIG_PATH = str(PROJECT_ROOT / "configs" / "frontend_agent_config.json")
 
 
 # These dataclasses match agent/main.py structure
@@ -192,7 +192,7 @@ class SessionManager:
                 session_config.model_name = model
             session = Session(
                 event_queue, config=session_config, tool_router=tool_router,
-                hf_token=hf_token,
+                hf_token=hf_token, user_id=user_id,
             )
             t1 = _time.monotonic()
             logger.info(f"Session initialized in {t1 - t0:.2f}s")
@@ -290,11 +290,14 @@ class SessionManager:
         """Delete the sandbox Space if one was created for this session."""
         sandbox = getattr(session, "sandbox", None)
         if sandbox and getattr(sandbox, "_owns_space", False):
+            space_id = getattr(sandbox, "space_id", None)
             try:
-                logger.info(f"Deleting sandbox {sandbox.space_id}...")
+                logger.info(f"Deleting sandbox {space_id}...")
                 await asyncio.to_thread(sandbox.delete)
+                from agent.core import telemetry
+                await telemetry.record_sandbox_destroy(session, sandbox)
             except Exception as e:
-                logger.warning(f"Failed to delete sandbox {sandbox.space_id}: {e}")
+                logger.warning(f"Failed to delete sandbox {space_id}: {e}")
 
     async def _run_session(
         self,
@@ -355,6 +358,15 @@ class SessionManager:
                 pass
 
             await self._cleanup_sandbox(session)
+
+            # Final-flush: always save on session death so we capture ended
+            # sessions even if the client disconnects without /shutdown.
+            # Idempotent via session_id key; detached subprocess.
+            if session.config.save_sessions:
+                try:
+                    session.save_and_upload_detached(session.config.session_dataset_repo)
+                except Exception as e:
+                    logger.warning(f"Final-flush failed for {session_id}: {e}")
 
             async with self._lock:
                 if session_id in self.sessions:

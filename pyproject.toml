@@ -1,5 +1,5 @@
 [project]
-name = "hf-agent"
+name = "ml-intern"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -26,6 +26,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "httpx>=0.27.0",
     "websockets>=13.0",
+    "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]
@@ -41,11 +42,12 @@ eval = [
 # Development and testing dependencies
 dev = [
     "pytest>=9.0.2",
+    "pytest-asyncio>=0.26.0",
 ]
 
 # All dependencies (eval + dev)
 all = [
-    "hf-agent[eval,dev]",
+    "ml-intern[eval,dev]",
 ]
 
 [project.scripts]
@@ -60,3 +62,6 @@ include = ["agent*"]
 
 [tool.uv]
 package = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

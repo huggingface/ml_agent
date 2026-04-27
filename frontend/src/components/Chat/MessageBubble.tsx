@@ -9,6 +9,7 @@ interface MessageBubbleProps {
   onEditAndRegenerate?: (messageId: string, newText: string) => void | Promise<void>;
   isProcessing?: boolean;
   isStreaming?: boolean;
+  sessionId?: string | null;
   approveTools: (approvals: Array<{ tool_call_id: string; approved: boolean; feedback?: string | null }>) => Promise<boolean>;
 }
 
@@ -19,6 +20,7 @@ export default function MessageBubble({
   onEditAndRegenerate,
   isProcessing = false,
   isStreaming = false,
+  sessionId,
   approveTools,
 }: MessageBubbleProps) {
   if (message.role === 'user') {
@@ -38,6 +40,7 @@ export default function MessageBubble({
       <AssistantMessage
         message={message}
         isStreaming={isStreaming}
+        sessionId={sessionId}
         approveTools={approveTools}
       />
     );

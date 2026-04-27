@@ -17,6 +17,7 @@ import httpx
 from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
 
+from agent.core.hf_access import JobsAccessError, resolve_jobs_namespace
 from agent.core.session import Event
 from agent.tools.types import ToolResult
 
@@ -298,6 +299,7 @@ class HfJobsTool:
         self,
         hf_token: Optional[str] = None,
         namespace: Optional[str] = None,
+        jobs_access: Any = None,
         log_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         session: Any = None,
         tool_call_id: Optional[str] = None,
@@ -305,6 +307,7 @@ class HfJobsTool:
         self.hf_token = hf_token
         self.api = HfApi(token=hf_token)
         self.namespace = namespace
+        self.jobs_access = jobs_access
         self.log_callback = log_callback
         self.session = session
         self.tool_call_id = tool_call_id
@@ -528,14 +531,16 @@ class HfJobsTool:
                 job_type = "Docker"
 
             # Run the job
+            flavor = args.get("hardware_flavor", "cpu-basic")
+            timeout_str = args.get("timeout", "30m")
             job = await _async_call(
                 self.api.run_job,
                 image=image,
                 command=command,
                 env=_add_default_env(args.get("env")),
                 secrets=_add_environment_variables(args.get("secrets"), self.hf_token),
-                flavor=args.get("hardware_flavor", "cpu-basic"),
-                timeout=args.get("timeout", "30m"),
+                flavor=flavor,
+                timeout=timeout_str,
                 namespace=self.namespace,
             )
 
@@ -557,6 +562,16 @@ class HfJobsTool:
                     )
                 )
 
+            # Telemetry: job submission + completion (infra consumption signal).
+            submit_ts = None
+            if self.session:
+                from agent.core import telemetry
+                submit_ts = await telemetry.record_hf_job_submit(
+                    self.session, job,
+                    {**args, "hardware_flavor": flavor, "timeout": timeout_str, "namespace": self.namespace},
+                    image=image, job_type=job_type,
+                )
+
             # Wait for completion and stream logs
             logger.info(f"{job_type} job started: {job.url}")
             logger.info("Streaming logs...")
@@ -565,6 +580,13 @@ class HfJobsTool:
                 job_id=job.id,
                 namespace=self.namespace,
             )
+
+            if self.session and submit_ts is not None:
+                from agent.core import telemetry
+                await telemetry.record_hf_job_complete(
+                    self.session, job,
+                    flavor=flavor, final_status=final_status, submit_ts=submit_ts,
+                )
 
             # Untrack job ID (completed or failed, no longer needs cancellation)
             if self.session:
@@ -1038,6 +1060,14 @@ HF_JOBS_TOOL_SPEC = {
                 "type": "object",
                 "description": "Environment variables {'KEY': 'VALUE'}. HF_TOKEN is auto-included.",
             },
+            "namespace": {
+                "type": "string",
+                "description": (
+                    "Optional namespace to run the job under. Must be your own Pro account "
+                    "or a paid org you belong to. If omitted, the tool prefers your personal "
+                    "account when eligible, otherwise the first eligible paid org."
+                ),
+            },
             "job_id": {
                 "type": "string",
                 "description": "Job ID. Required for: logs, inspect, cancel.",
@@ -1080,11 +1110,18 @@ async def hf_jobs_handler(
                 arguments = {**arguments, "script": content}
 
         hf_token = session.hf_token if session else None
-        namespace = os.environ.get("HF_NAMESPACE") or (HfApi(token=hf_token).whoami().get("name") if hf_token else None)
+        try:
+            namespace, jobs_access = await resolve_jobs_namespace(
+                hf_token or "",
+                arguments.get("namespace"),
+            )
+        except JobsAccessError as e:
+            return str(e), False
 
         tool = HfJobsTool(
             namespace=namespace,
             hf_token=hf_token,
+            jobs_access=jobs_access,
             log_callback=log_callback if session else None,
             session=session,
             tool_call_id=tool_call_id,

@@ -24,8 +24,13 @@ class Config(BaseModel):
     model_name: str
     mcpServers: dict[str, MCPServerConfig] = {}
     save_sessions: bool = True
-    session_dataset_repo: str = "akseljoonas/hf-agent-sessions"
-    auto_save_interval: int = 3  # Save every N user turns (0 = disabled)
+    session_dataset_repo: str = "smolagents/ml-intern-sessions"
+    auto_save_interval: int = 1  # Save every N user turns (0 = disabled)
+    # Mid-turn heartbeat: save + upload every N seconds while events are being
+    # emitted. Guards against losing trace data on long-running turns that
+    # crash before turn_complete (e.g. a multi-hour hf_jobs wait that OOMs).
+    # 0 = disabled. Consumed by agent.core.telemetry.HeartbeatSaver.
+    heartbeat_interval_s: int = 60
     yolo_mode: bool = False  # Auto-approve all tool calls without confirmation
     max_iterations: int = 300  # Max LLM calls per agent turn (-1 = unlimited)
 
