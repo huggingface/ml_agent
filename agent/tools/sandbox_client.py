@@ -37,6 +37,7 @@ Tools: bash, read, write, edit, upload
 from __future__ import annotations
 
 import io
+import secrets as secrets_lib
 import sys
 import time
 import uuid
@@ -99,8 +100,8 @@ CMD ["python", "sandbox_server.py"]
 
 _SANDBOX_SERVER = '''\
 """Minimal FastAPI server for sandbox operations."""
-import os, subprocess, pathlib, signal, threading, re, tempfile
-from fastapi import FastAPI
+import hmac, os, subprocess, pathlib, signal, threading, re, tempfile
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
@@ -155,6 +156,22 @@ def _atomic_write(path: pathlib.Path, content: str):
                 pass
 
 app = FastAPI()
+
+def _expected_api_token() -> str:
+    return os.environ.get("SANDBOX_API_TOKEN") or os.environ.get("HF_TOKEN") or ""
+
+def _require_auth(request: Request) -> None:
+    expected = _expected_api_token()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Sandbox API token not configured")
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, supplied = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not supplied:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+_AUTH = [Depends(_require_auth)]
 
 # Track active bash processes so they can be killed on cancel
 _active_procs = {}  # pid -> subprocess.Popen
@@ -344,7 +361,7 @@ def _validate_python(content, path=""):
 def health():
     return {"status": "ok"}
 
-@app.post("/api/bash")
+@app.post("/api/bash", dependencies=_AUTH)
 def bash(req: BashReq):
     try:
         proc = subprocess.Popen(
@@ -371,7 +388,7 @@ def bash(req: BashReq):
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
-@app.post("/api/kill")
+@app.post("/api/kill", dependencies=_AUTH)
 def kill_all():
     """Kill all active bash processes. Called when user cancels."""
     with _proc_lock:
@@ -389,7 +406,7 @@ def kill_all():
                 pass
     return {"success": True, "output": f"Killed {len(killed)} process(es): {killed}", "error": ""}
 
-@app.post("/api/read")
+@app.post("/api/read", dependencies=_AUTH)
 def read(req: ReadReq):
     try:
         p = pathlib.Path(req.path)
@@ -406,7 +423,7 @@ def read(req: ReadReq):
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
-@app.post("/api/write")
+@app.post("/api/write", dependencies=_AUTH)
 def write(req: WriteReq):
     try:
         p = pathlib.Path(req.path)
@@ -420,7 +437,7 @@ def write(req: WriteReq):
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
-@app.post("/api/edit")
+@app.post("/api/edit", dependencies=_AUTH)
 def edit(req: EditReq):
     try:
         p = pathlib.Path(req.path)
@@ -447,7 +464,7 @@ def edit(req: EditReq):
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
-@app.post("/api/exists")
+@app.post("/api/exists", dependencies=_AUTH)
 def exists(req: ExistsReq):
     return {"success": True, "output": str(pathlib.Path(req.path).exists()).lower(), "error": ""}
 
@@ -482,6 +499,7 @@ class Sandbox:
 
     space_id: str
     token: str | None = None
+    api_token: str | None = field(default=None, repr=False)
     work_dir: str = "/app"
     timeout: int = DEFAULT_TIMEOUT
     _owns_space: bool = field(default=False, repr=False)
@@ -495,9 +513,10 @@ class Sandbox:
         # Trailing slash is critical: httpx resolves relative paths against base_url.
         # Without it, client.get("health") resolves to /health instead of /api/health.
         self._base_url = f"https://{slug}.hf.space/api/"
+        api_token = self.api_token or self.token
         self._client = httpx.Client(
             base_url=self._base_url,
-            headers={"Authorization": f"Bearer {self.token}"} if self.token else {},
+            headers={"Authorization": f"Bearer {api_token}"} if api_token else {},
             timeout=httpx.Timeout(MAX_TIMEOUT, connect=30),
             follow_redirects=True,
         )
@@ -563,6 +582,7 @@ class Sandbox:
         base = name or "sandbox"
         suffix = uuid.uuid4().hex[:8]
         space_id = f"{owner}/{base}-{suffix}"
+        sandbox_api_token = secrets_lib.token_urlsafe(32)
 
         _log(f"Creating sandbox: {space_id} (from {template})...")
 
@@ -583,8 +603,9 @@ class Sandbox:
         # Inject secrets BEFORE uploading server files (which triggers rebuild).
         # Secrets added after a Space is running aren't available until restart,
         # so they must be set before the build/start cycle.
-        if secrets:
-            for key, val in secrets.items():
+        sandbox_secrets = {**(secrets or {}), "SANDBOX_API_TOKEN": sandbox_api_token}
+        if sandbox_secrets:
+            for key, val in sandbox_secrets.items():
                 api.add_space_secret(space_id, key, val)
 
         # Upload sandbox server and Dockerfile (triggers rebuild)
@@ -617,7 +638,12 @@ class Sandbox:
         _check_cancel()
 
         # Wait for the API server to be responsive (non-fatal)
-        sb = cls(space_id=space_id, token=token, _owns_space=True)
+        sb = cls(
+            space_id=space_id,
+            token=token,
+            api_token=sandbox_api_token,
+            _owns_space=True,
+        )
         try:
             sb._wait_for_api(timeout=API_WAIT_TIMEOUT, log=_log)
         except TimeoutError as e:
@@ -648,13 +674,24 @@ class Sandbox:
         log("Server files uploaded, rebuild triggered.")
 
     @classmethod
-    def connect(cls, space_id: str, *, token: str | None = None) -> Sandbox:
+    def connect(
+        cls,
+        space_id: str,
+        *,
+        token: str | None = None,
+        api_token: str | None = None,
+    ) -> Sandbox:
         """
         Connect to an existing running Space.
 
         Does a health check to verify the Space is reachable.
         """
-        sb = cls(space_id=space_id, token=token, _owns_space=False)
+        sb = cls(
+            space_id=space_id,
+            token=token,
+            api_token=api_token,
+            _owns_space=False,
+        )
         sb._wait_for_api(timeout=60)
         return sb
 

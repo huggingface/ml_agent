@@ -58,7 +58,20 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agent*"]
+# `configs` ships the JSON files loaded by agent.main.CLI_CONFIG_PATH at
+# runtime (resolves to <site-packages>/configs/cli_agent_config.json).
+# Without it, `uv tool install` / `pip install` produce a broken install
+# that imports fine but crashes at startup with FileNotFoundError.
+include = ["agent*", "configs"]
+
+[tool.setuptools.package-data]
+configs = ["*.json"]
+# Agent data files: system prompts loaded by ContextManager._load_system_prompt
+# at runtime (`<site-packages>/agent/prompts/system_prompt_v3.yaml`), plus the
+# package README. Without these, headless_main hangs forever — submission_loop
+# crashes with FileNotFoundError but headless_main doesn't check agent_task.done()
+# and just keeps awaiting the "ready" event_queue item that will never come.
+agent = ["README.md", "prompts/*.yaml"]
 
 [tool.uv]
 package = true

@@ -26,6 +26,20 @@ def test_extract_thinking_state_from_litellm_message():
     assert reasoning_content == "reasoned"
 
 
+def test_extract_thinking_state_from_provider_fields():
+    message = SimpleNamespace(
+        provider_specific_fields={
+            "thinking_blocks": [{"type": "thinking", "thinking": "reasoned"}],
+            "reasoning_content": "reasoned",
+        },
+    )
+
+    thinking_blocks, reasoning_content = _extract_thinking_state(message)
+
+    assert thinking_blocks == [{"type": "thinking", "thinking": "reasoned"}]
+    assert reasoning_content == "reasoned"
+
+
 def test_assistant_message_from_result_preserves_thinking_with_tool_calls():
     tool_call = ChatCompletionMessageToolCall(
         id="call_1",
@@ -142,6 +156,60 @@ async def test_streaming_call_rebuilds_anthropic_thinking_state(monkeypatch):
     assert result.content == "done"
     assert result.thinking_blocks == [{"type": "thinking", "thinking": "reasoned"}]
     assert result.reasoning_content == "reasoned"
+
+
+@pytest.mark.asyncio
+async def test_streaming_call_collects_anthropic_delta_thinking_state(monkeypatch):
+    async def fake_stream():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        tool_calls=None,
+                        thinking_blocks=[{"type": "thinking", "thinking": "reasoned"}],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="done", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+        )
+        yield SimpleNamespace(choices=[], usage=SimpleNamespace(total_tokens=3))
+
+    async def fake_acompletion(**_kwargs):
+        return fake_stream()
+
+    def fail_chunk_builder(*_args, **_kwargs):
+        raise AssertionError("stream_chunk_builder should not run when deltas include thinking")
+
+    events = []
+    async def send_event(event):
+        events.append(event)
+
+    session = SimpleNamespace(
+        config=SimpleNamespace(model_name="anthropic/claude-opus-4-7"),
+        is_cancelled=False,
+        send_event=send_event,
+    )
+    monkeypatch.setattr(agent_loop, "acompletion", fake_acompletion)
+    monkeypatch.setattr(agent_loop, "stream_chunk_builder", fail_chunk_builder)
+
+    result = await _call_llm_streaming(
+        session,
+        messages=[Message(role="user", content="hi")],
+        tools=[],
+        llm_params={"model": "anthropic/claude-opus-4-7"},
+    )
+
+    assert result.content == "done"
+    assert result.thinking_blocks == [{"type": "thinking", "thinking": "reasoned"}]
 
 
 @pytest.mark.asyncio

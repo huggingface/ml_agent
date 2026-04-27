@@ -410,8 +410,20 @@ def _extract_thinking_state(
     message: Any,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Return provider reasoning fields that must be replayed after tool calls."""
-    thinking_blocks = getattr(message, "thinking_blocks", None) or None
-    reasoning_content = getattr(message, "reasoning_content", None) or None
+    provider_fields = getattr(message, "provider_specific_fields", None)
+    if not isinstance(provider_fields, dict):
+        provider_fields = {}
+
+    thinking_blocks = (
+        getattr(message, "thinking_blocks", None)
+        or provider_fields.get("thinking_blocks")
+        or None
+    )
+    reasoning_content = (
+        getattr(message, "reasoning_content", None)
+        or provider_fields.get("reasoning_content")
+        or None
+    )
     return thinking_blocks, reasoning_content
 
 
@@ -492,6 +504,9 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     finish_reason = None
     final_usage_chunk = None
     chunks = []
+    should_replay_thinking = _should_replay_thinking_state(llm_params.get("model"))
+    collected_thinking_blocks: list[dict[str, Any]] = []
+    collected_reasoning_content: list[str] = []
 
     async for chunk in response:
         chunks.append(chunk)
@@ -509,6 +524,13 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         delta = choice.delta
         if choice.finish_reason:
             finish_reason = choice.finish_reason
+
+        if should_replay_thinking:
+            delta_thinking_blocks, delta_reasoning_content = _extract_thinking_state(delta)
+            if delta_thinking_blocks:
+                collected_thinking_blocks.extend(delta_thinking_blocks)
+            if delta_reasoning_content:
+                collected_reasoning_content.append(delta_reasoning_content)
 
         if delta.content:
             full_content += delta.content
@@ -543,9 +565,9 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         latency_ms=int((time.monotonic() - t_start) * 1000),
         finish_reason=finish_reason,
     )
-    thinking_blocks = None
-    reasoning_content = None
-    if chunks and _should_replay_thinking_state(llm_params.get("model")):
+    thinking_blocks = collected_thinking_blocks or None
+    reasoning_content = "".join(collected_reasoning_content) or None
+    if chunks and should_replay_thinking and not (thinking_blocks or reasoning_content):
         try:
             rebuilt = stream_chunk_builder(chunks, messages=messages)
             if rebuilt and getattr(rebuilt, "choices", None):
