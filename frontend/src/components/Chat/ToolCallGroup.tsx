@@ -246,6 +246,7 @@ function buildTrackioPageUrl(spaceId: string, project?: string): string {
 
 function TrackioEmbed({ spaceId, project }: { spaceId: string; project?: string }) {
   const [expanded, setExpanded] = useState(true);
+  const [iframeLoaded, setIframeLoaded] = useState(false);
   const embedUrl = useMemo(() => buildTrackioEmbedUrl(spaceId, project), [spaceId, project]);
   const pageUrl = useMemo(() => buildTrackioPageUrl(spaceId, project), [spaceId, project]);
   const label = project ? `${spaceId} · ${project}` : spaceId;
@@ -334,13 +335,52 @@ function TrackioEmbed({ spaceId, project }: { spaceId: string; project?: string 
           </Button>
         </Stack>
         {expanded && (
-          <Box sx={{ width: '100%', height: 480, bgcolor: '#fff' }}>
+          <Box sx={{ position: 'relative', width: '100%', height: 480, bgcolor: '#fff' }}>
             <iframe
               src={embedUrl}
               title={`Trackio dashboard ${label}`}
               loading="lazy"
+              onLoad={() => setIframeLoaded(true)}
               style={{ border: 0, width: '100%', height: '100%', display: 'block' }}
             />
+            {!iframeLoaded && (
+              <Stack
+                direction="column"
+                alignItems="center"
+                justifyContent="center"
+                spacing={1.5}
+                sx={{
+                  position: 'absolute',
+                  inset: 0,
+                  bgcolor: 'var(--code-panel-bg)',
+                  color: 'var(--muted-text)',
+                  pointerEvents: 'none',
+                }}
+              >
+                <CircularProgress size={20} sx={{ color: 'var(--accent-yellow)' }} />
+                <Typography
+                  sx={{
+                    fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace',
+                    fontSize: '0.75rem',
+                    color: 'var(--text)',
+                  }}
+                >
+                  Spinning up the dashboard…
+                </Typography>
+                <Typography
+                  sx={{
+                    fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace',
+                    fontSize: '0.65rem',
+                    color: 'var(--muted-text)',
+                    textAlign: 'center',
+                    maxWidth: 360,
+                    px: 2,
+                  }}
+                >
+                  HF Spaces typically take 30–60 seconds to build the first time. Charts will appear automatically once the run starts logging.
+                </Typography>
+              </Stack>
+            )}
           </Box>
         )}
       </Box>
