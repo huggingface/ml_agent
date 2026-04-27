@@ -34,7 +34,7 @@ ToolCall = ChatCompletionMessageToolCall
 
 _MALFORMED_TOOL_PREFIX = "ERROR: Tool call to '"
 _MALFORMED_TOOL_SUFFIX = "' had malformed JSON arguments"
-_TURN_COMPLETE_PREVIEW_CHARS = 2000
+_TURN_COMPLETE_PREVIEW_CHARS = 39000
 
 
 def _malformed_tool_name(message: Message) -> str | None:

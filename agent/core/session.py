@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TOKENS = 200_000
 _LEGACY_AUTO_EVENT_TYPES = {"approval_required", "error"}
-_TURN_COMPLETE_NOTIFICATION_CHARS = 2000
+_TURN_COMPLETE_NOTIFICATION_CHARS = 39000
 
 
 def _get_max_tokens_safe(model_name: str) -> int:
