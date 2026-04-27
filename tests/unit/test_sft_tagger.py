@@ -79,16 +79,7 @@ def test_outcome_ongoing():
 
 def test_outcome_doom_loop_and_context():
     events = [
-        _ev(
-            "tool_log",
-            {
-                "tool": "system",
-                "log": (
-                    "Repetition guard activated - steering the agent away "
-                    "from repeated tool calls"
-                ),
-            },
-        ),
+        _ev("tool_log", {"tool": "system", "log": "Doom loop detected"}),
         _ev("compacted", {"old_tokens": 100, "new_tokens": 50}),
         _ev("turn_complete", {"history_size": 10}),
     ]

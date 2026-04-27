@@ -310,10 +310,6 @@ async def research_handler(
                 "Research sub-agent repetition guard activated at iteration %d",
                 _iteration,
             )
-            await _log(
-                "Repetition guard activated - steering the research sub-agent "
-                "away from repeated tool calls"
-            )
             messages.append(Message(role="user", content=doom_prompt))
 
         # ── Context budget: warn at 75%, hard-stop at 95% ──
