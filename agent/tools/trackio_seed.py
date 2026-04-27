@@ -51,6 +51,16 @@ Embedded trackio dashboard for ml-intern runs.
 _REQUIREMENTS = "trackio\n"
 _APP_PY = "import trackio\ntrackio.show()\n"
 
+# ml-intern brand mark surfaced inside the trackio dashboard. Trackio reads
+# `TRACKIO_LOGO_LIGHT_URL` / `TRACKIO_LOGO_DARK_URL` from Space variables and
+# renders them in place of its own logo. We point at the publicly-resolvable
+# copy on the smolagents/ml-intern Space repo so any seeded dashboard inherits
+# the ml-intern branding without each user having to host the asset.
+_LOGO_URL = (
+    "https://huggingface.co/spaces/smolagents/ml-intern/"
+    "resolve/main/frontend/public/smolagents.webp"
+)
+
 _FILES = {
     "README.md": _README,
     "requirements.txt": _REQUIREMENTS,
@@ -134,10 +144,15 @@ def _ensure_bucket_mounted(
             log(f"mounted bucket {bucket_id} at /data on {space_id}")
 
     variables = api.get_space_variables(space_id)
-    if getattr(variables.get("TRACKIO_DIR"), "value", None) != "/data/trackio":
-        add_space_variable(space_id, "TRACKIO_DIR", "/data/trackio", token=hf_token)
-    if getattr(variables.get("TRACKIO_BUCKET_ID"), "value", None) != bucket_id:
-        add_space_variable(space_id, "TRACKIO_BUCKET_ID", bucket_id, token=hf_token)
+    desired = {
+        "TRACKIO_DIR": "/data/trackio",
+        "TRACKIO_BUCKET_ID": bucket_id,
+        "TRACKIO_LOGO_LIGHT_URL": _LOGO_URL,
+        "TRACKIO_LOGO_DARK_URL": _LOGO_URL,
+    }
+    for key, value in desired.items():
+        if getattr(variables.get(key), "value", None) != value:
+            add_space_variable(space_id, key, value, token=hf_token)
 
 
 def ensure_trackio_dashboard(
