@@ -129,9 +129,13 @@ def check_for_doom_loop(messages: list[Message]) -> str | None:
     # Check for identical consecutive calls
     tool_name = detect_identical_consecutive(signatures, threshold=3)
     if tool_name:
-        logger.warning("Doom loop detected: %d+ identical consecutive calls to '%s'", 3, tool_name)
+        logger.warning(
+            "Repetition guard activated: %d+ identical consecutive calls to '%s'",
+            3,
+            tool_name,
+        )
         return (
-            f"[SYSTEM: DOOM LOOP DETECTED] You have called '{tool_name}' with the same "
+            f"[SYSTEM: REPETITION GUARD] You have called '{tool_name}' with the same "
             f"arguments multiple times in a row, getting the same result each time. "
             f"STOP repeating this approach — it is not working. "
             f"Step back and try a fundamentally different strategy. "
@@ -143,9 +147,9 @@ def check_for_doom_loop(messages: list[Message]) -> str | None:
     pattern = detect_repeating_sequence(signatures)
     if pattern:
         pattern_desc = " → ".join(s.name for s in pattern)
-        logger.warning("Doom loop detected: repeating sequence [%s]", pattern_desc)
+        logger.warning("Repetition guard activated: repeating sequence [%s]", pattern_desc)
         return (
-            f"[SYSTEM: DOOM LOOP DETECTED] You are stuck in a repeating cycle of tool calls: "
+            f"[SYSTEM: REPETITION GUARD] You are stuck in a repeating cycle of tool calls: "
             f"[{pattern_desc}]. This pattern has repeated multiple times without progress. "
             f"STOP this cycle and try a fundamentally different approach. "
             f"Consider: breaking down the problem differently, using alternative tools, "

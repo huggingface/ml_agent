@@ -686,7 +686,10 @@ class Handlers:
                         event_type="tool_log",
                         data={
                             "tool": "system",
-                            "log": "Doom loop detected — injecting corrective prompt",
+                            "log": (
+                                "Repetition guard activated - steering the agent "
+                                "away from repeated tool calls"
+                            ),
                         },
                     )
                 )

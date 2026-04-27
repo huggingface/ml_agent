@@ -248,7 +248,7 @@ def tag_session(trajectory: dict) -> list[str]:
             had_compact = True
         elif et == "tool_log":
             log_text = (data.get("log") or "").lower()
-            if "doom loop" in log_text:
+            if "doom loop" in log_text or "repetition guard" in log_text:
                 had_doom_loop = True
 
     if had_error and outcome not in ("completed", "interrupted"):

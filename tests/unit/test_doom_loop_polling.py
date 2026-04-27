@@ -5,7 +5,7 @@ Reproduces the failure mode in observatory sessions 40fcb414 ($32.59),
 long-running job with `bash sleep 300 && wc -l output` four times in a
 row. The arguments were byte-identical, but the results moved (27210 →
 36454 → 45770 → 55138 — actual progress). The detector hashed args only
-and false-fired DOOM LOOP, which made the agent abandon perfectly valid
+and false-fired the repetition guard, which made the agent abandon perfectly valid
 polling.
 
 After the fix the signature includes the tool result hash, so identical
@@ -66,7 +66,7 @@ def test_truly_stuck_polling_with_identical_results_still_fires():
     ]
     prompt = check_for_doom_loop(msgs)
     assert prompt is not None
-    assert "DOOM LOOP" in prompt
+    assert "REPETITION GUARD" in prompt
     assert "bash" in prompt
 
 
@@ -80,7 +80,7 @@ def test_identical_calls_with_no_results_yet_still_fires():
     ]
     prompt = check_for_doom_loop(msgs)
     assert prompt is not None
-    assert "DOOM LOOP" in prompt
+    assert "REPETITION GUARD" in prompt
     assert "write" in prompt
 
 
