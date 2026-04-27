@@ -339,6 +339,46 @@ async def test_turn_complete_auto_notification_includes_final_response_summary()
 
 
 @pytest.mark.asyncio
+async def test_turn_complete_auto_notification_supports_longer_summary():
+    config = Config.model_validate(
+        {
+            "model_name": "moonshotai/Kimi-K2.6",
+            "messaging": {
+                "enabled": True,
+                "destinations": {
+                    "slack.ops": {
+                        "provider": "slack",
+                        "token": "xoxb-test",
+                        "channel": "C123",
+                        "allow_auto_events": True,
+                    }
+                },
+            },
+        }
+    )
+    gateway = RecordingGateway()
+    session = _test_session(config, gateway, session_id="sess-long")
+    session.set_notification_destinations(["slack.ops"])
+
+    long_summary = "A" * 1200 + " END"
+    await session.send_event(
+        Event(
+            event_type="turn_complete",
+            data={
+                "history_size": 12,
+                "final_response": long_summary,
+            },
+        )
+    )
+
+    assert len(gateway.enqueued) == 1
+    request = gateway.enqueued[0]
+    assert request.event_type == "turn_complete"
+    assert "A" * 1200 in request.message
+    assert request.message.endswith("END")
+
+
+@pytest.mark.asyncio
 async def test_turn_complete_auto_notification_can_be_deferred():
     config = Config.model_validate(
         {

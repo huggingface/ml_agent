@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TOKENS = 200_000
 _LEGACY_AUTO_EVENT_TYPES = {"approval_required", "error"}
+_TURN_COMPLETE_NOTIFICATION_CHARS = 2000
 
 
 def _get_max_tokens_safe(model_name: str) -> int:
@@ -242,7 +243,7 @@ class Session:
             title = "Agent task complete"
             summary = str(data.get("final_response") or "").strip()
             if summary:
-                summary = summary[:500]
+                summary = summary[:_TURN_COMPLETE_NOTIFICATION_CHARS]
                 message = (
                     f"Session {self.session_id} completed successfully.\n"
                     f"{summary}"
