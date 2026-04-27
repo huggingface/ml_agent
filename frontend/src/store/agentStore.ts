@@ -45,6 +45,21 @@ export interface LLMHealthError {
   model: string;
 }
 
+export interface JobsUpgradeState {
+  approvals: Array<{
+    tool_call_id: string;
+    approved: boolean;
+    feedback?: string | null;
+    edited_script?: string | null;
+    namespace?: string | null;
+  }>;
+  toolCallIds: string[];
+  message: string;
+  eligibleNamespaces: string[];
+  plan: 'free' | 'pro' | 'org';
+  mode: 'upgrade' | 'namespace';
+}
+
 export type ActivityStatus =
   | { type: 'idle' }
   | { type: 'thinking' }
@@ -110,6 +125,7 @@ interface AgentStore {
   llmHealthError: LLMHealthError | null;
   /** Set when a Claude-send hits the daily quota — ChatInput opens the cap dialog in response. */
   claudeQuotaExhausted: boolean;
+  jobsUpgradeRequired: JobsUpgradeState | null;
 
   // Right panel (single-artifact pattern)
   panelData: PanelData | null;
@@ -121,6 +137,9 @@ interface AgentStore {
 
   // Edited scripts (tool_call_id -> edited content)
   editedScripts: Record<string, string>;
+
+  // Namespace overrides chosen for hf_jobs approvals (tool_call_id -> namespace)
+  approvalNamespaces: Record<string, string>;
 
   // Job URLs (tool_call_id -> job URL) for HF jobs
   jobUrls: Record<string, string>;
@@ -156,6 +175,7 @@ interface AgentStore {
   setError: (error: string | null) => void;
   setLlmHealthError: (error: LLMHealthError | null) => void;
   setClaudeQuotaExhausted: (exhausted: boolean) => void;
+  setJobsUpgradeRequired: (state: JobsUpgradeState | null) => void;
 
   setPanel: (data: PanelData, view?: PanelView, editable?: boolean) => void;
   setPanelView: (view: PanelView) => void;
@@ -169,6 +189,10 @@ interface AgentStore {
   setEditedScript: (toolCallId: string, content: string) => void;
   getEditedScript: (toolCallId: string) => string | undefined;
   clearEditedScripts: () => void;
+
+  setApprovalNamespace: (toolCallId: string, namespace: string) => void;
+  getApprovalNamespace: (toolCallId: string) => string | undefined;
+  clearApprovalNamespaces: () => void;
 
   setJobUrl: (toolCallId: string, jobUrl: string) => void;
   getJobUrl: (toolCallId: string) => string | undefined;
@@ -251,6 +275,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   error: null,
   llmHealthError: null,
   claudeQuotaExhausted: false,
+  jobsUpgradeRequired: null,
 
   panelData: null,
   panelView: 'script',
@@ -259,6 +284,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   plan: [],
 
   editedScripts: {},
+  approvalNamespaces: {},
   jobUrls: {},
   jobStatuses: {},
   toolErrors: loadToolErrors(),
@@ -363,6 +389,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   setError: (error) => set({ error }),
   setLlmHealthError: (error) => set({ llmHealthError: error }),
   setClaudeQuotaExhausted: (exhausted) => set({ claudeQuotaExhausted: exhausted }),
+  setJobsUpgradeRequired: (state) => set({ jobsUpgradeRequired: state }),
 
   // ── Panel (single-artifact) ───────────────────────────────────────
   // Each setter also patches the active session's snapshot so that
@@ -427,6 +454,16 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   getEditedScript: (toolCallId) => get().editedScripts[toolCallId],
 
   clearEditedScripts: () => set({ editedScripts: {} }),
+
+  setApprovalNamespace: (toolCallId, namespace) => {
+    set((state) => ({
+      approvalNamespaces: { ...state.approvalNamespaces, [toolCallId]: namespace },
+    }));
+  },
+
+  getApprovalNamespace: (toolCallId) => get().approvalNamespaces[toolCallId],
+
+  clearApprovalNamespaces: () => set({ approvalNamespaces: {} }),
 
   // ── Job URLs ────────────────────────────────────────────────────────
 

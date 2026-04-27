@@ -192,7 +192,7 @@ class SessionManager:
                 session_config.model_name = model
             session = Session(
                 event_queue, config=session_config, tool_router=tool_router,
-                hf_token=hf_token,
+                hf_token=hf_token, user_id=user_id,
             )
             t1 = _time.monotonic()
             logger.info(f"Session initialized in {t1 - t0:.2f}s")

@@ -62,5 +62,12 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Bypass the OIDC -> Claude GitHub App token exchange. That exchange
+          # rejects OIDC tokens minted for pull_request_target events with
+          # "401 Invalid OIDC token", which broke every review after the switch
+          # away from pull_request. Using the workflow's GITHUB_TOKEN works for
+          # both same-repo and fork PRs; comments post as github-actions[bot]
+          # instead of claude[bot], which is the documented trade-off.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           track_progress: true
           prompt: ${{ steps.compose.outputs.prompt }}

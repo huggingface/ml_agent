@@ -1137,6 +1137,9 @@ class Handlers:
                     tool_args["script"] = edited_script
                     was_edited = True
                     logger.info(f"Using user-edited script for {tool_name} ({tc.id})")
+                selected_namespace = approval_decision.get("namespace")
+                if selected_namespace and tool_name == "hf_jobs":
+                    tool_args["namespace"] = selected_namespace
                 approved_tasks.append((tc, tool_name, tool_args, was_edited))
             else:
                 rejected_tasks.append((tc, tool_name, approval_decision))
@@ -1359,6 +1362,7 @@ async def submission_loop(
     tool_router: ToolRouter | None = None,
     session_holder: list | None = None,
     hf_token: str | None = None,
+    user_id: str | None = None,
     local_mode: bool = False,
     stream: bool = True,
 ) -> None:
@@ -1370,7 +1374,7 @@ async def submission_loop(
     # Create session with tool router
     session = Session(
         event_queue, config=config, tool_router=tool_router, hf_token=hf_token,
-        local_mode=local_mode, stream=stream,
+        user_id=user_id, local_mode=local_mode, stream=stream,
     )
     if session_holder is not None:
         session_holder[0] = session

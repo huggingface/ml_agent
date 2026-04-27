@@ -88,6 +88,22 @@ def test_hf_job_gpu_hours():
     assert abs(m["_gpu_hours_by_flavor"]["a100-large"] - 1.0) < 1e-6
 
 
+def test_hf_job_blocked_and_pro_clicks_are_counted():
+    mod = _load()
+    events = [
+        _ev("jobs_access_blocked", {"tool_call_ids": ["tc1"], "plan": "free"}),
+        _ev("pro_cta_click", {"source": "hf_jobs_upgrade_dialog"}),
+        _ev("pro_cta_click", {"source": "claude_cap_dialog"}),
+    ]
+    m = mod._session_metrics(_session(events))
+    assert m["hf_jobs_blocked"] == 1
+    assert m["pro_cta_clicks"] == 2
+    assert m["_pro_cta_by_source"] == {
+        "hf_jobs_upgrade_dialog": 1,
+        "claude_cap_dialog": 1,
+    }
+
+
 def test_feedback_counts():
     mod = _load()
     events = [
@@ -118,6 +134,22 @@ def test_aggregate_day_cache_hit_and_users():
     # 500 / (500 + 300) = 0.625
     assert abs(row["cache_hit_ratio"] - 0.625) < 1e-9
     assert abs(row["cost_usd"] - 1.5) < 1e-9
+
+
+def test_aggregate_day_sums_pro_click_sources():
+    mod = _load()
+    s1 = mod._session_metrics(_session([
+        _ev("pro_cta_click", {"source": "hf_jobs_upgrade_dialog"}),
+        _ev("pro_cta_click", {"source": "hf_jobs_upgrade_dialog"}),
+    ], user_id="u1"))
+    s2 = mod._session_metrics(_session([
+        _ev("pro_cta_click", {"source": "claude_cap_dialog"}),
+    ], user_id="u2"))
+    row = mod._aggregate_day([s1, s2])
+    assert row["pro_cta_clicks"] == 3
+    assert row["pro_cta_by_source_json"] == (
+        '{"claude_cap_dialog": 1, "hf_jobs_upgrade_dialog": 2}'
+    )
 
 
 def test_failure_and_regenerate_rates():

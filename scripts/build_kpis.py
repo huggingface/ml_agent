@@ -44,7 +44,8 @@ re-running the same hour overwrites.
     regenerate_rate     — sessions with any `undo_complete` event / sessions
     time_to_first_action_s_p50 / _p95  — from session_start to first tool_call
     thumbs_up / thumbs_down
-    hf_jobs_submitted / _succeeded
+    hf_jobs_submitted / _succeeded / _blocked
+    pro_cta_clicks
     gpu_hours_by_flavor_json   — JSON-serialised {flavor: gpu-hours}
 
 ================================================================================
@@ -210,7 +211,8 @@ def _session_metrics(session: dict) -> dict:
         "tool_calls_total": 0, "tool_calls_success": 0,
         "failures": 0, "regenerate_sessions": 0,
         "thumbs_up": 0, "thumbs_down": 0,
-        "hf_jobs_submitted": 0, "hf_jobs_succeeded": 0,
+        "hf_jobs_submitted": 0, "hf_jobs_succeeded": 0, "hf_jobs_blocked": 0,
+        "pro_cta_clicks": 0,
         "first_tool_s": -1,
     }
     events = session.get("events") or []
@@ -229,8 +231,11 @@ def _session_metrics(session: dict) -> dict:
     gpu_hours_by_flavor: dict[str, float] = defaultdict(float)
     jobs_submitted = 0
     jobs_succeeded = 0
+    jobs_blocked = 0
     thumbs_up = 0
     thumbs_down = 0
+    pro_cta_clicks = 0
+    pro_cta_by_source: dict[str, int] = defaultdict(int)
 
     start_dt = _parse_ts(session_start)
 
@@ -283,6 +288,14 @@ def _session_metrics(session: dict) -> dict:
             if status in ("completed", "succeeded", "success"):
                 jobs_succeeded += 1
 
+        elif et == "jobs_access_blocked":
+            jobs_blocked += 1
+
+        elif et == "pro_cta_click":
+            pro_cta_clicks += 1
+            source = str(data.get("source") or "unknown")
+            pro_cta_by_source[source] += 1
+
     out["tool_calls_total"] = tool_total
     out["tool_calls_success"] = tool_success
     out["failures"] = 1 if had_error else 0
@@ -291,8 +304,11 @@ def _session_metrics(session: dict) -> dict:
     out["thumbs_down"] = thumbs_down
     out["hf_jobs_submitted"] = jobs_submitted
     out["hf_jobs_succeeded"] = jobs_succeeded
+    out["hf_jobs_blocked"] = jobs_blocked
+    out["pro_cta_clicks"] = pro_cta_clicks
     out["first_tool_s"] = first_tool_ts if first_tool_ts is not None else -1
     out["_gpu_hours_by_flavor"] = dict(gpu_hours_by_flavor)
+    out["_pro_cta_by_source"] = dict(pro_cta_by_source)
     out["_user"] = session.get("user_id") or session.get("session_id")
     return dict(out)
 
@@ -301,9 +317,12 @@ def _aggregate(per_session: list[dict]) -> dict:
     """Collapse a bucket's worth of session rollups into the final KPI row."""
     ttfa_values = [s["first_tool_s"] for s in per_session if s.get("first_tool_s", -1) >= 0]
     gpu_hours: dict[str, float] = defaultdict(float)
+    pro_cta_by_source: dict[str, int] = defaultdict(int)
     for s in per_session:
         for f, h in (s.get("_gpu_hours_by_flavor") or {}).items():
             gpu_hours[f] += h
+        for source, count in (s.get("_pro_cta_by_source") or {}).items():
+            pro_cta_by_source[source] += int(count)
 
     total_sessions = sum(s["sessions"] for s in per_session)
     total_turns = sum(s["turns"] for s in per_session)
@@ -340,7 +359,10 @@ def _aggregate(per_session: list[dict]) -> dict:
         "thumbs_down": int(sum(s["thumbs_down"] for s in per_session)),
         "hf_jobs_submitted": int(sum(s["hf_jobs_submitted"] for s in per_session)),
         "hf_jobs_succeeded": int(sum(s["hf_jobs_succeeded"] for s in per_session)),
+        "hf_jobs_blocked": int(sum(s["hf_jobs_blocked"] for s in per_session)),
+        "pro_cta_clicks": int(sum(s["pro_cta_clicks"] for s in per_session)),
         "gpu_hours_by_flavor_json": json.dumps(dict(gpu_hours), sort_keys=True),
+        "pro_cta_by_source_json": json.dumps(dict(pro_cta_by_source), sort_keys=True),
     }
 
 

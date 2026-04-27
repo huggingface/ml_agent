@@ -330,6 +330,49 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     messages: UIMessage[];
   }>({ setMessages: null, messages: [] });
 
+  const hydrateFromBackend = useCallback(async () => {
+    try {
+      const [msgsRes, infoRes] = await Promise.all([
+        apiFetch(`/api/session/${sessionId}/messages`),
+        apiFetch(`/api/session/${sessionId}`),
+      ]);
+      if (!msgsRes.ok) return null;
+      const data = await msgsRes.json();
+      if (!Array.isArray(data) || data.length === 0) return null;
+
+      saveBackendMessages(sessionId, data);
+
+      let pendingIds: Set<string> | undefined;
+      let info: Record<string, unknown> | null = null;
+      if (infoRes.ok) {
+        info = await infoRes.json();
+        const pendingApproval = info?.pending_approval;
+        if (pendingApproval && Array.isArray(pendingApproval)) {
+          pendingIds = new Set(
+            pendingApproval.map((t: { tool_call_id: string }) => t.tool_call_id),
+          );
+          if (pendingIds.size > 0) {
+            setNeedsAttention(sessionId, true);
+          }
+        }
+      }
+
+      const uiMsgs = llmMessagesToUIMessages(data, pendingIds, chatActionsRef.current.messages);
+      if (uiMsgs.length > 0) {
+        chatActionsRef.current.setMessages?.(uiMsgs);
+        saveMessages(sessionId, uiMsgs);
+      }
+
+      if (pendingIds && pendingIds.size > 0) {
+        updateSession(sessionId, { activityStatus: { type: 'waiting-approval' }, isProcessing: false });
+      }
+
+      return { data, pendingIds, info };
+    } catch {
+      return null;
+    }
+  }, [sessionId, setNeedsAttention]);
+
   // -- useChat from Vercel AI SDK -----------------------------------------
   const chat = useChat({
     id: sessionId,
@@ -351,6 +394,56 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       if (error.message === 'CLAUDE_QUOTA_EXHAUSTED') {
         if (isActiveRef.current) {
           useAgentStore.getState().setClaudeQuotaExhausted(true);
+        }
+        return;
+      }
+      if (error.message === 'HF_JOBS_UPGRADE_REQUIRED') {
+        const typed = error as Error & {
+          detail?: Record<string, unknown>;
+          approvals?: Array<{
+            tool_call_id: string;
+            approved: boolean;
+            feedback?: string | null;
+            edited_script?: string | null;
+          }>;
+        };
+        void hydrateFromBackend();
+        if (isActiveRef.current) {
+          useAgentStore.getState().setJobsUpgradeRequired({
+            approvals: typed.approvals || [],
+            toolCallIds: (typed.detail?.tool_call_ids as string[]) || [],
+            message: String(
+              typed.detail?.message
+                || 'Hugging Face Jobs are available only to Pro users and Team or Enterprise organizations.',
+            ),
+            eligibleNamespaces: (typed.detail?.eligible_namespaces as string[]) || [],
+            plan: ((typed.detail?.plan as 'free' | 'pro' | 'org') || 'free'),
+            mode: 'upgrade',
+          });
+        }
+        return;
+      }
+      if (error.message === 'HF_JOBS_NAMESPACE_REQUIRED') {
+        const typed = error as Error & {
+          detail?: Record<string, unknown>;
+          approvals?: Array<{
+            tool_call_id: string;
+            approved: boolean;
+            feedback?: string | null;
+            edited_script?: string | null;
+            namespace?: string | null;
+          }>;
+        };
+        void hydrateFromBackend();
+        if (isActiveRef.current) {
+          useAgentStore.getState().setJobsUpgradeRequired({
+            approvals: typed.approvals || [],
+            toolCallIds: (typed.detail?.tool_call_ids as string[]) || [],
+            message: String(typed.detail?.message || 'Choose which organization should own this job run.'),
+            eligibleNamespaces: (typed.detail?.eligible_namespaces as string[]) || [],
+            plan: ((typed.detail?.plan as 'free' | 'pro' | 'org') || 'free'),
+            mode: 'namespace',
+          });
         }
         return;
       }
@@ -672,11 +765,14 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
 
   // -- Approve tools ------------------------------------------------------
   const approveTools = useCallback(
-    async (approvals: Array<{ tool_call_id: string; approved: boolean; feedback?: string | null; edited_script?: string | null }>) => {
+    async (approvals: Array<{ tool_call_id: string; approved: boolean; feedback?: string | null; edited_script?: string | null; namespace?: string | null }>) => {
       // Store edited scripts so the transport can read them when sendMessages is called
       for (const a of approvals) {
         if (a.edited_script) {
           useAgentStore.getState().setEditedScript(a.tool_call_id, a.edited_script);
+        }
+        if (a.namespace) {
+          useAgentStore.getState().setApprovalNamespace(a.tool_call_id, a.namespace);
         }
       }
 
@@ -706,6 +802,37 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     },
     [sessionId, chat, updateSession, setNeedsAttention],
   );
+
+  const declineBlockedJobs = useCallback(async () => {
+    const blocked = useAgentStore.getState().jobsUpgradeRequired;
+    if (!blocked) return false;
+
+    const approvals = blocked.approvals.map((approval) => ({
+      ...approval,
+      approved: blocked.toolCallIds.includes(approval.tool_call_id) ? false : approval.approved,
+      feedback: blocked.toolCallIds.includes(approval.tool_call_id)
+        ? 'Rejected because this account cannot launch Hugging Face Jobs.'
+        : approval.feedback,
+    }));
+
+    useAgentStore.getState().setJobsUpgradeRequired(null);
+    return approveTools(approvals);
+  }, [approveTools]);
+
+  const continueBlockedJobsWithNamespace = useCallback(async (namespace: string) => {
+    const blocked = useAgentStore.getState().jobsUpgradeRequired;
+    if (!blocked) return false;
+
+    const approvals = blocked.approvals.map((approval) => ({
+      ...approval,
+      namespace: blocked.toolCallIds.includes(approval.tool_call_id)
+        ? namespace
+        : approval.namespace,
+    }));
+
+    useAgentStore.getState().setJobsUpgradeRequired(null);
+    return approveTools(approvals);
+  }, [approveTools]);
 
   // -- Stop (interrupt backend agent loop, keep SSE open for events) --------
   const stop = useCallback(() => {
@@ -763,5 +890,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     undoLastTurn,
     editAndRegenerate,
     approveTools,
+    declineBlockedJobs,
+    continueBlockedJobsWithNamespace,
   };
 }
