@@ -76,7 +76,7 @@ class Session:
     def __init__(
         self,
         event_queue: asyncio.Queue,
-        config: Config | None = None,
+        config: Config,
         tool_router=None,
         context_manager: ContextManager | None = None,
         hf_token: str | None = None,
@@ -92,12 +92,11 @@ class Session:
         self.user_id: Optional[str] = user_id
         self.tool_router = tool_router
         self.stream = stream
+        if config is None:
+            raise ValueError("Session requires a Config")
         tool_specs = tool_router.get_tool_specs_for_llm() if tool_router else []
-        effective_config = config or Config(
-            model_name="bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        )
         self.context_manager = context_manager or ContextManager(
-            model_max_tokens=_get_max_tokens_safe(effective_config.model_name),
+            model_max_tokens=_get_max_tokens_safe(config.model_name),
             compact_size=0.1,
             untouched_messages=5,
             tool_specs=tool_specs,
@@ -106,7 +105,7 @@ class Session:
         )
         self.event_queue = event_queue
         self.session_id = session_id or str(uuid.uuid4())
-        self.config = effective_config
+        self.config = config
         self.is_running = True
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None

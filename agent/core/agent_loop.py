@@ -1447,7 +1447,7 @@ async def process_submission(session: Session, submission) -> bool:
 async def submission_loop(
     submission_queue: asyncio.Queue,
     event_queue: asyncio.Queue,
-    config: Config | None = None,
+    config: Config,
     tool_router: ToolRouter | None = None,
     session_holder: list | None = None,
     hf_token: str | None = None,
