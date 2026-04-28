@@ -38,15 +38,27 @@ re-running the same hour overwrites.
     llm_calls           — count of llm_call events
     tokens_prompt / _completion / _cache_read / _cache_creation
     cost_usd            — sum of llm_call.cost_usd
+    cost_per_session_mean / _p50 / _p95  — per-session cost distribution
     cache_hit_ratio     — cache_read / (cache_read + prompt)
-    tool_success_rate   — tool_output success=True / total tool_output
-    failure_rate        — sessions that ended with an `error` event / sessions
-    regenerate_rate     — sessions with any `undo_complete` event / sessions
+    tool_calls_total / _succeeded / _failed  — per-tool_output reliability counts
+    tool_success_rate   — succeeded / total (kept for back-compat)
+    successful_sessions / errored_sessions / regenerated_sessions  — outcome counts
+    failure_rate / regenerate_rate  — kept for back-compat
     time_to_first_action_s_p50 / _p95  — from session_start to first tool_call
     thumbs_up / thumbs_down
     hf_jobs_submitted / _succeeded / _blocked
+    sandboxes_created / _cpu / _gpu  — sandbox_create events bucketed by hardware
     pro_cta_clicks
     gpu_hours_by_flavor_json   — JSON-serialised {flavor: gpu-hours}
+    research_calls             — total `research` tool_call events
+    sessions_with_research     — sessions that called `research` ≥1
+    research_calls_per_session_p50 / _p95 — among sessions that did any (zero-only sessions excluded)
+    distinct_tools_per_session_p50 / _p95 — among sessions with ≥1 named tool_call
+    tool_calls_per_session_p50 / _p95     — among sessions with ≥1 named tool_call
+    tool_calls_per_turn_p50 / _p95        — calls / turns, among sessions with turns>0
+    tool_calls_by_name_json    — JSON {tool: total_calls} (all tools seen)
+    sessions_using_tool_json   — JSON {tool: distinct_sessions_using}
+    sessions_by_model_json     — JSON {model_name: count} (CLI vs Bedrock split)
 
 ================================================================================
  Usage
@@ -213,6 +225,7 @@ def _session_metrics(session: dict) -> dict:
         "thumbs_up": 0, "thumbs_down": 0,
         "hf_jobs_submitted": 0, "hf_jobs_succeeded": 0, "hf_jobs_blocked": 0,
         "pro_cta_clicks": 0,
+        "sandboxes_created": 0, "sandboxes_cpu": 0, "sandboxes_gpu": 0,
         "first_tool_s": -1,
     }
     events = session.get("events") or []
@@ -231,11 +244,19 @@ def _session_metrics(session: dict) -> dict:
     gpu_hours_by_flavor: dict[str, float] = defaultdict(float)
     jobs_submitted = 0
     jobs_succeeded = 0
-    jobs_blocked = 0
     thumbs_up = 0
     thumbs_down = 0
+    sandboxes_created = 0
+    sandboxes_cpu = 0
+    sandboxes_gpu = 0
+    jobs_blocked = 0
     pro_cta_clicks = 0
     pro_cta_by_source: dict[str, int] = defaultdict(int)
+    # Per-tool counters from tool_call events. Counted off tool_call (which
+    # carries data["tool"]) rather than tool_output (which only carries
+    # success/output) so we can attribute calls to specific tools.
+    tool_calls_by_name: dict[str, int] = defaultdict(int)
+    total_named_tool_calls = 0
 
     start_dt = _parse_ts(session_start)
 
@@ -260,6 +281,10 @@ def _session_metrics(session: dict) -> dict:
                 first_tool_ts = (ts - start_dt).total_seconds()
 
         elif et == "tool_call":
+            name = data.get("tool")
+            if name:
+                tool_calls_by_name[name] += 1
+                total_named_tool_calls += 1
             if first_tool_ts is None and ts is not None and start_dt is not None:
                 first_tool_ts = (ts - start_dt).total_seconds()
 
@@ -296,6 +321,19 @@ def _session_metrics(session: dict) -> dict:
             source = str(data.get("source") or "unknown")
             pro_cta_by_source[source] += 1
 
+        elif et == "sandbox_create":
+            sandboxes_created += 1
+            hardware = (data.get("hardware") or "").lower()
+            # CPU flavors are explicitly named "cpu-*". Everything else
+            # (including unknown/missing hardware strings) lands in the GPU
+            # bucket, since the auto-create default is "cpu-basic" which is
+            # matched here — anything that isn't is almost always an explicit
+            # GPU choice.
+            if hardware.startswith("cpu-"):
+                sandboxes_cpu += 1
+            else:
+                sandboxes_gpu += 1
+
     out["tool_calls_total"] = tool_total
     out["tool_calls_success"] = tool_success
     out["failures"] = 1 if had_error else 0
@@ -304,12 +342,22 @@ def _session_metrics(session: dict) -> dict:
     out["thumbs_down"] = thumbs_down
     out["hf_jobs_submitted"] = jobs_submitted
     out["hf_jobs_succeeded"] = jobs_succeeded
+    out["sandboxes_created"] = sandboxes_created
+    out["sandboxes_cpu"] = sandboxes_cpu
+    out["sandboxes_gpu"] = sandboxes_gpu
     out["hf_jobs_blocked"] = jobs_blocked
     out["pro_cta_clicks"] = pro_cta_clicks
     out["first_tool_s"] = first_tool_ts if first_tool_ts is not None else -1
     out["_gpu_hours_by_flavor"] = dict(gpu_hours_by_flavor)
     out["_pro_cta_by_source"] = dict(pro_cta_by_source)
     out["_user"] = session.get("user_id") or session.get("session_id")
+    # Intra-session tool fields. Underscore-prefixed = consumed by _aggregate
+    # only, never written to CSV directly.
+    out["_tool_calls_by_name"] = dict(tool_calls_by_name)
+    out["_research_calls"] = tool_calls_by_name.get("research", 0)
+    out["_distinct_tools_used"] = len(tool_calls_by_name)
+    out["_total_named_tool_calls"] = total_named_tool_calls
+    out["_model_name"] = session.get("model_name") or "unknown"
     return dict(out)
 
 
@@ -317,12 +365,36 @@ def _aggregate(per_session: list[dict]) -> dict:
     """Collapse a bucket's worth of session rollups into the final KPI row."""
     ttfa_values = [s["first_tool_s"] for s in per_session if s.get("first_tool_s", -1) >= 0]
     gpu_hours: dict[str, float] = defaultdict(float)
-    pro_cta_by_source: dict[str, int] = defaultdict(int)
     for s in per_session:
         for f, h in (s.get("_gpu_hours_by_flavor") or {}).items():
             gpu_hours[f] += h
-        for source, count in (s.get("_pro_cta_by_source") or {}).items():
-            pro_cta_by_source[source] += int(count)
+
+    # Per-tool aggregates. ``sessions_using_tool`` counts each session at most
+    # once per tool, so the dashboard can show "how many sessions reached for
+    # research" alongside "how many research calls overall".
+    tool_calls_by_name: dict[str, int] = defaultdict(int)
+    sessions_using_tool: dict[str, int] = defaultdict(int)
+    sessions_by_model: dict[str, int] = defaultdict(int)
+    for s in per_session:
+        for name, count in (s.get("_tool_calls_by_name") or {}).items():
+            tool_calls_by_name[name] += int(count)
+            sessions_using_tool[name] += 1
+        sessions_by_model[s.get("_model_name") or "unknown"] += 1
+
+    # Percentile inputs. All "per session" percentiles exclude sessions that
+    # never reached for the relevant signal — otherwise quiet hours
+    # (status-check sessions, abandoned new conversations) drag every median
+    # to 0 and the chart tells you nothing.
+    research_calls_nz = [s.get("_research_calls", 0) for s in per_session if s.get("_research_calls", 0) > 0]
+    distinct_tools_values = [s.get("_distinct_tools_used", 0) for s in per_session if s.get("_distinct_tools_used", 0) > 0]
+    total_calls_values = [s.get("_total_named_tool_calls", 0) for s in per_session if s.get("_total_named_tool_calls", 0) > 0]
+    # Per-turn intensity: turns>0 is the natural filter here (a session with
+    # 5 turns and 0 tools is a meaningful 0). Don't strip those.
+    calls_per_turn_values = [
+        s.get("_total_named_tool_calls", 0) / s["turns"]
+        for s in per_session
+        if s.get("turns", 0) > 0
+    ]
 
     total_sessions = sum(s["sessions"] for s in per_session)
     total_turns = sum(s["turns"] for s in per_session)
@@ -330,6 +402,16 @@ def _aggregate(per_session: list[dict]) -> dict:
     tokens_cache_read = sum(s["tokens_cache_read"] for s in per_session)
     tool_total = sum(s["tool_calls_total"] for s in per_session)
     tool_success = sum(s["tool_calls_success"] for s in per_session)
+    failures = int(sum(s["failures"] for s in per_session))
+    regenerates = int(sum(s["regenerate_sessions"] for s in per_session))
+    research_calls_total = int(sum(s.get("_research_calls", 0) for s in per_session))
+    sessions_with_research = sum(1 for s in per_session if s.get("_research_calls", 0) > 0)
+
+    # Per-session cost percentiles — chart "median session cost" alongside the
+    # mean so a few $700 outliers don't make you think every session is pricey.
+    session_costs = [float(s.get("cost_usd") or 0.0) for s in per_session]
+    cost_p50 = _percentile(session_costs, 0.5)
+    cost_p95 = _percentile(session_costs, 0.95)
 
     unique_users = {s.get("_user") for s in per_session if s.get("_user")}
 
@@ -343,26 +425,61 @@ def _aggregate(per_session: list[dict]) -> dict:
         "tokens_cache_read": int(tokens_cache_read),
         "tokens_cache_creation": int(sum(s["tokens_cache_creation"] for s in per_session)),
         "cost_usd": round(sum(s["cost_usd"] for s in per_session), 4),
+        # Per-session cost summaries.
+        "cost_per_session_mean": round(
+            sum(s["cost_usd"] for s in per_session) / total_sessions, 6
+        ) if total_sessions > 0 else 0.0,
+        "cost_per_session_p50": round(cost_p50, 6),
+        "cost_per_session_p95": round(cost_p95, 6),
         "cache_hit_ratio": round(
             tokens_cache_read / (tokens_cache_read + tokens_prompt), 4
         ) if (tokens_cache_read + tokens_prompt) > 0 else 0.0,
+        # Raw reliability COUNTS (these are what the dashboard shows directly).
+        "tool_calls_total": int(tool_total),
+        "tool_calls_succeeded": int(tool_success),
+        "tool_calls_failed": int(tool_total - tool_success),
+        "errored_sessions": failures,
+        # Successful = "did not raise an error event". Mutually exclusive
+        # with errored_sessions; sums with errored_sessions to total sessions.
+        "successful_sessions": int(total_sessions - failures),
+        # Regenerated is an orthogonal dimension (the user retried) — a
+        # session can be both successful and regenerated, or both errored
+        # and regenerated.
+        "regenerated_sessions": regenerates,
+        # Rates kept for backwards compatibility with anything reading the
+        # KPI dataset directly.
         "tool_success_rate": round(tool_success / tool_total, 4) if tool_total > 0 else 0.0,
-        "failure_rate": round(
-            sum(s["failures"] for s in per_session) / total_sessions, 4
-        ) if total_sessions > 0 else 0.0,
-        "regenerate_rate": round(
-            sum(s["regenerate_sessions"] for s in per_session) / total_sessions, 4
-        ) if total_sessions > 0 else 0.0,
+        "failure_rate": round(failures / total_sessions, 4) if total_sessions > 0 else 0.0,
+        "regenerate_rate": round(regenerates / total_sessions, 4) if total_sessions > 0 else 0.0,
         "time_to_first_action_s_p50": round(_percentile(ttfa_values, 0.5), 2),
         "time_to_first_action_s_p95": round(_percentile(ttfa_values, 0.95), 2),
         "thumbs_up": int(sum(s["thumbs_up"] for s in per_session)),
         "thumbs_down": int(sum(s["thumbs_down"] for s in per_session)),
         "hf_jobs_submitted": int(sum(s["hf_jobs_submitted"] for s in per_session)),
         "hf_jobs_succeeded": int(sum(s["hf_jobs_succeeded"] for s in per_session)),
-        "hf_jobs_blocked": int(sum(s["hf_jobs_blocked"] for s in per_session)),
-        "pro_cta_clicks": int(sum(s["pro_cta_clicks"] for s in per_session)),
+        "sandboxes_created": int(sum(s.get("sandboxes_created", 0) for s in per_session)),
+        "sandboxes_cpu": int(sum(s.get("sandboxes_cpu", 0) for s in per_session)),
+        "sandboxes_gpu": int(sum(s.get("sandboxes_gpu", 0) for s in per_session)),
+        "hf_jobs_blocked": int(sum(s.get("hf_jobs_blocked", 0) for s in per_session)),
+        "pro_cta_clicks": int(sum(s.get("pro_cta_clicks", 0) for s in per_session)),
         "gpu_hours_by_flavor_json": json.dumps(dict(gpu_hours), sort_keys=True),
-        "pro_cta_by_source_json": json.dumps(dict(pro_cta_by_source), sort_keys=True),
+        # Research KPIs — answer "is the agent reaching for research?".
+        "research_calls": research_calls_total,
+        "sessions_with_research": int(sessions_with_research),
+        "research_calls_per_session_p50": round(_percentile(research_calls_nz, 0.5), 2),
+        "research_calls_per_session_p95": round(_percentile(research_calls_nz, 0.95), 2),
+        # Intra-session breadth + intensity. p50 + p95 over per-session values.
+        "distinct_tools_per_session_p50": round(_percentile(distinct_tools_values, 0.5), 2),
+        "distinct_tools_per_session_p95": round(_percentile(distinct_tools_values, 0.95), 2),
+        "tool_calls_per_session_p50": round(_percentile(total_calls_values, 0.5), 2),
+        "tool_calls_per_session_p95": round(_percentile(total_calls_values, 0.95), 2),
+        "tool_calls_per_turn_p50": round(_percentile(calls_per_turn_values, 0.5), 2),
+        "tool_calls_per_turn_p95": round(_percentile(calls_per_turn_values, 0.95), 2),
+        # JSON columns let the dashboard add/remove tools without schema churn.
+        "tool_calls_by_name_json": json.dumps(dict(tool_calls_by_name), sort_keys=True),
+        "sessions_using_tool_json": json.dumps(dict(sessions_using_tool), sort_keys=True),
+        # Surface split — answers "is research dropping on Bedrock specifically?".
+        "sessions_by_model_json": json.dumps(dict(sessions_by_model), sort_keys=True),
     }
 
 

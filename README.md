@@ -59,6 +59,56 @@ ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
 
+## Supported Gateways
+
+ML Intern currently supports one-way notification gateways from CLI sessions.
+These gateways send out-of-band status updates; they do not accept inbound chat
+messages.
+
+### Slack
+
+Slack notifications use the Slack Web API to post messages when the agent needs
+approval, hits an error, or completes a turn. Create a Slack app with a bot token
+that has `chat:write`, invite the bot to the target channel, then set:
+
+```bash
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_CHANNEL_ID=C...
+```
+
+The CLI automatically creates a `slack.default` destination when both variables
+are present. Optional environment variables for the env-only default:
+
+```bash
+ML_INTERN_SLACK_NOTIFICATIONS=false
+ML_INTERN_SLACK_DESTINATION=slack.ops
+ML_INTERN_SLACK_AUTO_EVENTS=approval_required,error,turn_complete
+ML_INTERN_SLACK_ALLOW_AGENT_TOOL=true
+ML_INTERN_SLACK_ALLOW_AUTO_EVENTS=true
+```
+
+For a persistent user-level config, put overrides in
+`~/.config/ml-intern/cli_agent_config.json` or point `ML_INTERN_CLI_CONFIG` at a
+JSON file:
+
+```json
+{
+  "messaging": {
+    "enabled": true,
+    "auto_event_types": ["approval_required", "error", "turn_complete"],
+    "destinations": {
+      "slack.ops": {
+        "provider": "slack",
+        "token": "${SLACK_BOT_TOKEN}",
+        "channel": "${SLACK_CHANNEL_ID}",
+        "allow_agent_tool": true,
+        "allow_auto_events": true
+      }
+    }
+  }
+}
+```
+
 ## Architecture
 
 ### Component Overview

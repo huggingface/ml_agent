@@ -79,7 +79,7 @@ async def test_interactive_main_applies_model_override_before_banner(monkeypatch
     monkeypatch.setattr(
         main_mod,
         "load_config",
-        lambda _path: SimpleNamespace(
+        lambda _path, **_kwargs: SimpleNamespace(
             model_name="moonshotai/Kimi-K2.6",
             mcpServers={},
         ),

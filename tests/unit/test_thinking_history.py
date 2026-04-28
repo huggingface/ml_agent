@@ -159,7 +159,7 @@ async def test_streaming_call_rebuilds_anthropic_thinking_state(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_streaming_call_collects_anthropic_delta_thinking_state(monkeypatch):
+async def test_streaming_call_rebuilds_anthropic_delta_thinking_state(monkeypatch):
     async def fake_stream():
         yield SimpleNamespace(
             choices=[
@@ -167,7 +167,31 @@ async def test_streaming_call_collects_anthropic_delta_thinking_state(monkeypatc
                     delta=SimpleNamespace(
                         content=None,
                         tool_calls=None,
-                        thinking_blocks=[{"type": "thinking", "thinking": "reasoned"}],
+                        thinking_blocks=[
+                            {
+                                "type": "thinking",
+                                "thinking": "reasoned",
+                                "signature": "",
+                            }
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        tool_calls=None,
+                        thinking_blocks=[
+                            {
+                                "type": "thinking",
+                                "thinking": "",
+                                "signature": "signed",
+                            }
+                        ],
                     ),
                     finish_reason=None,
                 )
@@ -186,8 +210,26 @@ async def test_streaming_call_collects_anthropic_delta_thinking_state(monkeypatc
     async def fake_acompletion(**_kwargs):
         return fake_stream()
 
-    def fail_chunk_builder(*_args, **_kwargs):
-        raise AssertionError("stream_chunk_builder should not run when deltas include thinking")
+    def fake_chunk_builder(chunks, **_kwargs):
+        assert len(chunks) == 4
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=Message(
+                        role="assistant",
+                        content="done",
+                        thinking_blocks=[
+                            {
+                                "type": "thinking",
+                                "thinking": "reasoned",
+                                "signature": "signed",
+                            }
+                        ],
+                        reasoning_content="reasoned",
+                    )
+                )
+            ]
+        )
 
     events = []
     async def send_event(event):
@@ -199,7 +241,7 @@ async def test_streaming_call_collects_anthropic_delta_thinking_state(monkeypatc
         send_event=send_event,
     )
     monkeypatch.setattr(agent_loop, "acompletion", fake_acompletion)
-    monkeypatch.setattr(agent_loop, "stream_chunk_builder", fail_chunk_builder)
+    monkeypatch.setattr(agent_loop, "stream_chunk_builder", fake_chunk_builder)
 
     result = await _call_llm_streaming(
         session,
@@ -209,7 +251,10 @@ async def test_streaming_call_collects_anthropic_delta_thinking_state(monkeypatc
     )
 
     assert result.content == "done"
-    assert result.thinking_blocks == [{"type": "thinking", "thinking": "reasoned"}]
+    assert result.thinking_blocks == [
+        {"type": "thinking", "thinking": "reasoned", "signature": "signed"}
+    ]
+    assert result.reasoning_content == "reasoned"
 
 
 @pytest.mark.asyncio

@@ -46,10 +46,12 @@ from agent.tools.hf_repo_git_tool import (
     hf_repo_git_handler,
 )
 from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC, hf_jobs_handler
+from agent.tools.notify_tool import NOTIFY_TOOL_SPEC, notify_handler
 from agent.tools.papers_tool import HF_PAPERS_TOOL_SPEC, hf_papers_handler
 from agent.tools.plan_tool import PLAN_TOOL_SPEC, plan_tool_handler
 from agent.tools.research_tool import RESEARCH_TOOL_SPEC, research_handler
 from agent.tools.sandbox_tool import get_sandbox_tools
+from agent.tools.web_search_tool import WEB_SEARCH_TOOL_SPEC, web_search_handler
 
 # NOTE: Private HF repo tool disabled - replaced by hf_repo_files and hf_repo_git
 # from agent.tools.private_hf_repo_tools import (
@@ -310,6 +312,12 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             parameters=HF_PAPERS_TOOL_SPEC["parameters"],
             handler=hf_papers_handler,
         ),
+        ToolSpec(
+            name=WEB_SEARCH_TOOL_SPEC["name"],
+            description=WEB_SEARCH_TOOL_SPEC["description"],
+            parameters=WEB_SEARCH_TOOL_SPEC["parameters"],
+            handler=web_search_handler,
+        ),
         # Dataset inspection tool (unified)
         ToolSpec(
             name=HF_INSPECT_DATASET_TOOL_SPEC["name"],
@@ -323,6 +331,12 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             description=PLAN_TOOL_SPEC["description"],
             parameters=PLAN_TOOL_SPEC["parameters"],
             handler=plan_tool_handler,
+        ),
+        ToolSpec(
+            name=NOTIFY_TOOL_SPEC["name"],
+            description=NOTIFY_TOOL_SPEC["description"],
+            parameters=NOTIFY_TOOL_SPEC["parameters"],
+            handler=notify_handler,
         ),
         ToolSpec(
             name=HF_JOBS_TOOL_SPEC["name"],

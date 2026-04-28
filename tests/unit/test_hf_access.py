@@ -37,3 +37,19 @@ def test_free_user_without_paid_org_cannot_run_jobs():
     assert access.can_run_jobs is False
     assert access.eligible_namespaces == []
     assert access.default_namespace is None
+
+
+def test_oauth_pro_user_recognized_via_is_pro_flag():
+    # OAuth login surfaces Pro status only as `isPro: true`; the `type` key is
+    # a generic "user" string. Regression test for Space discussion #21 — Pro
+    # OAuth users were being classified as free and blocked from Jobs.
+    access = jobs_access_from_whoami({
+        "name": "alice",
+        "type": "user",
+        "isPro": True,
+        "orgs": [],
+    })
+    assert access.plan == "pro"
+    assert access.personal_can_run_jobs is True
+    assert access.eligible_namespaces == ["alice"]
+    assert access.default_namespace == "alice"

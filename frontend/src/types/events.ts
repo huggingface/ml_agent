@@ -24,6 +24,7 @@ export type EventType =
 export interface AgentEvent {
   event_type: EventType;
   data?: Record<string, unknown>;
+  seq?: number;
 }
 
 export interface ReadyEventData {

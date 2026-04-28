@@ -160,6 +160,7 @@ class ContextManager:
         self.running_context_usage = 0
         self.untouched_messages = untouched_messages
         self.items: list[Message] = [Message(role="system", content=self.system_prompt)]
+        self.on_message_added = None
 
     def _load_system_prompt(
         self,
@@ -219,6 +220,8 @@ class ContextManager:
         if token_count:
             self.running_context_usage = token_count
         self.items.append(message)
+        if self.on_message_added:
+            self.on_message_added(message)
 
     def get_messages(self) -> list[Message]:
         """Get all messages for sending to LLM.

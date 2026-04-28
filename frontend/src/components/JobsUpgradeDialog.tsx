@@ -8,7 +8,6 @@ import {
   DialogContentText,
   DialogTitle,
   FormControl,
-  InputLabel,
   MenuItem,
   Select,
   Typography,
@@ -37,12 +36,19 @@ export default function JobsUpgradeDialog({
   onClose,
   onContinueWithNamespace,
 }: JobsUpgradeDialogProps) {
-  const [selectedNamespace, setSelectedNamespace] = useState('');
+  const [selectedNamespace, setSelectedNamespace] = useState(() => eligibleNamespaces[0] || '');
 
   useEffect(() => {
     if (!open) return;
     setSelectedNamespace(eligibleNamespaces[0] || '');
   }, [open, eligibleNamespaces]);
+
+  const isNamespace = mode === 'namespace';
+  const title = isNamespace ? 'Run jobs as' : 'Jobs need Pro or a paid org';
+
+  const body = isNamespace
+    ? "Pick which paid organization should pay for and own this job. We'll use the same one for the rest of this browser."
+    : message;
 
   return (
     <Dialog
@@ -57,7 +63,7 @@ export default function JobsUpgradeDialog({
           border: '1px solid var(--border)',
           borderRadius: 'var(--radius-md)',
           boxShadow: 'var(--shadow-1)',
-          maxWidth: 500,
+          maxWidth: 460,
           mx: 2,
         },
       }}
@@ -65,72 +71,75 @@ export default function JobsUpgradeDialog({
       <DialogTitle
         sx={{ color: 'var(--text)', fontWeight: 700, fontSize: '1rem', pt: 2.5, pb: 0, px: 3 }}
       >
-        {mode === 'namespace' ? 'Choose the org for this job' : 'Jobs need Pro or a paid org'}
+        {title}
       </DialogTitle>
       <DialogContent sx={{ px: 3, pt: 1.25, pb: 0 }}>
         <DialogContentText
           sx={{ color: 'var(--muted-text)', fontSize: '0.85rem', lineHeight: 1.6 }}
         >
-          {message}
+          {body}
         </DialogContentText>
-        {eligibleNamespaces.length > 0 && (
-          <Box
-            sx={{
-              mt: 2,
-              p: 1.5,
-              borderRadius: '8px',
-              bgcolor: 'var(--accent-yellow-weak)',
-              border: '1px solid var(--border)',
-            }}
-          >
-            <Typography
-              variant="caption"
+
+        {isNamespace ? (
+          <FormControl fullWidth size="small" sx={{ mt: 2 }}>
+            <Select
+              value={selectedNamespace}
+              displayEmpty
+              onChange={(e) => setSelectedNamespace(String(e.target.value))}
               sx={{
-                display: 'block',
-                fontWeight: 700,
+                bgcolor: 'var(--composer-bg)',
                 color: 'var(--text)',
-                fontSize: '0.78rem',
-                mb: 1,
-                letterSpacing: '0.02em',
+                fontSize: '0.88rem',
+                fontWeight: 600,
+                '& .MuiOutlinedInput-notchedOutline': { borderColor: 'var(--border)' },
+                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'var(--border)' },
+                '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'var(--accent-yellow)',
+                  borderWidth: 1,
+                },
+                '& .MuiSelect-icon': { color: 'var(--muted-text)' },
+              }}
+              MenuProps={{
+                PaperProps: {
+                  sx: {
+                    bgcolor: 'var(--panel)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    mt: 0.5,
+                  },
+                },
               }}
             >
-              Eligible namespaces
-            </Typography>
-            {mode === 'namespace' ? (
-              <FormControl fullWidth size="small">
-                <InputLabel id="jobs-namespace-label">Organization</InputLabel>
-                <Select
-                  labelId="jobs-namespace-label"
-                  value={selectedNamespace}
-                  label="Organization"
-                  onChange={(e) => setSelectedNamespace(String(e.target.value))}
+              {eligibleNamespaces.map((namespace) => (
+                <MenuItem
+                  key={namespace}
+                  value={namespace}
+                  sx={{
+                    fontSize: '0.88rem',
+                    color: 'var(--text)',
+                    '&.Mui-selected': { bgcolor: 'rgba(255,255,255,0.05)' },
+                  }}
                 >
-                  {eligibleNamespaces.map((namespace) => (
-                    <MenuItem key={namespace} value={namespace}>
-                      {namespace}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            ) : (
+                  {namespace}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        ) : (
+          eligibleNamespaces.length > 0 && (
+            <Box sx={{ mt: 1.5 }}>
               <Typography
                 variant="caption"
-                sx={{ display: 'block', color: 'var(--muted-text)', fontSize: '0.78rem', lineHeight: 1.55 }}
+                sx={{ color: 'var(--muted-text)', fontSize: '0.78rem', lineHeight: 1.55 }}
               >
-                {eligibleNamespaces.join(', ')}
+                Eligible namespaces: {eligibleNamespaces.join(', ')}
               </Typography>
-            )}
-          </Box>
+            </Box>
+          )
         )}
-        <Typography
-          variant="caption"
-          sx={{ display: 'block', mt: 2, color: 'var(--muted-text)', fontSize: '0.78rem', lineHeight: 1.55 }}
-        >
-          If you decline, the agent will have to find another way forward without `hf_jobs`.
-        </Typography>
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2.5, pt: 2, gap: 1 }}>
-        {mode === 'namespace' ? (
+      <DialogActions sx={{ px: 3, pb: 2.5, pt: 2.5, gap: 1 }}>
+        {isNamespace ? (
           <Button
             onClick={() => onContinueWithNamespace(selectedNamespace)}
             disabled={!selectedNamespace}
@@ -147,7 +156,7 @@ export default function JobsUpgradeDialog({
               '&:hover': { bgcolor: '#FFB340', boxShadow: 'none' },
             }}
           >
-            Run under selected org
+            Continue
           </Button>
         ) : (
           <Button
@@ -183,7 +192,7 @@ export default function JobsUpgradeDialog({
             '&:hover': { bgcolor: 'var(--hover-bg)' },
           }}
         >
-          Decline tool call
+          {isNamespace ? 'Skip this tool call' : 'Decline tool call'}
         </Button>
       </DialogActions>
     </Dialog>

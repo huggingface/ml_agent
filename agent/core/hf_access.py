@@ -55,15 +55,19 @@ def _extract_username(whoami: dict[str, Any]) -> str | None:
 
 
 def _normalize_personal_plan(whoami: dict[str, Any]) -> str:
+    # OAuth whoami responses set `type: "user"` and surface Pro status only via
+    # the `isPro` boolean. Check the boolean first so a generic `type` value
+    # doesn't shadow it — otherwise Pro OAuth users get classified as free and
+    # blocked from running Jobs (smolagents/ml-intern Space discussion #21).
+    if whoami.get("isPro") is True or whoami.get("is_pro") is True:
+        return "pro"
+
     plan_str = ""
     for key in ("plan", "type", "accountType"):
         value = whoami.get(key)
         if isinstance(value, str) and value:
             plan_str = value.lower()
             break
-
-    if not plan_str and (whoami.get("isPro") is True or whoami.get("is_pro") is True):
-        return "pro"
 
     if any(tag in plan_str for tag in ("pro", "enterprise", "team")):
         return "pro"

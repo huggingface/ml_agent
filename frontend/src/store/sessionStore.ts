@@ -20,6 +20,14 @@ interface SessionStore {
   markExpired: (id: string) => void;
   /** Clear the expired flag (used after restore-with-summary succeeds). */
   clearExpired: (id: string) => void;
+  /** Merge durable server-side sessions into local sidebar metadata. */
+  mergeServerSessions: (sessions: Array<{
+    session_id: string;
+    title?: string | null;
+    created_at: string;
+    is_active?: boolean;
+    pending_approval?: unknown[] | null;
+  }>) => void;
   /** Atomically swap a session's id in the list + both localStorage caches.
    *  Used when we rehydrate an expired session into a freshly-created backend
    *  session — preserves title, timestamps, and messages. */
@@ -74,6 +82,45 @@ export const useSessionStore = create<SessionStore>()(
             s.id === id ? { ...s, expired: false } : s,
           ),
         }));
+      },
+
+      mergeServerSessions: (serverSessions) => {
+        set((state) => {
+          const byId = new Map(state.sessions.map((s) => [s.id, s]));
+          const merged = [...state.sessions];
+          for (const server of serverSessions) {
+            const id = server.session_id;
+            if (!id) continue;
+            const existing = byId.get(id);
+            if (existing) {
+              const updated = {
+                ...existing,
+                title: server.title || existing.title,
+                isActive: server.is_active ?? existing.isActive,
+                needsAttention: Boolean(server.pending_approval?.length) || existing.needsAttention,
+                expired: false,
+              };
+              const idx = merged.findIndex((s) => s.id === id);
+              if (idx >= 0) merged[idx] = updated;
+              byId.set(id, updated);
+              continue;
+            }
+            const newSession: SessionMeta = {
+              id,
+              title: server.title || `Chat ${merged.length + 1}`,
+              createdAt: server.created_at || new Date().toISOString(),
+              isActive: server.is_active ?? true,
+              needsAttention: Boolean(server.pending_approval?.length),
+              expired: false,
+            };
+            merged.push(newSession);
+            byId.set(id, newSession);
+          }
+          return {
+            sessions: merged,
+            activeSessionId: state.activeSessionId || merged[merged.length - 1]?.id || null,
+          };
+        });
       },
 
       renameSession: (oldId: string, newId: string) => {
