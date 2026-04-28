@@ -65,6 +65,7 @@ class OpType(Enum):
 class Event:
     event_type: str
     data: Optional[dict[str, Any]] = None
+    seq: Optional[int] = None
 
 
 class Session:
@@ -87,9 +88,11 @@ class Session:
         defer_turn_complete_notification: bool = False,
         session_id: str | None = None,
         user_id: str | None = None,
+        persistence_store: Any | None = None,
     ):
         self.hf_token: Optional[str] = hf_token
         self.user_id: Optional[str] = user_id
+        self.persistence_store = persistence_store
         self.tool_router = tool_router
         self.stream = stream
         if config is None:
@@ -135,11 +138,10 @@ class Session:
         #          thinking params at all
         # Key absent → not probed yet; fall back to the raw preference.
         self.model_effective_effort: dict[str, str | None] = {}
+        self.context_manager.on_message_added = self._schedule_trace_message
 
     async def send_event(self, event: Event) -> None:
         """Send event back to client and log to trajectory"""
-        await self.event_queue.put(event)
-
         # Log event to trajectory
         self.logged_events.append(
             {
@@ -148,12 +150,40 @@ class Session:
                 "data": event.data,
             }
         )
+        if self.persistence_store is not None:
+            try:
+                event.seq = await self.persistence_store.append_event(
+                    self.session_id, event.event_type, event.data
+                )
+            except Exception as e:
+                logger.debug("Event persistence failed for %s: %s", self.session_id, e)
+
+        await self.event_queue.put(event)
         await self._enqueue_auto_notification_requests(event)
 
         # Mid-turn heartbeat flush (owned by telemetry module).
         from agent.core.telemetry import HeartbeatSaver
 
         HeartbeatSaver.maybe_fire(self)
+
+    def _schedule_trace_message(self, message: Any) -> None:
+        """Best-effort append-only trace save for SFT/KPI export."""
+        if self.persistence_store is None:
+            return
+        try:
+            payload = message.model_dump(mode="json")
+        except Exception:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        source = str(payload.get("role") or "message")
+        loop.create_task(
+            self.persistence_store.append_trace_message(
+                self.session_id, payload, source=source
+            )
+        )
 
     def set_notification_destinations(self, destinations: list[str]) -> None:
         """Replace the session's opted-in auto-notification destinations."""

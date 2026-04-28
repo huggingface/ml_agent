@@ -27,6 +27,7 @@ dependencies = [
     "httpx>=0.27.0",
     "websockets>=13.0",
     "apscheduler>=3.10,<4",
+    "pymongo>=4.17.0",
 ]
 
 [project.optional-dependencies]

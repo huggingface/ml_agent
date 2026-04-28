@@ -1,6 +1,7 @@
 """Session manager for handling multiple concurrent agent sessions."""
 
 import asyncio
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from agent.config import load_config
 from agent.core.agent_loop import process_submission
 from agent.messaging.gateway import NotificationGateway
 from agent.core.session import Event, OpType, Session
+from agent.core.session_persistence import get_session_store
 from agent.core.tools import ToolRouter
 
 # Get project root (parent of backend directory)
@@ -42,9 +44,8 @@ logger = logging.getLogger(__name__)
 class EventBroadcaster:
     """Reads from the agent's event queue and fans out to SSE subscribers.
 
-    Events that arrive when no subscribers are listening are discarded.
-    With SSE each turn is a separate request, so there is no reconnect
-    scenario that would need buffered replay.
+    Events that arrive when no subscribers are listening are discarded by
+    this in-memory fanout. Durable replay is handled by session_persistence.
     """
 
     def __init__(self, event_queue: asyncio.Queue):
@@ -68,7 +69,7 @@ class EventBroadcaster:
         while True:
             try:
                 event: Event = await self._source.get()
-                msg = {"event_type": event.event_type, "data": event.data}
+                msg = {"event_type": event.event_type, "data": event.data, "seq": event.seq}
                 for q in self._subscribers.values():
                     await q.put(msg)
             except asyncio.CancelledError:
@@ -92,6 +93,7 @@ class AgentSession:
     is_active: bool = True
     is_processing: bool = False  # True while a submission is being executed
     broadcaster: Any = None
+    title: str | None = None
     # True once this session has been counted against the user's daily
     # Claude quota. Guards double-counting when the user re-selects an
     # Anthropic model mid-session.
@@ -123,14 +125,24 @@ class SessionManager:
         self.messaging_gateway = NotificationGateway(self.config.messaging)
         self.sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
+        self.persistence_store = None
 
     async def start(self) -> None:
         """Start shared background resources."""
+        self.persistence_store = get_session_store()
+        await self.persistence_store.init()
         await self.messaging_gateway.start()
 
     async def close(self) -> None:
         """Flush and close shared background resources."""
         await self.messaging_gateway.close()
+        if self.persistence_store is not None:
+            await self.persistence_store.close()
+
+    def _store(self):
+        if self.persistence_store is None:
+            self.persistence_store = get_session_store()
+        return self.persistence_store
 
     def _count_user_sessions(self, user_id: str) -> int:
         """Count active sessions owned by a specific user."""
@@ -139,6 +151,286 @@ class SessionManager:
             for s in self.sessions.values()
             if s.user_id == user_id and s.is_active
         )
+
+    def _create_session_sync(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        hf_token: str | None,
+        model: str | None,
+        event_queue: asyncio.Queue,
+        notification_destinations: list[str] | None = None,
+    ) -> tuple[ToolRouter, Session]:
+        """Build blocking per-session resources in a worker thread."""
+        import time as _time
+
+        t0 = _time.monotonic()
+        tool_router = ToolRouter(self.config.mcpServers, hf_token=hf_token)
+        # Deep-copy config so each session's model switches independently —
+        # tab A picking GLM doesn't flip tab B off Claude.
+        session_config = self.config.model_copy(deep=True)
+        if model:
+            session_config.model_name = model
+        session = Session(
+            event_queue=event_queue,
+            config=session_config,
+            tool_router=tool_router,
+            hf_token=hf_token,
+            user_id=user_id,
+            notification_gateway=self.messaging_gateway,
+            notification_destinations=notification_destinations or [],
+            session_id=session_id,
+            persistence_store=self._store(),
+        )
+        t1 = _time.monotonic()
+        logger.info("Session initialized in %.2fs", t1 - t0)
+        return tool_router, session
+
+    def _serialize_messages(self, session: Session) -> list[dict[str, Any]]:
+        return [
+            msg.model_dump(mode="json")
+            for msg in session.context_manager.items
+        ]
+
+    def _serialize_pending_approval(self, session: Session) -> list[dict[str, Any]]:
+        pending = session.pending_approval or {}
+        tool_calls = pending.get("tool_calls") or []
+        serialized: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            if hasattr(tc, "model_dump"):
+                serialized.append(tc.model_dump(mode="json"))
+            elif isinstance(tc, dict):
+                serialized.append(tc)
+        return serialized
+
+    @staticmethod
+    def _pending_tools_for_api(session: Session) -> list[dict[str, Any]] | None:
+        pending = session.pending_approval or {}
+        tool_calls = pending.get("tool_calls") or []
+        if not tool_calls:
+            return None
+        result: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.function.arguments)
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                args = {}
+            result.append(
+                {
+                    "tool": getattr(tc.function, "name", None),
+                    "tool_call_id": getattr(tc, "id", None),
+                    "arguments": args,
+                }
+            )
+        return result
+
+    def _restore_pending_approval(
+        self, session: Session, pending_approval: list[dict[str, Any]] | None
+    ) -> None:
+        if not pending_approval:
+            session.pending_approval = None
+            return
+        from litellm import ChatCompletionMessageToolCall as ToolCall
+
+        restored = []
+        for raw in pending_approval:
+            try:
+                if "function" in raw:
+                    restored.append(ToolCall(**raw))
+                else:
+                    restored.append(
+                        ToolCall(
+                            id=raw["tool_call_id"],
+                            type="function",
+                            function={
+                                "name": raw["tool"],
+                                "arguments": json.dumps(raw.get("arguments") or {}),
+                            },
+                        )
+                    )
+            except Exception as e:
+                logger.warning("Dropping malformed pending approval: %s", e)
+        session.pending_approval = {"tool_calls": restored} if restored else None
+
+    @staticmethod
+    def _pending_docs_for_api(
+        pending_approval: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        if not pending_approval:
+            return None
+        result: list[dict[str, Any]] = []
+        for raw in pending_approval:
+            if "function" in raw:
+                function = raw.get("function") or {}
+                try:
+                    args = json.loads(function.get("arguments") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                result.append(
+                    {
+                        "tool": function.get("name"),
+                        "tool_call_id": raw.get("id"),
+                        "arguments": args,
+                    }
+                )
+            elif {"tool", "tool_call_id"}.issubset(raw):
+                result.append(
+                    {
+                        "tool": raw.get("tool"),
+                        "tool_call_id": raw.get("tool_call_id"),
+                        "arguments": raw.get("arguments") or {},
+                    }
+                )
+        return result or None
+
+    @staticmethod
+    def _runtime_state(agent_session: AgentSession) -> str:
+        if agent_session.session.pending_approval:
+            return "waiting_approval"
+        if agent_session.is_processing:
+            return "processing"
+        if not agent_session.is_active:
+            return "ended"
+        return "idle"
+
+    async def _start_agent_session(
+        self,
+        *,
+        agent_session: AgentSession,
+        event_queue: asyncio.Queue,
+        tool_router: ToolRouter,
+    ) -> None:
+        async with self._lock:
+            self.sessions[agent_session.session_id] = agent_session
+
+        task = asyncio.create_task(
+            self._run_session(
+                agent_session.session_id,
+                agent_session.submission_queue,
+                event_queue,
+                tool_router,
+            )
+        )
+        agent_session.task = task
+
+    async def persist_session_snapshot(
+        self,
+        agent_session: AgentSession,
+        *,
+        runtime_state: str | None = None,
+        status: str = "active",
+    ) -> None:
+        """Persist the current runtime context snapshot."""
+        store = self._store()
+        if not getattr(store, "enabled", False):
+            return
+        try:
+            await store.save_snapshot(
+                session_id=agent_session.session_id,
+                user_id=agent_session.user_id,
+                model=agent_session.session.config.model_name,
+                title=agent_session.title,
+                messages=self._serialize_messages(agent_session.session),
+                runtime_state=runtime_state or self._runtime_state(agent_session),
+                status=status,
+                turn_count=agent_session.session.turn_count,
+                pending_approval=self._serialize_pending_approval(agent_session.session),
+                claude_counted=agent_session.claude_counted,
+                created_at=agent_session.created_at,
+                notification_destinations=list(
+                    agent_session.session.notification_destinations
+                ),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to persist snapshot for %s: %s",
+                agent_session.session_id,
+                e,
+            )
+
+    async def ensure_session_loaded(
+        self,
+        session_id: str,
+        user_id: str,
+        hf_token: str | None = None,
+    ) -> AgentSession | None:
+        """Return a live runtime session, lazily restoring it from Mongo."""
+        async with self._lock:
+            existing = self.sessions.get(session_id)
+        if existing:
+            if hf_token:
+                existing.hf_token = hf_token
+                existing.session.hf_token = hf_token
+            if user_id == "dev" or existing.user_id == "dev" or existing.user_id == user_id:
+                return existing
+            return None
+
+        store = self._store()
+        loaded = await store.load_session(session_id)
+        if not loaded:
+            return None
+
+        meta = loaded.get("metadata") or {}
+        owner = str(meta.get("user_id") or "")
+        if user_id != "dev" and owner != "dev" and owner != user_id:
+            return None
+
+        from litellm import Message
+
+        model = meta.get("model") or self.config.model_name
+        event_queue: asyncio.Queue = asyncio.Queue()
+        submission_queue: asyncio.Queue = asyncio.Queue()
+        tool_router, session = await asyncio.to_thread(
+            self._create_session_sync,
+            session_id=session_id,
+            user_id=owner or user_id,
+            hf_token=hf_token,
+            model=model,
+            event_queue=event_queue,
+            notification_destinations=meta.get("notification_destinations") or [],
+        )
+
+        restored_messages: list[Message] = []
+        for raw in loaded.get("messages") or []:
+            if not isinstance(raw, dict) or raw.get("role") == "system":
+                continue
+            try:
+                restored_messages.append(Message.model_validate(raw))
+            except Exception as e:
+                logger.warning("Dropping malformed restored message: %s", e)
+        if restored_messages:
+            # Keep the freshly-rendered system prompt, then attach the durable
+            # non-system context so tools/date/user context stay current.
+            session.context_manager.items = [session.context_manager.items[0], *restored_messages]
+
+        self._restore_pending_approval(session, meta.get("pending_approval") or [])
+        session.turn_count = int(meta.get("turn_count") or 0)
+
+        created_at = meta.get("created_at")
+        if not isinstance(created_at, datetime):
+            created_at = datetime.utcnow()
+
+        agent_session = AgentSession(
+            session_id=session_id,
+            session=session,
+            tool_router=tool_router,
+            submission_queue=submission_queue,
+            user_id=owner or user_id,
+            hf_token=hf_token,
+            created_at=created_at,
+            is_active=True,
+            is_processing=False,
+            claude_counted=bool(meta.get("claude_counted")),
+            title=meta.get("title"),
+        )
+        await self._start_agent_session(
+            agent_session=agent_session,
+            event_queue=event_queue,
+            tool_router=tool_router,
+        )
+        logger.info("Restored session %s for user %s", session_id, owner or user_id)
+        return agent_session
 
     async def create_session(
         self,
@@ -188,31 +480,14 @@ class SessionManager:
         event_queue: asyncio.Queue = asyncio.Queue()
 
         # Run blocking constructors in a thread to keep the event loop responsive.
-        # Without this, Session.__init__ → ContextManager → litellm.get_max_tokens()
-        # blocks all HTTP/SSE handling.
-        import time as _time
-
-        def _create_session_sync():
-            t0 = _time.monotonic()
-            tool_router = ToolRouter(self.config.mcpServers, hf_token=hf_token)
-            # Deep-copy config so each session's model switches independently —
-            # tab A picking GLM doesn't flip tab B off Claude.
-            session_config = self.config.model_copy(deep=True)
-            if model:
-                session_config.model_name = model
-            session = Session(
-                event_queue, config=session_config, tool_router=tool_router,
-                hf_token=hf_token,
-                user_id=user_id,
-                notification_gateway=self.messaging_gateway,
-                notification_destinations=[],
-                session_id=session_id,
-            )
-            t1 = _time.monotonic()
-            logger.info(f"Session initialized in {t1 - t0:.2f}s")
-            return tool_router, session
-
-        tool_router, session = await asyncio.to_thread(_create_session_sync)
+        tool_router, session = await asyncio.to_thread(
+            self._create_session_sync,
+            session_id=session_id,
+            user_id=user_id,
+            hf_token=hf_token,
+            model=model,
+            event_queue=event_queue,
+        )
 
         # Create wrapper
         agent_session = AgentSession(
@@ -224,14 +499,12 @@ class SessionManager:
             hf_token=hf_token,
         )
 
-        async with self._lock:
-            self.sessions[session_id] = agent_session
-
-        # Start the agent loop task
-        task = asyncio.create_task(
-            self._run_session(session_id, submission_queue, event_queue, tool_router)
+        await self._start_agent_session(
+            agent_session=agent_session,
+            event_queue=event_queue,
+            tool_router=tool_router,
         )
-        agent_session.task = task
+        await self.persist_session_snapshot(agent_session, runtime_state="idle")
 
         logger.info(f"Created session {session_id} for user {user_id}")
         return session_id
@@ -297,6 +570,7 @@ class SessionManager:
             ),
         )
         session.context_manager.items.append(seed)
+        await self.persist_session_snapshot(agent_session, runtime_state="idle")
         return len(parsed)
 
     @staticmethod
@@ -367,6 +641,7 @@ class SessionManager:
                             should_continue = await process_submission(session, submission)
                         finally:
                             agent_session.is_processing = False
+                            await self.persist_session_snapshot(agent_session)
                         if not should_continue:
                             break
                     except asyncio.TimeoutError:
@@ -401,6 +676,11 @@ class SessionManager:
             async with self._lock:
                 if session_id in self.sessions:
                     self.sessions[session_id].is_active = False
+                    await self.persist_session_snapshot(
+                        self.sessions[session_id],
+                        runtime_state="ended",
+                        status="ended",
+                    )
 
             logger.info(f"Session {session_id} ended")
 
@@ -450,7 +730,10 @@ class SessionManager:
             agent_session = self.sessions.get(session_id)
         if not agent_session or not agent_session.is_active:
             return False
-        return agent_session.session.context_manager.truncate_to_user_message(user_message_index)
+        success = agent_session.session.context_manager.truncate_to_user_message(user_message_index)
+        if success:
+            await self.persist_session_snapshot(agent_session, runtime_state="idle")
+        return success
 
     async def compact(self, session_id: str) -> bool:
         """Compact context in a session."""
@@ -475,12 +758,15 @@ class SessionManager:
         return success
 
     async def delete_session(self, session_id: str) -> bool:
-        """Delete a session entirely."""
+        """Soft-delete a session and stop its runtime resources."""
         async with self._lock:
             agent_session = self.sessions.pop(session_id, None)
 
         if not agent_session:
-            return False
+            await self._store().soft_delete_session(session_id)
+            return True
+
+        await self._store().soft_delete_session(session_id)
 
         # Clean up sandbox Space before cancelling the task
         await self._cleanup_sandbox(agent_session.session)
@@ -493,6 +779,21 @@ class SessionManager:
             except asyncio.CancelledError:
                 pass
 
+        return True
+
+    async def update_session_title(self, session_id: str, title: str | None) -> None:
+        """Persist a user-visible title for sidebar rehydration."""
+        agent_session = self.sessions.get(session_id)
+        if agent_session:
+            agent_session.title = title
+        await self._store().update_session_fields(session_id, title=title)
+
+    async def update_session_model(self, session_id: str, model_id: str) -> bool:
+        agent_session = self.sessions.get(session_id)
+        if not agent_session or not agent_session.is_active:
+            return False
+        agent_session.session.update_model(model_id)
+        await self.persist_session_snapshot(agent_session, runtime_state="idle")
         return True
 
     def get_session_owner(self, session_id: str) -> str | None:
@@ -522,22 +823,7 @@ class SessionManager:
         if not agent_session:
             return None
 
-        # Extract pending approval tools if any
-        pending_approval = None
-        pa = agent_session.session.pending_approval
-        if pa and pa.get("tool_calls"):
-            pending_approval = []
-            for tc in pa["tool_calls"]:
-                import json
-                try:
-                    args = json.loads(tc.function.arguments)
-                except (json.JSONDecodeError, AttributeError):
-                    args = {}
-                pending_approval.append({
-                    "tool": tc.function.name,
-                    "tool_call_id": tc.id,
-                    "arguments": args,
-                })
+        pending_approval = self._pending_tools_for_api(agent_session.session)
 
         return {
             "session_id": session_id,
@@ -548,6 +834,7 @@ class SessionManager:
             "user_id": agent_session.user_id,
             "pending_approval": pending_approval,
             "model": agent_session.session.config.model_name,
+            "title": agent_session.title,
             "notification_destinations": list(
                 agent_session.session.notification_destinations
             ),
@@ -581,14 +868,46 @@ class SessionManager:
         agent_session.session.set_notification_destinations(normalized)
         return normalized
 
-    def list_sessions(self, user_id: str | None = None) -> list[dict[str, Any]]:
+    async def list_sessions(self, user_id: str | None = None) -> list[dict[str, Any]]:
         """List sessions, optionally filtered by user.
 
         Args:
             user_id: If provided, only return sessions owned by this user.
                      If "dev", return all sessions (dev mode).
         """
-        results = []
+        results: list[dict[str, Any]] = []
+        store = self._store()
+        if getattr(store, "enabled", False):
+            for row in await store.list_sessions(user_id or "dev"):
+                sid = row.get("session_id") or row.get("_id")
+                if not sid:
+                    continue
+                runtime_info = self.get_session_info(str(sid))
+                if runtime_info:
+                    results.append(runtime_info)
+                    continue
+                created_at = row.get("created_at")
+                if isinstance(created_at, datetime):
+                    created_at_str = created_at.isoformat()
+                else:
+                    created_at_str = str(created_at or datetime.utcnow().isoformat())
+                pending = self._pending_docs_for_api(row.get("pending_approval") or [])
+                results.append(
+                    {
+                        "session_id": str(sid),
+                        "created_at": created_at_str,
+                        "is_active": row.get("status") != "ended",
+                        "is_processing": row.get("runtime_state") == "processing",
+                        "message_count": int(row.get("message_count") or 0),
+                        "user_id": row.get("user_id") or "dev",
+                        "pending_approval": pending or None,
+                        "model": row.get("model"),
+                        "title": row.get("title"),
+                        "notification_destinations": row.get("notification_destinations") or [],
+                    }
+                )
+            return results
+
         for sid in self.sessions:
             info = self.get_session_info(sid)
             if not info:

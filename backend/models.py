@@ -87,6 +87,7 @@ class SessionInfo(BaseModel):
     user_id: str = "dev"
     pending_approval: list[PendingApprovalTool] | None = None
     model: str | None = None
+    title: str | None = None
     notification_destinations: list[str] = Field(default_factory=list)
 
 

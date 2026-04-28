@@ -75,6 +75,13 @@ async def test_concurrent_increments_under_lock_do_not_lose_writes():
 
 
 @pytest.mark.asyncio
+async def test_try_increment_returns_none_at_cap():
+    assert await user_quotas.try_increment_claude("freebie", 1) == 1
+    assert await user_quotas.try_increment_claude("freebie", 1) is None
+    assert await user_quotas.get_claude_used_today("freebie") == 1
+
+
+@pytest.mark.asyncio
 async def test_refund_decrements_and_drops_entry_at_zero():
     await user_quotas.increment_claude("u1")
     assert await user_quotas.get_claude_used_today("u1") == 1

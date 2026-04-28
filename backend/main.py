@@ -6,15 +6,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# Load .env before importing routes/session_manager so persistence and quota
+# modules see local Mongo settings during startup.
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from routes.agent import router as agent_router
 from routes.auth import router as auth_router
 from session_manager import session_manager
-
-# Load .env from project root (parent directory)
-load_dotenv(Path(__file__).parent.parent / ".env")
 
 # Configure logging
 logging.basicConfig(

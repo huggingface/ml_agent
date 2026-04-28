@@ -371,7 +371,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     } catch {
       return null;
     }
-  }, [sessionId, setNeedsAttention]);
+  }, [sessionId, setNeedsAttention, updateSession]);
 
   // -- useChat from Vercel AI SDK -----------------------------------------
   const chat = useChat({
@@ -621,7 +621,10 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     /** Read the event stream from GET /api/events and forward to side-channel. */
     const consumeEventStream = async (signal: AbortSignal) => {
       try {
-        const res = await apiFetch(`/api/events/${sessionId}`, {
+        const lastEventKey = `hf-agent-last-event:${sessionId}`;
+        const lastSeq = localStorage.getItem(lastEventKey);
+        const qs = lastSeq ? `?after=${encodeURIComponent(lastSeq)}` : '';
+        const res = await apiFetch(`/api/events/${sessionId}${qs}`, {
           headers: { 'Accept': 'text/event-stream' },
           signal,
         });
@@ -629,6 +632,71 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
 
         const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
         let buf = '';
+        let eventId: string | null = null;
+        let eventData = '';
+        const dispatch = async () => {
+          if (!eventData.trim()) {
+            eventId = null;
+            eventData = '';
+            return false;
+          }
+          const event = JSON.parse(eventData.trim());
+          const seq = event.seq ?? (eventId ? Number(eventId) : undefined);
+          if (Number.isFinite(seq)) {
+            localStorage.setItem(lastEventKey, String(seq));
+          }
+          eventId = null;
+          eventData = '';
+          // Forward to side-channel for real-time UI updates
+          const et = event.event_type as string;
+          if (et === 'processing') sideChannel.onProcessing();
+          else if (et === 'assistant_chunk') sideChannel.onStreaming();
+          else if (et === 'tool_call') {
+            const t = event.data?.tool as string;
+            const d = event.data?.arguments?.description as string | undefined;
+            sideChannel.onToolRunning(t, d);
+            sideChannel.onToolCallPanel(t, (event.data?.arguments || {}) as Record<string, unknown>);
+          } else if (et === 'tool_output') {
+            sideChannel.onToolOutputPanel(
+              event.data?.tool as string,
+              event.data?.tool_call_id as string,
+              event.data?.output as string,
+              event.data?.success as boolean,
+            );
+          } else if (et === 'tool_state_change') {
+            const state = event.data?.state as string;
+            const toolName = event.data?.tool as string;
+            if (state === 'running' && toolName) sideChannel.onToolRunning(toolName);
+          } else if (et === 'turn_complete' || et === 'error' || et === 'interrupted') {
+            sideChannel.onProcessingDone();
+            stopReconnect();
+            // Final hydration to get the complete message state
+            const result = await hydrateMessages();
+            if (result) {
+              const uiMsgs = llmMessagesToUIMessages(result.data, result.pendingIds, chatActionsRef.current.messages);
+              if (uiMsgs.length > 0) {
+                chat.setMessages(uiMsgs);
+                saveMessages(sessionId, uiMsgs);
+              }
+            }
+            return true;
+          } else if (et === 'approval_required') {
+            sideChannel.onApprovalRequired(
+              (event.data?.tools || []) as Array<{ tool: string; arguments: Record<string, unknown>; tool_call_id: string }>,
+            );
+            stopReconnect();
+            const result = await hydrateMessages();
+            if (result) {
+              const uiMsgs = llmMessagesToUIMessages(result.data, result.pendingIds, chatActionsRef.current.messages);
+              if (uiMsgs.length > 0) {
+                chat.setMessages(uiMsgs);
+                saveMessages(sessionId, uiMsgs);
+              }
+            }
+            return true;
+          }
+          return false;
+        };
         while (true) {
           const { value, done } = await reader.read();
           if (done || signal.aborted) break;
@@ -636,59 +704,21 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
           const lines = buf.split('\n');
           buf = lines.pop() || '';
           for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data: ')) continue;
-            try {
-              const event = JSON.parse(trimmed.slice(6));
-              // Forward to side-channel for real-time UI updates
-              const et = event.event_type as string;
-              if (et === 'processing') sideChannel.onProcessing();
-              else if (et === 'assistant_chunk') sideChannel.onStreaming();
-              else if (et === 'tool_call') {
-                const t = event.data?.tool as string;
-                const d = event.data?.arguments?.description as string | undefined;
-                sideChannel.onToolRunning(t, d);
-                sideChannel.onToolCallPanel(t, (event.data?.arguments || {}) as Record<string, unknown>);
-              } else if (et === 'tool_output') {
-                sideChannel.onToolOutputPanel(
-                  event.data?.tool as string,
-                  event.data?.tool_call_id as string,
-                  event.data?.output as string,
-                  event.data?.success as boolean,
-                );
-              } else if (et === 'tool_state_change') {
-                const state = event.data?.state as string;
-                const toolName = event.data?.tool as string;
-                if (state === 'running' && toolName) sideChannel.onToolRunning(toolName);
-              } else if (et === 'turn_complete' || et === 'error' || et === 'interrupted') {
-                sideChannel.onProcessingDone();
-                stopReconnect();
-                // Final hydration to get the complete message state
-                const result = await hydrateMessages();
-                if (result) {
-                  const uiMsgs = llmMessagesToUIMessages(result.data, result.pendingIds, chatActionsRef.current.messages);
-                  if (uiMsgs.length > 0) {
-                    chat.setMessages(uiMsgs);
-                    saveMessages(sessionId, uiMsgs);
-                  }
-                }
-                return;
-              } else if (et === 'approval_required') {
-                sideChannel.onApprovalRequired(
-                  (event.data?.tools || []) as Array<{ tool: string; arguments: Record<string, unknown>; tool_call_id: string }>,
-                );
-                stopReconnect();
-                const result = await hydrateMessages();
-                if (result) {
-                  const uiMsgs = llmMessagesToUIMessages(result.data, result.pendingIds, chatActionsRef.current.messages);
-                  if (uiMsgs.length > 0) {
-                    chat.setMessages(uiMsgs);
-                    saveMessages(sessionId, uiMsgs);
-                  }
-                }
-                return;
-              }
-            } catch { /* ignore parse errors */ }
+            const trimmed = line.replace(/\r$/, '');
+            if (trimmed === '') {
+              try {
+                if (await dispatch()) return;
+              } catch { /* ignore parse errors */ }
+              continue;
+            }
+            if (trimmed.startsWith(':')) continue;
+            if (trimmed.startsWith('id:')) {
+              eventId = trimmed.slice(3).trim();
+              continue;
+            }
+            if (trimmed.startsWith('data:')) {
+              eventData += trimmed.slice(5).trimStart() + '\n';
+            }
           }
         }
       } catch {
