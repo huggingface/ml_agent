@@ -15,6 +15,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 import user_quotas  # noqa: E402
+from agent.core.session_persistence import NoopSessionStore, _reset_store_for_tests  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +80,26 @@ async def test_try_increment_returns_none_at_cap():
     assert await user_quotas.try_increment_claude("freebie", 1) == 1
     assert await user_quotas.try_increment_claude("freebie", 1) is None
     assert await user_quotas.get_claude_used_today("freebie") == 1
+
+
+@pytest.mark.asyncio
+async def test_try_increment_delegates_cap_to_enabled_store():
+    class StoreAtCap(NoopSessionStore):
+        enabled = True
+
+        async def try_increment_quota(self, user_id: str, day: str, cap: int):
+            assert user_id == "mongo-user"
+            assert cap == 1
+            return None
+
+        async def get_quota(self, user_id: str, day: str):
+            return 1
+
+    _reset_store_for_tests(StoreAtCap())
+
+    assert await user_quotas.try_increment_claude("mongo-user", 1) is None
+    assert await user_quotas.get_claude_used_today("mongo-user") == 1
+    assert "mongo-user" not in user_quotas._claude_counts
 
 
 @pytest.mark.asyncio

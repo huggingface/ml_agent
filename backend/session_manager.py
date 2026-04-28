@@ -300,8 +300,11 @@ class SessionManager:
         agent_session: AgentSession,
         event_queue: asyncio.Queue,
         tool_router: ToolRouter,
-    ) -> None:
+    ) -> AgentSession:
         async with self._lock:
+            existing = self.sessions.get(agent_session.session_id)
+            if existing:
+                return existing
             self.sessions[agent_session.session_id] = agent_session
 
         task = asyncio.create_task(
@@ -313,6 +316,22 @@ class SessionManager:
             )
         )
         agent_session.task = task
+        return agent_session
+
+    @staticmethod
+    def _can_access_session(agent_session: AgentSession, user_id: str) -> bool:
+        return (
+            user_id == "dev"
+            or agent_session.user_id == "dev"
+            or agent_session.user_id == user_id
+        )
+
+    @staticmethod
+    def _update_hf_token(agent_session: AgentSession, hf_token: str | None) -> None:
+        if not hf_token:
+            return
+        agent_session.hf_token = hf_token
+        agent_session.session.hf_token = hf_token
 
     async def persist_session_snapshot(
         self,
@@ -359,16 +378,22 @@ class SessionManager:
         async with self._lock:
             existing = self.sessions.get(session_id)
         if existing:
-            if hf_token:
-                existing.hf_token = hf_token
-                existing.session.hf_token = hf_token
-            if user_id == "dev" or existing.user_id == "dev" or existing.user_id == user_id:
+            if self._can_access_session(existing, user_id):
+                self._update_hf_token(existing, hf_token)
                 return existing
             return None
 
         store = self._store()
         loaded = await store.load_session(session_id)
         if not loaded:
+            return None
+
+        async with self._lock:
+            existing = self.sessions.get(session_id)
+        if existing:
+            if self._can_access_session(existing, user_id):
+                self._update_hf_token(existing, hf_token)
+                return existing
             return None
 
         meta = loaded.get("metadata") or {}
@@ -424,11 +449,14 @@ class SessionManager:
             claude_counted=bool(meta.get("claude_counted")),
             title=meta.get("title"),
         )
-        await self._start_agent_session(
+        started = await self._start_agent_session(
             agent_session=agent_session,
             event_queue=event_queue,
             tool_router=tool_router,
         )
+        if started is not agent_session:
+            self._update_hf_token(started, hf_token)
+            return started
         logger.info("Restored session %s for user %s", session_id, owner or user_id)
         return agent_session
 
