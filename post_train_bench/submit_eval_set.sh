@@ -21,6 +21,8 @@ Environment:
   POST_TRAIN_BENCH_DIR         Default: scratch/PostTrainBench
   POST_TRAIN_BENCH_DOCKER_IMAGE
                                Default: registry.hpc-cluster-hopper.hpc.internal.huggingface.tech/library/posttrainbench:latest
+  POST_TRAIN_BENCH_SLURM_TIME  Slurm walltime. Default: 01:00:00 for smoke,
+                               14:00:00 for full.
   POST_TRAIN_BENCH_RUN_ID      Optional explicit run id. Overrides the default
                                YYYY-MM-DD_HH-MM-SS_{slurm_job_id} format.
 EOF
@@ -134,6 +136,15 @@ PY
 esac
 
 MATRIX_COUNT="$(wc -l < "$MATRIX_FILE" | tr -d ' ')"
+case "$MODE" in
+    smoke)
+        DEFAULT_SLURM_TIME="01:00:00"
+        ;;
+    full)
+        DEFAULT_SLURM_TIME="14:00:00"
+        ;;
+esac
+SLURM_TIME="${POST_TRAIN_BENCH_SLURM_TIME:-$DEFAULT_SLURM_TIME}"
 
 create_source_snapshot() {
     SOURCE_SNAPSHOT="${RUN_ROOT}/source_snapshot"
@@ -144,7 +155,7 @@ create_source_snapshot() {
 }
 
 write_metadata() {
-    export RUN_ID MODE DOCKER_IMAGE PTB_DIR MATRIX_FILE MATRIX_COUNT RUN_STAMP PTB_SLURM_JOB_ID SOURCE_SNAPSHOT
+    export RUN_ID MODE DOCKER_IMAGE PTB_DIR MATRIX_FILE MATRIX_COUNT RUN_STAMP PTB_SLURM_JOB_ID SOURCE_SNAPSHOT SLURM_TIME
     python - "$RUN_ROOT/run_metadata.json" <<'PY'
 import json
 import os
@@ -170,6 +181,7 @@ metadata = {
     "ml_intern_status_short": status,
     "dirty_worktree": bool(status),
     "docker_image": os.environ["DOCKER_IMAGE"],
+    "slurm_time": os.environ["SLURM_TIME"],
     "post_train_bench_dir": os.environ["PTB_DIR"],
     "matrix_file": os.environ["MATRIX_FILE"],
     "matrix_count": int(os.environ["MATRIX_COUNT"]),
@@ -187,6 +199,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
         --parsable
         --hold
         "--array=0-$((MATRIX_COUNT - 1))"
+        "--time=${SLURM_TIME}"
         "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE}"
         post_train_bench/launch.slurm
     )
@@ -206,6 +219,7 @@ if [ -n "$EXPLICIT_RUN_ID" ]; then
         sbatch
         --parsable
         "--array=0-$((MATRIX_COUNT - 1))"
+        "--time=${SLURM_TIME}"
         "--export=ALL,RUN_ROOT=${RUN_ROOT},MATRIX_FILE=${MATRIX_FILE},PTB_DIR=${PTB_DIR},REPO_ROOT=${SOURCE_SNAPSHOT},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},RUN_ID=${RUN_ID}"
         post_train_bench/launch.slurm
     )
@@ -227,6 +241,7 @@ SBATCH_CMD=(
     --parsable
     --hold
     "--array=0-$((MATRIX_COUNT - 1))"
+    "--time=${SLURM_TIME}"
     "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE}"
     post_train_bench/launch.slurm
 )
