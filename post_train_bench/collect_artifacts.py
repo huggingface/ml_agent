@@ -46,6 +46,20 @@ def copy_optional(src: Path, dst: Path, manifest: dict) -> None:
     )
 
 
+def record_optional_tree(src: Path, manifest: dict, key: str) -> None:
+    if not src.exists():
+        manifest["missing"].append(str(src))
+        return
+    for path in sorted(src.rglob("*")):
+        if path.is_file():
+            manifest[key].append(
+                {
+                    "path": str(path),
+                    "bytes": path.stat().st_size,
+                }
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-root", required=True)
@@ -70,6 +84,7 @@ def main() -> int:
         "method": args.method,
         "eval_dir": str(eval_dir),
         "files": [],
+        "referenced_files": [],
         "missing": [],
     }
 
@@ -92,6 +107,7 @@ def main() -> int:
 
     copy_optional(eval_dir / "task" / "session_logs", dest / "session_logs", manifest)
     copy_optional(eval_dir / "task", dest / "task_snapshot", manifest)
+    record_optional_tree(eval_dir / "final_model", manifest, "referenced_files")
 
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return 0

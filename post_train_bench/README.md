@@ -98,8 +98,7 @@ post_train_bench/runs/{ML_INTERN_AGENT_MODEL}/{RUN_ID}
 |-- artifacts
 |   `-- {method}
 |       `-- {benchmark}_{model_to_train}_{slurm_array_task}
-|           |-- final_model/            # copied trained model, when produced
-|           |-- manifest.json           # checksums and copied artifact summary
+|           |-- manifest.json           # checksums, copied artifact summary, final_model file references
 |           |-- metrics.json            # copied per-run benchmark metrics
 |           `-- session_logs/           # copied local ml-intern trajectories
 |-- env
