@@ -64,6 +64,20 @@ MODEL_TO_TRAIN="${ROW[1]}"
 NUM_HOURS="${ROW[2]}"
 DURATION_MINUTES="${ROW[3]}"
 
+PTB_SLURM_NAME="$(
+    python - "$ML_INTERN_AGENT_MODEL" "$MODEL_TO_TRAIN" "$BENCHMARK" <<'PY'
+import re
+import sys
+
+parts = sys.argv[1:]
+name = "ptb_" + "_".join(parts)
+name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
+print(name[:128])
+PY
+)"
+scontrol update "JobId=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}" "Name=${PTB_SLURM_NAME}" || true
+echo "slurm_job_name=${PTB_SLURM_NAME}"
+
 bash post_train_bench/run_task_docker.sh \
     "${BENCHMARK}" \
     "${MODEL_TO_TRAIN}" \
