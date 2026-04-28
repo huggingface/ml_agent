@@ -14,7 +14,7 @@ from fastapi import HTTPException, Request, status
 
 from agent.core.hf_tokens import bearer_token_from_header
 
-from agent.core.hf_access import fetch_whoami_v2, jobs_access_from_whoami
+from agent.core.hf_access import fetch_whoami_v2
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,24 @@ async def _fetch_user_plan(token: str) -> str:
 
     if not isinstance(whoami, dict):
         return "free"
-    return jobs_access_from_whoami(whoami).plan
+
+    # OAuth whoami sets `type: "user"` and surfaces Pro via the `isPro` boolean
+    # — see Space discussion #21. HF-Jobs eligibility (PR #172) ignores plan
+    # entirely; the Claude daily-cap tier is still a free vs pro/org split.
+    if whoami.get("isPro") is True or whoami.get("is_pro") is True:
+        return "pro"
+    plan_str = ""
+    for key in ("plan", "type", "accountType"):
+        value = whoami.get(key)
+        if isinstance(value, str) and value:
+            plan_str = value.lower()
+            break
+    if any(tag in plan_str for tag in ("pro", "enterprise", "team")):
+        return "pro"
+    orgs = whoami.get("orgs") or []
+    if isinstance(orgs, list) and orgs:
+        return "org"
+    return "free"
 
 
 async def _extract_user_from_token(token: str) -> dict[str, Any] | None:
