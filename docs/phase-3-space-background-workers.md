@@ -216,8 +216,8 @@ to be in the same process.
 
 Create a worker entrypoint, for example:
 
-```bash
-python -m backend.worker
+```text
+ML_INTERN_PROCESS_ROLE=worker
 ```
 
 The worker Space should use the same codebase and these secrets:
@@ -227,8 +227,23 @@ The worker Space should use the same codebase and these secrets:
 - model provider secrets
 - any HF/tool credentials needed for agent execution
 
-The worker does not need a public UI. It can expose a health endpoint if useful,
-but the core worker loop can run as the container command.
+The worker does not need a public UI. In this repo, `ML_INTERN_PROCESS_ROLE=worker`
+starts `worker_app:app`, which exposes `/health` for the Space while the worker
+loop runs from the app lifespan.
+
+The current implementation also supports an in-process worker for the API Space:
+
+```text
+ML_INTERN_BACKGROUND_WORKERS=true
+ML_INTERN_RUN_WORKER_IN_PROCESS=true
+```
+
+That mode is the safe first rollout because the API process already has the
+user's HF token in memory after request authentication. A separate worker Space
+can claim the same durable runs, but user-scoped HF tool execution still needs an
+explicit token handoff/token-broker design before it should be enabled for
+production user traffic. Do not persist raw user OAuth tokens to Mongo as the
+default path.
 
 Worker loop:
 
@@ -471,6 +486,15 @@ When disabled:
 This lets us deploy Phase 3 code safely before routing production traffic through
 the worker queue.
 
+Worker/process flags:
+
+```text
+ML_INTERN_BACKGROUND_WORKERS=true          # /api/chat enqueues durable runs
+ML_INTERN_RUN_WORKER_IN_PROCESS=true      # API Space also runs a local worker
+ML_INTERN_PROCESS_ROLE=worker             # run this container as worker-only
+ML_INTERN_WORKER_ID=ml-intern-worker-1    # optional stable worker name
+```
+
 ## Open Decisions
 
 - Exact worker deployment name and ownership: `ml-intern-worker` is the suggested
@@ -503,4 +527,3 @@ the worker queue.
 - Pending approvals restore exactly.
 - Only one worker can run a turn for a session at a time.
 - Feature flag can roll back to the current direct execution path.
-
