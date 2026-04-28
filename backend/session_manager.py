@@ -301,17 +301,33 @@ class SessionManager:
 
     @staticmethod
     async def _cleanup_sandbox(session: Session) -> None:
-        """Delete the sandbox Space if one was created for this session."""
+        """Delete the sandbox Space if one was created for this session.
+
+        Retries on transient failures (HF API 5xx, rate-limit, network blips)
+        with exponential backoff. A single missed delete = a permanently
+        orphaned Space, so the cost of an extra retry beats the alternative.
+        """
         sandbox = getattr(session, "sandbox", None)
-        if sandbox and getattr(sandbox, "_owns_space", False):
-            space_id = getattr(sandbox, "space_id", None)
+        if not (sandbox and getattr(sandbox, "_owns_space", False)):
+            return
+
+        space_id = getattr(sandbox, "space_id", None)
+        last_err: Exception | None = None
+        for attempt in range(3):
             try:
-                logger.info(f"Deleting sandbox {space_id}...")
+                logger.info(f"Deleting sandbox {space_id} (attempt {attempt + 1}/3)...")
                 await asyncio.to_thread(sandbox.delete)
                 from agent.core import telemetry
                 await telemetry.record_sandbox_destroy(session, sandbox)
+                return
             except Exception as e:
-                logger.warning(f"Failed to delete sandbox {space_id}: {e}")
+                last_err = e
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+        logger.error(
+            f"Failed to delete sandbox {space_id} after 3 attempts: {last_err}. "
+            f"Orphan — sweep script will pick it up."
+        )
 
     async def _run_session(
         self,

@@ -724,6 +724,10 @@ class Sandbox:
             )
         print(f"Deleting sandbox: {self.space_id}...")
         self._hf_api.delete_repo(self.space_id, repo_type="space")
+        # Clear ownership so a second cleanup call (e.g. delete_session +
+        # _run_session.finally both fire) early-returns instead of retrying
+        # a 404 delete and emitting a spurious ERROR log.
+        self._owns_space = False
         self._client.close()
         print("Deleted.")
 
