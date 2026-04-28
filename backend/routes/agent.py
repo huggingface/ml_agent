@@ -139,93 +139,6 @@ async def _enforce_claude_quota(
     await session_manager.persist_session_snapshot(agent_session)
 
 
-async def _enforce_jobs_access_for_approvals(
-    user: dict[str, Any],
-    agent_session: AgentSession,
-    approvals: list[dict[str, Any]],
-) -> None:
-    """Validate the namespace attached to each approved hf_jobs call.
-
-    HF Jobs is no longer plan-gated — any namespace the caller belongs to
-    is fair game, with credits checked on the HF side at job-creation time.
-    What we still enforce here:
-
-    1. If the caller picked a namespace, it must be in their eligible set
-       (otherwise the saved preference is stale → 400 so the picker reopens).
-    2. If they have multiple eligible namespaces and didn't pick one, the
-       UI prompts them to choose (409). Single-namespace users default to
-       their personal account silently.
-    """
-    pending = agent_session.session.pending_approval or {}
-    tool_calls = pending.get("tool_calls") or []
-    if not tool_calls:
-        return
-
-    approved_ids = {
-        a.get("tool_call_id")
-        for a in approvals
-        if a.get("approved")
-    }
-    if not approved_ids:
-        return
-
-    hf_job_ids = [
-        tc.id for tc in tool_calls
-        if tc.id in approved_ids and tc.function.name == "hf_jobs"
-    ]
-    if not hf_job_ids:
-        return
-
-    token = agent_session.hf_token or agent_session.session.hf_token
-    if not token:
-        return
-
-    access = await get_jobs_access(token)
-    if access is None:
-        return
-
-    approval_map = {a.get("tool_call_id"): a for a in approvals}
-
-    invalid_namespace = [
-        tool_call_id
-        for tool_call_id in hf_job_ids
-        if (
-            approval_map.get(tool_call_id, {}).get("namespace")
-            and approval_map.get(tool_call_id, {}).get("namespace") not in access.eligible_namespaces
-        )
-    ]
-    if invalid_namespace:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "hf_jobs_invalid_namespace",
-                "message": (
-                    "The selected jobs namespace is no longer one you belong to. "
-                    f"Pick one of: {', '.join(access.eligible_namespaces) or '(none)'}"
-                ),
-                "tool_call_ids": invalid_namespace,
-                "eligible_namespaces": access.eligible_namespaces,
-            },
-        )
-
-    if len(access.eligible_namespaces) > 1:
-        missing_namespace = [
-            tool_call_id
-            for tool_call_id in hf_job_ids
-            if not approval_map.get(tool_call_id, {}).get("namespace")
-        ]
-        if missing_namespace:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "hf_jobs_namespace_required",
-                    "message": "Pick which account or organization should own this job run.",
-                    "tool_call_ids": missing_namespace,
-                    "eligible_namespaces": access.eligible_namespaces,
-                },
-            )
-
-
 async def _check_session_access(
     session_id: str,
     user: dict[str, Any],
@@ -622,7 +535,6 @@ async def submit_approval(
         }
         for a in request.approvals
     ]
-    await _enforce_jobs_access_for_approvals(user, agent_session, approvals)
     success = await session_manager.submit_approval(request.session_id, approvals)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
@@ -674,7 +586,6 @@ async def chat_sse(
                 }
                 for a in approvals
             ]
-            await _enforce_jobs_access_for_approvals(user, agent_session, formatted)
             success = await session_manager.submit_approval(session_id, formatted)
         elif text is not None:
             success = await session_manager.submit_user_input(session_id, text)

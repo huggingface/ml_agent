@@ -66,8 +66,6 @@ interface ChatInputProps {
   sessionId?: string;
   onSend: (text: string) => void;
   onStop?: () => void;
-  onDeclineBlockedJobs?: () => Promise<boolean>;
-  onContinueBlockedJobsWithNamespace?: (namespace: string) => Promise<boolean>;
   isProcessing?: boolean;
   disabled?: boolean;
   placeholder?: string;
@@ -76,7 +74,7 @@ interface ChatInputProps {
 const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
 const firstFreeModel = () => MODEL_OPTIONS.find(m => !isClaudeModel(m)) ?? MODEL_OPTIONS[0];
 
-export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJobs, onContinueBlockedJobsWithNamespace, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
+export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [selectedModelId, setSelectedModelId] = useState<string>(MODEL_OPTIONS[0].id);
@@ -91,6 +89,7 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
   const jobsUpgradeRequired = useAgentStore((s) => s.jobsUpgradeRequired);
   const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
+  const [awaitingTopUp, setAwaitingTopUp] = useState(false);
   const lastSentRef = useRef<string>('');
 
   // Model is per-session: fetch this tab's current model every time the
@@ -216,9 +215,11 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
 
   const handleJobsUpgradeClose = useCallback(() => {
     setJobsUpgradeRequired(null);
+    setAwaitingTopUp(false);
   }, [setJobsUpgradeRequired]);
 
   const handleJobsUpgradeClick = useCallback(async () => {
+    setAwaitingTopUp(true);
     if (!sessionId || !jobsUpgradeRequired) return;
     try {
       await apiFetch(`/api/pro-click/${sessionId}`, {
@@ -230,15 +231,28 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
     }
   }, [sessionId, jobsUpgradeRequired]);
 
-  const handleDeclineBlockedJobs = useCallback(async () => {
-    if (!onDeclineBlockedJobs) return;
-    await onDeclineBlockedJobs();
-  }, [onDeclineBlockedJobs]);
+  const handleJobsRetry = useCallback(() => {
+    const namespace = jobsUpgradeRequired?.namespace;
+    setJobsUpgradeRequired(null);
+    setAwaitingTopUp(false);
+    const msg = namespace
+      ? `I just added credits to the \`${namespace}\` namespace. Please retry the previous job.`
+      : "I just added credits. Please retry the previous job.";
+    onSend(msg);
+  }, [jobsUpgradeRequired, setJobsUpgradeRequired, onSend]);
 
-  const handleContinueBlockedJobsWithNamespace = useCallback(async (namespace: string) => {
-    if (!onContinueBlockedJobsWithNamespace) return;
-    await onContinueBlockedJobsWithNamespace(namespace);
-  }, [onContinueBlockedJobsWithNamespace]);
+  // Auto-retry when the user comes back to this tab after clicking "Add credits".
+  // Browsers fire visibilitychange when the tab regains focus from a sibling tab.
+  useEffect(() => {
+    if (!awaitingTopUp || !jobsUpgradeRequired) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        handleJobsRetry();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [awaitingTopUp, jobsUpgradeRequired, handleJobsRetry]);
 
   // Hide the chip until the user has actually burned quota — an unused
   // Opus session shouldn't populate a counter.
@@ -482,13 +496,11 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
         />
         <JobsUpgradeDialog
           open={!!jobsUpgradeRequired}
-          mode={jobsUpgradeRequired?.mode || 'namespace'}
           message={jobsUpgradeRequired?.message || ''}
-          eligibleNamespaces={jobsUpgradeRequired?.eligibleNamespaces || []}
+          awaitingTopUp={awaitingTopUp}
           onClose={handleJobsUpgradeClose}
           onUpgrade={handleJobsUpgradeClick}
-          onDecline={handleDeclineBlockedJobs}
-          onContinueWithNamespace={handleContinueBlockedJobsWithNamespace}
+          onRetry={handleJobsRetry}
         />
       </Box>
     </Box>

@@ -46,17 +46,8 @@ export interface LLMHealthError {
 }
 
 export interface JobsUpgradeState {
-  approvals: Array<{
-    tool_call_id: string;
-    approved: boolean;
-    feedback?: string | null;
-    edited_script?: string | null;
-    namespace?: string | null;
-  }>;
-  toolCallIds: string[];
   message: string;
-  eligibleNamespaces: string[];
-  mode: 'namespace' | 'billing';
+  namespace?: string | null;
 }
 
 export type ActivityStatus =
@@ -137,13 +128,6 @@ interface AgentStore {
   // Edited scripts (tool_call_id -> edited content)
   editedScripts: Record<string, string>;
 
-  // Namespace overrides chosen for hf_jobs approvals (tool_call_id -> namespace)
-  approvalNamespaces: Record<string, string>;
-
-  // Persisted preferred namespace for hf_jobs (auto-applied to future approvals
-  // so the user only picks once)
-  preferredJobsNamespace: string | null;
-
   // Job URLs (tool_call_id -> job URL) for HF jobs
   jobUrls: Record<string, string>;
 
@@ -197,12 +181,6 @@ interface AgentStore {
   setEditedScript: (toolCallId: string, content: string) => void;
   getEditedScript: (toolCallId: string) => string | undefined;
   clearEditedScripts: () => void;
-
-  setApprovalNamespace: (toolCallId: string, namespace: string) => void;
-  getApprovalNamespace: (toolCallId: string) => string | undefined;
-  clearApprovalNamespaces: () => void;
-
-  setPreferredJobsNamespace: (namespace: string | null) => void;
 
   setJobUrl: (toolCallId: string, jobUrl: string) => void;
   getJobUrl: (toolCallId: string) => string | undefined;
@@ -297,28 +275,6 @@ function saveTrackioDashboards(dashboards: Record<string, { spaceId: string; pro
   }
 }
 
-const PREFERRED_JOBS_NAMESPACE_KEY = 'hf-agent-preferred-jobs-namespace';
-
-function loadPreferredJobsNamespace(): string | null {
-  try {
-    return localStorage.getItem(PREFERRED_JOBS_NAMESPACE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function savePreferredJobsNamespace(namespace: string | null): void {
-  try {
-    if (namespace) {
-      localStorage.setItem(PREFERRED_JOBS_NAMESPACE_KEY, namespace);
-    } else {
-      localStorage.removeItem(PREFERRED_JOBS_NAMESPACE_KEY);
-    }
-  } catch (e) {
-    console.warn('Failed to persist preferred jobs namespace:', e);
-  }
-}
-
 export const useAgentStore = create<AgentStore>()((set, get) => ({
   sessionStates: {},
   activeSessionId: null,
@@ -339,8 +295,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   plan: [],
 
   editedScripts: {},
-  approvalNamespaces: {},
-  preferredJobsNamespace: loadPreferredJobsNamespace(),
   jobUrls: {},
   jobStatuses: {},
   trackioDashboards: loadTrackioDashboards(),
@@ -511,21 +465,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   getEditedScript: (toolCallId) => get().editedScripts[toolCallId],
 
   clearEditedScripts: () => set({ editedScripts: {} }),
-
-  setApprovalNamespace: (toolCallId, namespace) => {
-    set((state) => ({
-      approvalNamespaces: { ...state.approvalNamespaces, [toolCallId]: namespace },
-    }));
-  },
-
-  getApprovalNamespace: (toolCallId) => get().approvalNamespaces[toolCallId],
-
-  clearApprovalNamespaces: () => set({ approvalNamespaces: {} }),
-
-  setPreferredJobsNamespace: (namespace) => {
-    savePreferredJobsNamespace(namespace);
-    set({ preferredJobsNamespace: namespace });
-  },
 
   // ── Job URLs ────────────────────────────────────────────────────────
 
