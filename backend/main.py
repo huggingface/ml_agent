@@ -1,5 +1,6 @@
 """FastAPI application for HF Agent web interface."""
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -24,13 +25,30 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+_background_worker_task = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
+    global _background_worker_task
     logger.info("Starting HF Agent backend...")
     await session_manager.start()
+    try:
+        from background_worker import (
+            background_workers_enabled,
+            in_process_worker_enabled,
+            run_worker_loop,
+        )
+
+        if background_workers_enabled() and in_process_worker_enabled():
+            _background_worker_task = asyncio.create_task(
+                run_worker_loop(session_manager),
+                name="ml-intern-background-worker",
+            )
+            logger.info("Started in-process background worker")
+    except Exception as e:
+        logger.warning("Background worker failed to start: %s", e)
     # Start in-process hourly KPI rollup. Replaces an external cron so the
     # rollup lives next to the data and reuses the Space's HF token.
     try:
@@ -41,6 +59,13 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down HF Agent backend...")
+    if _background_worker_task is not None:
+        _background_worker_task.cancel()
+        try:
+            await _background_worker_task
+        except asyncio.CancelledError:
+            pass
+        _background_worker_task = None
     try:
         import kpis_scheduler
         await kpis_scheduler.shutdown()

@@ -33,6 +33,7 @@ from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, se
 
 import user_quotas
 
+from background_worker import background_workers_enabled
 from agent.core.hf_access import get_jobs_access
 from agent.core.hf_tokens import resolve_hf_request_token, resolve_hf_router_token
 from agent.core.llm_params import _resolve_llm_params
@@ -653,6 +654,8 @@ async def chat_sse(
 
     # Parse body
     body = await request.json()
+    if background_workers_enabled():
+        return await _chat_sse_background(session_id, request, user, agent_session, body)
 
     # Subscribe BEFORE submitting so we never miss events — even if the
     # agent loop processes the submission before this coroutine continues.
@@ -704,6 +707,92 @@ async def chat_sse(
         raise
 
     return _sse_response(broadcaster, event_queue, sub_id)
+
+
+async def _chat_sse_background(
+    session_id: str,
+    request: Request,
+    user: dict,
+    agent_session: AgentSession,
+    body: dict[str, Any],
+) -> StreamingResponse:
+    """Durably enqueue chat work and stream events from Mongo.
+
+    This is the Phase 3 path. It is opt-in so production can fall back to the
+    existing direct in-process execution path instantly.
+    """
+    store = session_manager._store()
+    if not getattr(store, "enabled", False):
+        raise HTTPException(
+            status_code=503,
+            detail="Background workers require Mongo session persistence",
+        )
+
+    text = body.get("text")
+    approvals = body.get("approvals")
+    if text is None and not approvals:
+        raise HTTPException(status_code=400, detail="Must provide 'text' or 'approvals'")
+
+    if text is not None and not approvals:
+        await _enforce_claude_quota(user, agent_session)
+        operation = {"type": "user_input", "payload": {"text": text}}
+    else:
+        formatted = [
+            {
+                "tool_call_id": a["tool_call_id"],
+                "approved": a["approved"],
+                "feedback": a.get("feedback"),
+                "edited_script": a.get("edited_script"),
+                "namespace": a.get("namespace"),
+            }
+            for a in approvals
+        ]
+        await _enforce_jobs_access_for_approvals(user, agent_session, formatted)
+        operation = {"type": "exec_approval", "payload": {"approvals": formatted}}
+
+    idempotency_key = (
+        request.headers.get("Idempotency-Key")
+        or request.headers.get("X-Idempotency-Key")
+        or body.get("idempotency_key")
+    )
+    after_seq = max(_last_event_seq(request), await store.latest_event_seq(session_id))
+    run = await store.enqueue_run(
+        session_id=session_id,
+        user_id=agent_session.user_id,
+        operation=operation,
+        idempotency_key=idempotency_key,
+        surface="space",
+    )
+    if not run:
+        raise HTTPException(
+            status_code=409,
+            detail="Session already has a queued or running operation",
+        )
+
+    broadcaster = await _wait_for_session_broadcaster(agent_session)
+    sub_id, event_queue = broadcaster.subscribe()
+    replay_events = await store.load_events_after(session_id, after_seq)
+    return _sse_response(
+        broadcaster,
+        event_queue,
+        sub_id,
+        replay_events=replay_events,
+        after_seq=after_seq,
+        poll_session_id=session_id,
+        poll_interval_seconds=0.5,
+    )
+
+
+async def _wait_for_session_broadcaster(agent_session: AgentSession):
+    deadline = asyncio.get_running_loop().time() + 5
+    while agent_session.broadcaster is None:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise HTTPException(
+                status_code=503,
+                detail="Session event broadcaster is not ready",
+            )
+        await asyncio.sleep(0.05)
+    return agent_session.broadcaster
 
 
 @router.post("/pro-click/{session_id}")
@@ -767,17 +856,23 @@ def _sse_response(
     *,
     replay_events: list[dict[str, Any]] | None = None,
     after_seq: int = 0,
+    poll_session_id: str | None = None,
+    poll_interval_seconds: float = 0.5,
 ) -> StreamingResponse:
     """Build a StreamingResponse that drains *event_queue* as SSE,
     sending keepalive comments every 15 s to prevent proxy timeouts."""
 
     async def event_generator():
+        last_seq = after_seq
+        last_keepalive = asyncio.get_running_loop().time()
         try:
             for doc in replay_events or []:
                 msg = _event_doc_to_msg(doc)
                 seq = msg.get("seq")
                 if isinstance(seq, int) and seq <= after_seq:
                     continue
+                if isinstance(seq, int):
+                    last_seq = max(last_seq, seq)
                 yield _format_sse(msg)
                 if msg.get("event_type", "") in _TERMINAL_EVENTS:
                     return
@@ -785,13 +880,44 @@ def _sse_response(
             while True:
                 try:
                     msg = await asyncio.wait_for(
-                        event_queue.get(), timeout=_SSE_KEEPALIVE_SECONDS
+                        event_queue.get(),
+                        timeout=(
+                            poll_interval_seconds
+                            if poll_session_id
+                            else _SSE_KEEPALIVE_SECONDS
+                        ),
                     )
                 except asyncio.TimeoutError:
+                    if poll_session_id:
+                        docs = await session_manager._store().load_events_after(
+                            poll_session_id,
+                            last_seq,
+                        )
+                        if docs:
+                            for doc in docs:
+                                msg = _event_doc_to_msg(doc)
+                                seq = msg.get("seq")
+                                if isinstance(seq, int):
+                                    if seq <= last_seq:
+                                        continue
+                                    last_seq = seq
+                                yield _format_sse(msg)
+                                if msg.get("event_type", "") in _TERMINAL_EVENTS:
+                                    return
+                            continue
+
+                        now = asyncio.get_running_loop().time()
+                        if now - last_keepalive < _SSE_KEEPALIVE_SECONDS:
+                            continue
+                        last_keepalive = now
+
                     # SSE comment — ignored by parsers, keeps connection alive
                     yield ": keepalive\n\n"
                     continue
                 event_type = msg.get("event_type", "")
+                seq = msg.get("seq")
+                if isinstance(seq, int):
+                    last_seq = max(last_seq, seq)
                 yield _format_sse(msg)
                 if event_type in _TERMINAL_EVENTS:
                     break
@@ -826,7 +952,7 @@ async def subscribe_events(
 
     after_seq = _last_event_seq(request)
     replay_events = await session_manager._store().load_events_after(session_id, after_seq)
-    broadcaster = agent_session.broadcaster
+    broadcaster = await _wait_for_session_broadcaster(agent_session)
     sub_id, event_queue = broadcaster.subscribe()
     return _sse_response(
         broadcaster,
@@ -834,6 +960,7 @@ async def subscribe_events(
         sub_id,
         replay_events=replay_events,
         after_seq=after_seq,
+        poll_session_id=session_id if background_workers_enabled() else None,
     )
 
 

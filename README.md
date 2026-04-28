@@ -108,6 +108,9 @@ JSON file:
 
 ## Architecture
 
+For the planned Space background-worker architecture, see
+[`docs/phase-3-space-background-workers.md`](docs/phase-3-space-background-workers.md).
+
 ### Component Overview
 
 ```
