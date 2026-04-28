@@ -277,6 +277,44 @@ async def record_pro_cta_click(
         logger.debug("record_pro_cta_click failed (non-fatal): %s", e)
 
 
+async def record_pro_conversion(
+    session: Any,
+    *,
+    first_seen_at: str | None = None,
+) -> None:
+    """Emit a ``pro_conversion`` event for a user we've previously observed
+    as non-Pro and now see as Pro for the first time. Detected upstream in
+    ``MongoSessionStore.mark_pro_seen``; fired into the user's first Pro
+    session so the rollup picks it up alongside other event-driven KPIs."""
+    from agent.core.session import Event
+    try:
+        await session.send_event(Event(
+            event_type="pro_conversion",
+            data={"first_seen_at": first_seen_at},
+        ))
+    except Exception as e:
+        logger.debug("record_pro_conversion failed (non-fatal): %s", e)
+
+
+async def record_credits_topped_up(
+    session: Any,
+    *,
+    namespace: str | None = None,
+) -> None:
+    """Emit a ``credits_topped_up`` event when an hf_job submits successfully
+    in a session that previously hit ``jobs_access_blocked`` — i.e. the user
+    came back from the HF billing top-up flow and unblocked themselves.
+    Caller is responsible for firing this at most once per session."""
+    from agent.core.session import Event
+    try:
+        await session.send_event(Event(
+            event_type="credits_topped_up",
+            data={"namespace": namespace},
+        ))
+    except Exception as e:
+        logger.debug("record_credits_topped_up failed (non-fatal): %s", e)
+
+
 # ── heartbeat ──────────────────────────────────────────────────────────────
 
 # Module-level reference set for fire-and-forget heartbeat tasks. asyncio only

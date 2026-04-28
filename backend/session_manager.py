@@ -465,6 +465,7 @@ class SessionManager:
         user_id: str = "dev",
         hf_token: str | None = None,
         model: str | None = None,
+        is_pro: bool | None = None,
     ) -> str:
         """Create a new agent session and return its ID.
 
@@ -534,8 +535,35 @@ class SessionManager:
         )
         await self.persist_session_snapshot(agent_session, runtime_state="idle")
 
+        if is_pro is not None and user_id and user_id != "dev":
+            await self._track_pro_status(agent_session, is_pro=is_pro)
+
         logger.info(f"Created session {session_id} for user {user_id}")
         return session_id
+
+    async def _track_pro_status(self, agent_session: AgentSession, *, is_pro: bool) -> None:
+        """Update Mongo per-user Pro state and emit a one-shot conversion
+        event if the store reports a free→Pro transition. Best-effort: any
+        Mongo failure is swallowed so we never fail session creation on
+        telemetry."""
+        store = self._store()
+        if not getattr(store, "enabled", False):
+            return
+        try:
+            result = await store.mark_pro_seen(agent_session.user_id, is_pro=is_pro)
+        except Exception as e:
+            logger.debug("mark_pro_seen failed: %s", e)
+            return
+        if not result or not result.get("converted"):
+            return
+        try:
+            from agent.core import telemetry
+            await telemetry.record_pro_conversion(
+                agent_session.session,
+                first_seen_at=result.get("first_seen_at"),
+            )
+        except Exception as e:
+            logger.debug("record_pro_conversion failed: %s", e)
 
     async def seed_from_summary(self, session_id: str, messages: list[dict]) -> int:
         """Rehydrate a session from cached prior messages via summarization.

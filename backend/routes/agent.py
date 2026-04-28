@@ -334,7 +334,10 @@ async def create_session(
 
     try:
         session_id = await session_manager.create_session(
-            user_id=user["user_id"], hf_token=hf_token, model=model
+            user_id=user["user_id"],
+            hf_token=hf_token,
+            model=model,
+            is_pro=user.get("plan") == "pro",
         )
     except SessionCapacityError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -370,7 +373,10 @@ async def restore_session_summary(
 
     try:
         session_id = await session_manager.create_session(
-            user_id=user["user_id"], hf_token=hf_token, model=model
+            user_id=user["user_id"],
+            hf_token=hf_token,
+            model=model,
+            is_pro=user.get("plan") == "pro",
         )
     except SessionCapacityError as e:
         raise HTTPException(status_code=503, detail=str(e))

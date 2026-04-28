@@ -641,6 +641,23 @@ class HfJobsTool:
                     {**args, "hardware_flavor": flavor, "timeout": timeout_str, "namespace": self.namespace},
                     image=image, job_type=job_type,
                 )
+                # Top-up signal: this submit succeeded after a prior billing
+                # block in the same session, and we haven't fired the event
+                # yet — the user came back from the HF billing flow.
+                events = self.session.logged_events
+                already_fired = any(
+                    e.get("event_type") == "credits_topped_up" for e in events
+                )
+                if not already_fired:
+                    blocked = any(
+                        e.get("event_type") == "tool_state_change"
+                        and (e.get("data") or {}).get("state") == "billing_required"
+                        for e in events
+                    )
+                    if blocked:
+                        await telemetry.record_credits_topped_up(
+                            self.session, namespace=self.namespace,
+                        )
 
             # Wait for completion and stream logs
             logger.info(f"{job_type} job started: {job.url}")
