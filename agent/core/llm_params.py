@@ -5,6 +5,8 @@ can import it without pulling in the whole agent loop / tool router and
 creating circular imports.
 """
 
+import os
+
 from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
 
 
