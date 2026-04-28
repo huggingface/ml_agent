@@ -17,7 +17,7 @@ import httpx
 from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
 
-from agent.core.hf_access import JobsAccessError, resolve_jobs_namespace
+from agent.core.hf_access import JobsAccessError, is_billing_error, resolve_jobs_namespace
 from agent.core.session import Event
 from agent.tools.trackio_seed import ensure_trackio_dashboard
 from agent.tools.types import ToolResult
@@ -572,16 +572,45 @@ class HfJobsTool:
             if trackio_project:
                 env_dict["TRACKIO_PROJECT"] = trackio_project
 
-            job = await _async_call(
-                self.api.run_job,
-                image=image,
-                command=command,
-                env=env_dict,
-                secrets=_add_environment_variables(args.get("secrets"), self.hf_token),
-                flavor=flavor,
-                timeout=timeout_str,
-                namespace=self.namespace,
-            )
+            try:
+                job = await _async_call(
+                    self.api.run_job,
+                    image=image,
+                    command=command,
+                    env=env_dict,
+                    secrets=_add_environment_variables(args.get("secrets"), self.hf_token),
+                    flavor=flavor,
+                    timeout=timeout_str,
+                    namespace=self.namespace,
+                )
+            except HfHubHTTPError as e:
+                if is_billing_error(str(e)):
+                    if self.session and self.tool_call_id:
+                        await self.session.send_event(
+                            Event(
+                                event_type="tool_state_change",
+                                data={
+                                    "tool_call_id": self.tool_call_id,
+                                    "tool": "hf_jobs",
+                                    "state": "billing_required",
+                                    "namespace": self.namespace,
+                                },
+                            )
+                        )
+                    return {
+                        "formatted": (
+                            f"Hugging Face Jobs rejected this run because the "
+                            f"namespace `{self.namespace}` has no available credits. "
+                            "Tell the user to add credits at "
+                            "https://huggingface.co/settings/billing — once topped up, "
+                            "re-run this same job. (Switching namespaces is fine if "
+                            "another wallet has credits.)"
+                        ),
+                        "totalResults": 0,
+                        "resultsShared": 0,
+                        "isError": True,
+                    }
+                raise
 
             # Track job ID for cancellation on interrupt
             if self.session:
@@ -1129,9 +1158,9 @@ HF_JOBS_TOOL_SPEC = {
             "namespace": {
                 "type": "string",
                 "description": (
-                    "Optional namespace to run the job under. Must be your own Pro account "
-                    "or a paid org you belong to. If omitted, the tool prefers your personal "
-                    "account when eligible, otherwise the first eligible paid org."
+                    "Optional namespace to run the job under. Must be the caller's own "
+                    "account or an org they belong to. If omitted, defaults to the "
+                    "caller's personal account. Credits are billed against this namespace."
                 ),
             },
             "job_id": {

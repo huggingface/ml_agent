@@ -397,32 +397,6 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         }
         return;
       }
-      if (error.message === 'HF_JOBS_UPGRADE_REQUIRED') {
-        const typed = error as Error & {
-          detail?: Record<string, unknown>;
-          approvals?: Array<{
-            tool_call_id: string;
-            approved: boolean;
-            feedback?: string | null;
-            edited_script?: string | null;
-          }>;
-        };
-        void hydrateFromBackend();
-        if (isActiveRef.current) {
-          useAgentStore.getState().setJobsUpgradeRequired({
-            approvals: typed.approvals || [],
-            toolCallIds: (typed.detail?.tool_call_ids as string[]) || [],
-            message: String(
-              typed.detail?.message
-                || 'Hugging Face Jobs are available only to Pro users and Team or Enterprise organizations.',
-            ),
-            eligibleNamespaces: (typed.detail?.eligible_namespaces as string[]) || [],
-            plan: ((typed.detail?.plan as 'free' | 'pro' | 'org') || 'free'),
-            mode: 'upgrade',
-          });
-        }
-        return;
-      }
       if (error.message === 'HF_JOBS_NAMESPACE_REQUIRED') {
         const typed = error as Error & {
           detail?: Record<string, unknown>;
@@ -439,9 +413,8 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
           useAgentStore.getState().setJobsUpgradeRequired({
             approvals: typed.approvals || [],
             toolCallIds: (typed.detail?.tool_call_ids as string[]) || [],
-            message: String(typed.detail?.message || 'Choose which organization should own this job run.'),
+            message: String(typed.detail?.message || 'Pick the wallet for this run.'),
             eligibleNamespaces: (typed.detail?.eligible_namespaces as string[]) || [],
-            plan: ((typed.detail?.plan as 'free' | 'pro' | 'org') || 'free'),
             mode: 'namespace',
           });
         }
@@ -466,9 +439,8 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
           useAgentStore.getState().setJobsUpgradeRequired({
             approvals: typed.approvals || [],
             toolCallIds: (typed.detail?.tool_call_ids as string[]) || [],
-            message: String(typed.detail?.message || 'Pick a different organization for this job run.'),
+            message: String(typed.detail?.message || 'Pick a different namespace for this run.'),
             eligibleNamespaces: (typed.detail?.eligible_namespaces as string[]) || [],
-            plan: ((typed.detail?.plan as 'free' | 'pro' | 'org') || 'free'),
             mode: 'namespace',
           });
         }

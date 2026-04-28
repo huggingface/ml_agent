@@ -277,6 +277,18 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           if (state === 'cancelled') {
             controller.enqueue({ type: 'tool-output-error', toolCallId: tcId, errorText: 'Cancelled by user', dynamic: true });
           }
+          if (state === 'billing_required') {
+            const namespace = (event.data?.namespace as string) || '';
+            useAgentStore.getState().setJobsUpgradeRequired({
+              approvals: [],
+              toolCallIds: tcId ? [tcId] : [],
+              message: namespace
+                ? `Hugging Face Jobs need credits on the "${namespace}" namespace. Add some, then re-run the same job — the agent will pick it back up.`
+                : 'Hugging Face Jobs need credits on this namespace. Add some, then re-run the same job — the agent will pick it back up.',
+              eligibleNamespaces: namespace ? [namespace] : [],
+              mode: 'billing',
+            });
+          }
           break;
         }
 
@@ -406,18 +418,6 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       // for useAgentChat's onError handler, which surfaces the cap dialog
       // instead of a generic error banner.
       throw new Error('CLAUDE_QUOTA_EXHAUSTED');
-    }
-    if (response.status === 402) {
-      const payload = await response.json().catch(() => null);
-      if (payload?.detail?.error === 'hf_jobs_upgrade_required') {
-        const err = new Error('HF_JOBS_UPGRADE_REQUIRED') as Error & {
-          detail?: Record<string, unknown>;
-          approvals?: Array<Record<string, unknown>>;
-        };
-        err.detail = payload.detail as Record<string, unknown>;
-        err.approvals = (body.approvals as Array<Record<string, unknown>> | undefined) || [];
-        throw err;
-      }
     }
     if (response.status === 409) {
       const payload = await response.json().catch(() => null);

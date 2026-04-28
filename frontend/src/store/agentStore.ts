@@ -56,8 +56,7 @@ export interface JobsUpgradeState {
   toolCallIds: string[];
   message: string;
   eligibleNamespaces: string[];
-  plan: 'free' | 'pro' | 'org';
-  mode: 'upgrade' | 'namespace';
+  mode: 'namespace' | 'billing';
 }
 
 export type ActivityStatus =

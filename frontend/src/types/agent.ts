@@ -35,5 +35,4 @@ export interface User {
   username?: string;
   name?: string;
   picture?: string;
-  orgMember?: boolean;
 }

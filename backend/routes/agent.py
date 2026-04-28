@@ -144,7 +144,18 @@ async def _enforce_jobs_access_for_approvals(
     agent_session: AgentSession,
     approvals: list[dict[str, Any]],
 ) -> None:
-    """Block approved hf_jobs tool calls when the user has no eligible jobs namespace."""
+    """Validate the namespace attached to each approved hf_jobs call.
+
+    HF Jobs is no longer plan-gated — any namespace the caller belongs to
+    is fair game, with credits checked on the HF side at job-creation time.
+    What we still enforce here:
+
+    1. If the caller picked a namespace, it must be in their eligible set
+       (otherwise the saved preference is stale → 400 so the picker reopens).
+    2. If they have multiple eligible namespaces and didn't pick one, the
+       UI prompts them to choose (409). Single-namespace users default to
+       their personal account silently.
+    """
     pending = agent_session.session.pending_approval or {}
     tool_calls = pending.get("tool_calls") or []
     if not tool_calls:
@@ -174,32 +185,30 @@ async def _enforce_jobs_access_for_approvals(
         return
 
     approval_map = {a.get("tool_call_id"): a for a in approvals}
-    if access.personal_can_run_jobs:
-        return
 
-    if access.paid_org_names:
-        invalid_namespace = [
-            tool_call_id
-            for tool_call_id in hf_job_ids
-            if (
-                approval_map.get(tool_call_id, {}).get("namespace")
-                and approval_map.get(tool_call_id, {}).get("namespace") not in access.paid_org_names
-            )
-        ]
-        if invalid_namespace:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "hf_jobs_invalid_namespace",
-                    "message": (
-                        "The selected jobs namespace is not one of your eligible paid organizations. "
-                        f"Allowed namespaces: {', '.join(access.paid_org_names)}"
-                    ),
-                    "plan": user.get("plan", "free"),
-                    "tool_call_ids": invalid_namespace,
-                    "eligible_namespaces": access.paid_org_names,
-                },
-            )
+    invalid_namespace = [
+        tool_call_id
+        for tool_call_id in hf_job_ids
+        if (
+            approval_map.get(tool_call_id, {}).get("namespace")
+            and approval_map.get(tool_call_id, {}).get("namespace") not in access.eligible_namespaces
+        )
+    ]
+    if invalid_namespace:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "hf_jobs_invalid_namespace",
+                "message": (
+                    "The selected jobs namespace is no longer one you belong to. "
+                    f"Pick one of: {', '.join(access.eligible_namespaces) or '(none)'}"
+                ),
+                "tool_call_ids": invalid_namespace,
+                "eligible_namespaces": access.eligible_namespaces,
+            },
+        )
+
+    if len(access.eligible_namespaces) > 1:
         missing_namespace = [
             tool_call_id
             for tool_call_id in hf_job_ids
@@ -210,35 +219,11 @@ async def _enforce_jobs_access_for_approvals(
                 status_code=409,
                 detail={
                     "error": "hf_jobs_namespace_required",
-                    "message": "Choose which paid organization should own this job run.",
-                    "plan": user.get("plan", "free"),
+                    "message": "Pick which account or organization should own this job run.",
                     "tool_call_ids": missing_namespace,
-                    "eligible_namespaces": access.paid_org_names,
+                    "eligible_namespaces": access.eligible_namespaces,
                 },
             )
-        return
-
-    from agent.core import telemetry
-    await telemetry.record_jobs_access_blocked(
-        agent_session.session,
-        tool_call_ids=hf_job_ids,
-        plan=user.get("plan", "free"),
-        eligible_namespaces=access.eligible_namespaces,
-    )
-
-    raise HTTPException(
-        status_code=402,
-        detail={
-            "error": "hf_jobs_upgrade_required",
-            "message": (
-                "Hugging Face Jobs are available only to Pro users and Team or Enterprise organizations. "
-                "Upgrade to Pro, or decline the job tool call so the agent can choose another path."
-            ),
-            "plan": user.get("plan", "free"),
-            "tool_call_ids": hf_job_ids,
-            "eligible_namespaces": access.eligible_namespaces,
-        },
-    )
 
 
 async def _check_session_access(
@@ -573,15 +558,19 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
 
 @router.get("/user/jobs-access")
 async def get_jobs_access_info(request: Request, user: dict = Depends(get_current_user)) -> dict:
-    """Return whether the current token can run HF Jobs and under which namespaces."""
+    """Return the namespaces the current token can run HF Jobs under.
+
+    Credits are enforced by the HF API at job-creation time, not here —
+    the response only describes which wallets the caller is allowed to
+    pick from. Pro is irrelevant.
+    """
     token = resolve_hf_request_token(request)
 
     access = await get_jobs_access(token or "")
     return {
-        "plan": user.get("plan", "free"),
-        "can_run_jobs": bool(access and (access.personal_can_run_jobs or access.paid_org_names)),
         "eligible_namespaces": access.eligible_namespaces if access else [],
         "default_namespace": access.default_namespace if access else None,
+        "billing_url": "https://huggingface.co/settings/billing",
     }
 
 

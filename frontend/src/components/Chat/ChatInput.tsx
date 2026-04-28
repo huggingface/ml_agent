@@ -223,7 +223,7 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
     try {
       await apiFetch(`/api/pro-click/${sessionId}`, {
         method: 'POST',
-        body: JSON.stringify({ source: 'hf_jobs_upgrade_dialog', target: 'pro_pricing' }),
+        body: JSON.stringify({ source: 'hf_jobs_billing_dialog', target: 'hf_billing' }),
       });
     } catch {
       /* tracking is best-effort */
@@ -482,7 +482,7 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
         />
         <JobsUpgradeDialog
           open={!!jobsUpgradeRequired}
-          mode={jobsUpgradeRequired?.mode || 'upgrade'}
+          mode={jobsUpgradeRequired?.mode || 'namespace'}
           message={jobsUpgradeRequired?.message || ''}
           eligibleNamespaces={jobsUpgradeRequired?.eligibleNamespaces || []}
           onClose={handleJobsUpgradeClose}
