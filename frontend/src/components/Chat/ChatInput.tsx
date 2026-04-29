@@ -20,6 +20,13 @@ interface ModelOption {
   recommended?: boolean;
 }
 
+interface BackendModelOption {
+  id: string;
+  label?: string;
+  provider?: string;
+  recommended?: boolean;
+}
+
 const getHfAvatarUrl = (modelId: string) => {
   const org = modelId.split('/')[0];
   return `https://huggingface.co/api/avatars/${org}`;
@@ -62,6 +69,37 @@ const findModelByPath = (path: string, options: ModelOption[]): ModelOption | un
   return options.find(m => m.modelPath === path || path?.includes(m.id));
 };
 
+const optionFromBackend = (model: BackendModelOption, existing?: ModelOption): ModelOption => {
+  const isClaude = model.provider === 'anthropic' || isClaudePath(model.id);
+  return {
+    id: existing?.id ?? model.id,
+    name: model.label ?? existing?.name ?? model.id.split('/').pop() ?? model.id,
+    description: existing?.description ?? (isClaude ? 'Anthropic' : 'Hugging Face'),
+    modelPath: model.id,
+    avatarUrl: existing?.avatarUrl ?? (isClaude
+      ? 'https://huggingface.co/api/avatars/Anthropic'
+      : getHfAvatarUrl(model.id)),
+    recommended: model.recommended ?? existing?.recommended,
+  };
+};
+
+const mergeBackendModels = (models: BackendModelOption[], fallback: ModelOption[]): ModelOption[] => {
+  const next = models
+    .filter((model) => !!model.id)
+    .map((model) => {
+      const existing = model.provider === 'anthropic'
+        ? fallback.find((option) => isClaudePath(option.modelPath))
+        : findModelByPath(model.id, fallback);
+      return optionFromBackend(model, existing);
+    });
+  for (const option of fallback) {
+    if (!next.some((model) => model.modelPath === option.modelPath)) {
+      next.push(option);
+    }
+  }
+  return next;
+};
+
 interface ChatInputProps {
   sessionId?: string;
   onSend: (text: string) => void;
@@ -99,23 +137,12 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (cancelled || !data?.available) return;
-        const claude = data.available.find((m: { provider?: string; id?: string }) => (
-          m.provider === 'anthropic' && m.id
-        ));
-        if (!claude?.id) return;
-
-        setModelOptions((options) => {
-          const next = options.map((option) => (
-            isClaudeModel(option)
-              ? { ...option, modelPath: claude.id, name: claude.label ?? option.name }
-              : option
-          ));
-          if (data.current) {
-            const current = findModelByPath(data.current, next);
-            if (current) setSelectedModelId(current.id);
-          }
-          return next;
-        });
+        const next = mergeBackendModels(data.available, DEFAULT_MODEL_OPTIONS);
+        setModelOptions(next);
+        if (data.current) {
+          const current = findModelByPath(data.current, next);
+          if (current) setSelectedModelId(current.id);
+        }
       })
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };

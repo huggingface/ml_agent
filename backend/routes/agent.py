@@ -44,43 +44,66 @@ router = APIRouter(prefix="/api", tags=["agent"])
 BEDROCK_CLAUDE_MODEL_ID = "bedrock/us.anthropic.claude-opus-4-6-v1"
 
 
-def _default_claude_model_id() -> str:
+def _claude_picker_model_id() -> str:
+    """Resolve the model sent by the Claude menu entry.
+
+    ``ML_INTERN_MODEL_ID`` controls the default session model and may point to
+    non-Claude HF Router models for local testing. Only reuse it for the Claude
+    picker when it is actually an Anthropic/Bedrock Claude model.
+    """
     default_model = session_manager.config.model_name
     if "anthropic" in default_model:
         return default_model
     return BEDROCK_CLAUDE_MODEL_ID
 
 
-DEFAULT_CLAUDE_MODEL_ID = _default_claude_model_id()
+def _default_model_option(model_id: str) -> dict[str, Any]:
+    provider = "anthropic" if "anthropic" in model_id else "huggingface"
+    return {
+        "id": model_id,
+        "label": model_id.split("/")[-1],
+        "provider": provider,
+        "tier": "pro" if provider == "anthropic" else "free",
+        "recommended": True,
+    }
 
-AVAILABLE_MODELS = [
-    {
-        "id": "moonshotai/Kimi-K2.6",
-        "label": "Kimi K2.6",
-        "provider": "huggingface",
-        "tier": "free",
-        "recommended": True,
-    },
-    {
-        "id": DEFAULT_CLAUDE_MODEL_ID,
-        "label": "Claude Opus 4.6",
-        "provider": "anthropic",
-        "tier": "pro",
-        "recommended": True,
-    },
-    {
-        "id": "MiniMaxAI/MiniMax-M2.7",
-        "label": "MiniMax M2.7",
-        "provider": "huggingface",
-        "tier": "free",
-    },
-    {
-        "id": "zai-org/GLM-5.1",
-        "label": "GLM 5.1",
-        "provider": "huggingface",
-        "tier": "free",
-    },
-]
+
+def _available_models() -> list[dict[str, Any]]:
+    models = [
+        {
+            "id": "moonshotai/Kimi-K2.6",
+            "label": "Kimi K2.6",
+            "provider": "huggingface",
+            "tier": "free",
+            "recommended": True,
+        },
+        {
+            "id": _claude_picker_model_id(),
+            "label": "Claude Opus 4.6",
+            "provider": "anthropic",
+            "tier": "pro",
+            "recommended": True,
+        },
+        {
+            "id": "MiniMaxAI/MiniMax-M2.7",
+            "label": "MiniMax M2.7",
+            "provider": "huggingface",
+            "tier": "free",
+        },
+        {
+            "id": "zai-org/GLM-5.1",
+            "label": "GLM 5.1",
+            "provider": "huggingface",
+            "tier": "free",
+        },
+    ]
+    default_model = session_manager.config.model_name
+    if default_model not in {model["id"] for model in models}:
+        models.insert(0, _default_model_option(default_model))
+    return models
+
+
+AVAILABLE_MODELS = _available_models()
 
 
 def _is_anthropic_model(model_id: str) -> bool:

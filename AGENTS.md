@@ -13,4 +13,4 @@ Notes:
 - Vite proxies `/api` and `/auth` to `http://localhost:7860`.
 - If `127.0.0.1:7860` is already owned by another local process, binding the backend to `::1` lets the Vite proxy resolve `localhost` cleanly.
 - Prefer `npm ci` over `npm install` for setup, since `npm install` may rewrite `frontend/package-lock.json` metadata depending on npm version.
-- Production defaults to the Bedrock Claude model. For local development with a personal Anthropic key, set `ANTHROPIC_API_KEY` and `ML_INTERN_MODEL_ID=anthropic/claude-opus-4-6` before starting the backend.
+- Production defaults to the Bedrock Claude model. For local development, set `ML_INTERN_MODEL_ID` before starting the backend to test another default model, for example `anthropic/claude-opus-4-6` or `moonshotai/Kimi-K2.6`. Direct Anthropic models also require `ANTHROPIC_API_KEY`.
