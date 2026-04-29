@@ -1108,6 +1108,14 @@ class Handlers:
                     ) -> tuple[ToolCall, str, dict, str, bool]:
                         if not valid:
                             return (tc, name, args, err, False)
+                        # Emit "running" immediately so the CLI/frontend shows
+                        # progress instead of going silent (fixes issue #127).
+                        await session.send_event(
+                            Event(
+                                event_type="tool_state_change",
+                                data={"tool_call_id": tc.id, "tool": name, "state": "running"},
+                            )
+                        )
                         out, ok = await session.tool_router.call_tool(
                             name, args, session=session, tool_call_id=tc.id
                         )

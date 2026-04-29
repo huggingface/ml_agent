@@ -3,10 +3,17 @@ Tool system for the agent
 Provides ToolSpec and ToolRouter for managing both built-in and MCP tools
 """
 
+import asyncio
 import logging
 import warnings
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
+
+# Timeout (seconds) for a single MCP tool call.
+# hub_repo_details fetches model-card + siblings list from huggingface.co/api
+# which can stall indefinitely on slow Hub responses.  30 s is generous but
+# prevents the agent from silently hanging for 5+ minutes.
+MCP_TOOL_TIMEOUT = 30
 
 logger = logging.getLogger(__name__)
 
@@ -265,9 +272,21 @@ class ToolRouter:
         # Otherwise, use MCP client
         if self._mcp_initialized:
             try:
-                result = await self.mcp_client.call_tool(tool_name, arguments)
+                result = await asyncio.wait_for(
+                    self.mcp_client.call_tool(tool_name, arguments),
+                    timeout=MCP_TOOL_TIMEOUT,
+                )
                 output = convert_mcp_content_to_string(result.content)
                 return output, not result.is_error
+            except asyncio.TimeoutError:
+                timeout_msg = (
+                    f"Tool '{tool_name}' timed out after {MCP_TOOL_TIMEOUT}s "
+                    "with no response from the HF MCP server. "
+                    "The Hub API may be slow or rate-limiting. "
+                    "You can retry, or proceed with the information already available."
+                )
+                logger.warning("MCP tool %s timed out after %ds", tool_name, MCP_TOOL_TIMEOUT)
+                return timeout_msg, False
             except ToolError as e:
                 # Catch MCP tool errors and return them to the agent
                 error_msg = f"Tool error: {str(e)}"
