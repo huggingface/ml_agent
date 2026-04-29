@@ -22,6 +22,17 @@ def test_bedrock_anthropic_research_model_stays_on_bedrock():
     )
 
 
+def test_bedrock_research_model_inherits_main_region_prefix():
+    assert (
+        _get_research_model("bedrock/global.anthropic.claude-opus-4-7")
+        == "bedrock/global.anthropic.claude-sonnet-4-6"
+    )
+    assert (
+        _get_research_model("bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0")
+        == "bedrock/apac.anthropic.claude-sonnet-4-6"
+    )
+
+
 def test_non_anthropic_research_model_is_unchanged():
     assert _get_research_model("openai/gpt-5.4") == "openai/gpt-5.4"
 
