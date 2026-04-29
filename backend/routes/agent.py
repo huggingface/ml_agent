@@ -71,6 +71,12 @@ def _available_models() -> list[dict[str, Any]]:
             "recommended": True,
         },
         {
+            "id": "openai/gpt-5.5",
+            "label": "GPT-5.5",
+            "provider": "openai",
+            "tier": "pro",
+        },
+        {
             "id": "MiniMaxAI/MiniMax-M2.7",
             "label": "MiniMax M2.7",
             "provider": "huggingface",
