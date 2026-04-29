@@ -80,3 +80,22 @@ async def test_premium_quota_charges_gpt55(monkeypatch):
     assert agent_session.claude_counted is True
     assert persisted == [agent_session]
     assert await agent.user_quotas.get_claude_used_today("u1") == 1
+
+
+@pytest.mark.asyncio
+async def test_user_quota_response_uses_premium_fields_only(monkeypatch):
+    async def fake_get_used_today(user_id):
+        assert user_id == "u1"
+        return 2
+
+    monkeypatch.setattr(agent.user_quotas, "get_claude_used_today", fake_get_used_today)
+    monkeypatch.setattr(agent.user_quotas, "daily_cap_for", lambda plan: 5)
+
+    response = await agent.get_user_quota({"user_id": "u1", "plan": "pro"})
+
+    assert response == {
+        "plan": "pro",
+        "premium_used_today": 2,
+        "premium_daily_cap": 5,
+        "premium_remaining": 3,
+    }

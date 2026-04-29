@@ -501,10 +501,6 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
         "premium_used_today": used,
         "premium_daily_cap": cap,
         "premium_remaining": remaining,
-        # Backward-compatible aliases for the existing frontend and clients.
-        "claude_used_today": used,
-        "claude_daily_cap": cap,
-        "claude_remaining": remaining,
     }
 
 

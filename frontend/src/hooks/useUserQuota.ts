@@ -13,9 +13,9 @@ export type PlanTier = 'free' | 'pro' | 'org';
 
 export interface UserQuota {
   plan: PlanTier;
-  claudeUsedToday: number;
-  claudeDailyCap: number;
-  claudeRemaining: number;
+  premiumUsedToday: number;
+  premiumDailyCap: number;
+  premiumRemaining: number;
 }
 
 export function useUserQuota() {
@@ -32,9 +32,9 @@ export function useUserQuota() {
       const data = await res.json();
       setQuota({
         plan: (data.plan ?? 'free') as PlanTier,
-        claudeUsedToday: data.premium_used_today ?? data.claude_used_today ?? 0,
-        claudeDailyCap: data.premium_daily_cap ?? data.claude_daily_cap ?? 1,
-        claudeRemaining: data.premium_remaining ?? data.claude_remaining ?? 0,
+        premiumUsedToday: data.premium_used_today ?? 0,
+        premiumDailyCap: data.premium_daily_cap ?? 1,
+        premiumRemaining: data.premium_remaining ?? 0,
       });
     } catch {
       /* backend unreachable — leave previous value */

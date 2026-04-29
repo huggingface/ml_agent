@@ -309,11 +309,11 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   // Hide the chip until the user has actually burned quota; opening a
   // premium-model session without sending should not populate a counter.
   const premiumChip = (() => {
-    if (!quota || quota.claudeUsedToday === 0) return null;
+    if (!quota || quota.premiumUsedToday === 0) return null;
     if (quota.plan === 'free') {
-      return quota.claudeRemaining > 0 ? 'Free today' : 'Pro only';
+      return quota.premiumRemaining > 0 ? 'Free today' : 'Pro only';
     }
-    return `${quota.claudeUsedToday}/${quota.claudeDailyCap} today`;
+    return `${quota.premiumUsedToday}/${quota.premiumDailyCap} today`;
   })();
 
   return (
@@ -541,7 +541,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         <ClaudeCapDialog
           open={claudeQuotaExhausted}
           plan={quota?.plan ?? 'free'}
-          cap={quota?.claudeDailyCap ?? 1}
+          cap={quota?.premiumDailyCap ?? 1}
           onClose={handleCapDialogClose}
           onUseFreeModel={handleUseFreeModel}
           onUpgrade={handlePremiumUpgradeClick}
