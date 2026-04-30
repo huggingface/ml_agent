@@ -2,8 +2,8 @@
   "model_name": "anthropic/claude-opus-4-6",
   "save_sessions": true,
   "session_dataset_repo": "smolagents/ml-intern-sessions",
-  "yolo_mode": false,
-  "confirm_cpu_jobs": true,
+  "yolo_mode": true,
+  "confirm_cpu_jobs": false,
   "auto_file_upload": true,
   "messaging": {
     "enabled": false,
