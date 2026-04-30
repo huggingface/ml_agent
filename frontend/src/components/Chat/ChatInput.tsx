@@ -69,6 +69,13 @@ const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
     modelPath: 'zai-org/GLM-5.1',
     avatarUrl: getHfAvatarUrl('zai-org/GLM-5.1'),
   },
+  {
+    id: 'deepseek-v4-pro',
+    name: 'DeepSeek V4 Pro',
+    description: 'DeepInfra',
+    modelPath: 'deepseek-ai/DeepSeek-V4-Pro:deepinfra',
+    avatarUrl: getHfAvatarUrl('deepseek-ai/DeepSeek-V4-Pro'),
+  },
 ];
 
 const findModelByPath = (path: string, options: ModelOption[]): ModelOption | undefined => {

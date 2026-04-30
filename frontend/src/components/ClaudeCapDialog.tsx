@@ -62,8 +62,8 @@ export default function ClaudeCapDialog({
           sx={{ color: 'var(--muted-text)', fontSize: '0.85rem', lineHeight: 1.6 }}
         >
           Opus and GPT-5.5 are expensive to run, so we cap premium models at {cap}{' '}
-          {cap === 1 ? 'session' : 'sessions'} a day. Give Kimi, MiniMax, or GLM a spin
-          instead.
+          {cap === 1 ? 'session' : 'sessions'} a day. Give Kimi, MiniMax, GLM,
+          or DeepSeek a spin instead.
         </DialogContentText>
         <Box
           sx={{

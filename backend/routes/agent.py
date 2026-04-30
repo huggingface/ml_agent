@@ -94,6 +94,12 @@ def _available_models() -> list[dict[str, Any]]:
             "provider": "huggingface",
             "tier": "free",
         },
+        {
+            "id": "deepseek-ai/DeepSeek-V4-Pro:deepinfra",
+            "label": "DeepSeek V4 Pro",
+            "provider": "huggingface",
+            "tier": "free",
+        },
     ]
     return models
 
@@ -121,7 +127,8 @@ async def _require_hf_for_gated_model(request: Request, model_id: str) -> None:
                 "error": "premium_model_restricted",
                 "message": (
                     "Premium models are gated to HF staff. Pick a free model — "
-                    "Kimi K2.6, MiniMax M2.7, or GLM 5.1 — instead."
+                    "Kimi K2.6, MiniMax M2.7, GLM 5.1, or DeepSeek V4 Pro — "
+                    "instead."
                 ),
             },
         )
