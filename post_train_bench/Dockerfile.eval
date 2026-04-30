@@ -18,9 +18,11 @@ RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-RUN uv pip install --system --no-cache vllm==0.11.0 --torch-backend=auto
+RUN uv pip install --system --no-cache torch torchvision --index-url https://download.pytorch.org/whl/cu128
+RUN uv pip install --system --no-cache vllm==0.11.0
 RUN uv pip install --system --no-cache -r /opt/requirements-direct.txt
-RUN uv pip install --system --no-cache flash_attn==2.8.3 --no-build-isolation
+RUN uv pip install --system --no-cache wheel setuptools einops psutil && \
+    uv pip install --system --no-cache flash_attn==2.8.3 --no-build-isolation
 
 RUN mkdir -p /opt && \
     cd /opt && \
