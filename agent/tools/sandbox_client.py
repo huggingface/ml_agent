@@ -67,6 +67,7 @@ WAIT_TIMEOUT = 600
 WAIT_INTERVAL = 5
 API_WAIT_TIMEOUT = 180
 SANDBOX_API_TOKEN_HASH_ENV = "SANDBOX_API_TOKEN_SHA256"
+SANDBOX_API_TOKEN_HEADER = "X-Sandbox-API-Token"
 _ALLOWED_SANDBOX_VARIABLES = {"TRACKIO_SPACE_ID", "TRACKIO_PROJECT"}
 _FORBIDDEN_SANDBOX_VARIABLES = {
     "HF_TOKEN",
@@ -173,10 +174,12 @@ def _require_auth(request: Request) -> None:
     expected = _expected_api_token_hash()
     if not expected:
         raise HTTPException(status_code=503, detail="Sandbox API token not configured")
-    auth_header = request.headers.get("authorization", "")
-    scheme, _, supplied = auth_header.partition(" ")
-    if scheme.lower() != "bearer" or not supplied:
-        raise HTTPException(status_code=401, detail="Missing bearer token")
+    supplied = request.headers.get("x-sandbox-api-token", "")
+    if not supplied:
+        auth_header = request.headers.get("authorization", "")
+        scheme, _, supplied = auth_header.partition(" ")
+        if scheme.lower() != "bearer" or not supplied:
+            raise HTTPException(status_code=401, detail="Missing sandbox API token")
     supplied_hash = hashlib.sha256(supplied.encode("utf-8")).hexdigest()
     if not hmac.compare_digest(supplied_hash, expected):
         raise HTTPException(status_code=401, detail="Invalid bearer token")
@@ -532,8 +535,9 @@ class Sandbox:
     """
 
     space_id: str
-    token: str | None = None
+    token: str | None = field(default=None, repr=False)
     api_token: str | None = field(default=None, repr=False)
+    private: bool = True
     work_dir: str = "/app"
     timeout: int = DEFAULT_TIMEOUT
     _owns_space: bool = field(default=False, repr=False)
@@ -547,9 +551,14 @@ class Sandbox:
         # Trailing slash is critical: httpx resolves relative paths against base_url.
         # Without it, client.get("health") resolves to /health instead of /api/health.
         self._base_url = f"https://{slug}.hf.space/api/"
+        headers = {}
+        if self.private and self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.api_token:
+            headers[SANDBOX_API_TOKEN_HEADER] = self.api_token
         self._client = httpx.Client(
             base_url=self._base_url,
-            headers={"Authorization": f"Bearer {self.api_token}"} if self.api_token else {},
+            headers=headers,
             timeout=httpx.Timeout(MAX_TIMEOUT, connect=30),
             follow_redirects=True,
         )
@@ -568,7 +577,7 @@ class Sandbox:
         name: str | None = None,
         template: str = TEMPLATE_SPACE,
         hardware: str = "cpu-basic",
-        private: bool = False,
+        private: bool = True,
         sleep_time: int | None = None,
         token: str | None = None,
         secrets: dict[str, str] | None = None,
@@ -676,6 +685,7 @@ class Sandbox:
             space_id=space_id,
             token=token,
             api_token=sandbox_api_token,
+            private=private,
             _owns_space=True,
         )
         try:
@@ -714,6 +724,7 @@ class Sandbox:
         *,
         token: str | None = None,
         api_token: str | None = None,
+        private: bool = True,
     ) -> Sandbox:
         """
         Connect to an existing running Space.
@@ -726,6 +737,7 @@ class Sandbox:
             space_id=space_id,
             token=token,
             api_token=api_token,
+            private=private,
             _owns_space=False,
         )
         sb._wait_for_api(timeout=60)

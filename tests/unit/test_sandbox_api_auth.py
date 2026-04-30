@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from agent.tools.sandbox_client import (
     _SANDBOX_SERVER,
     _validate_sandbox_variables,
+    SANDBOX_API_TOKEN_HEADER,
     Sandbox,
 )
 
@@ -68,6 +69,34 @@ def test_file_and_command_routes_accept_valid_bearer_token(monkeypatch):
     assert response.json()["success"] is True
 
 
+def test_file_and_command_routes_accept_valid_sandbox_header(monkeypatch):
+    client = TestClient(_sandbox_app(monkeypatch, "sandbox-secret"))
+
+    response = client.post(
+        "/api/exists",
+        json={"path": "/tmp"},
+        headers={SANDBOX_API_TOKEN_HEADER: "sandbox-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+
+def test_sandbox_header_takes_precedence_over_authorization(monkeypatch):
+    client = TestClient(_sandbox_app(monkeypatch, "sandbox-secret"))
+
+    response = client.post(
+        "/api/exists",
+        json={"path": "/tmp"},
+        headers={
+            SANDBOX_API_TOKEN_HEADER: "wrong-secret",
+            "Authorization": "Bearer sandbox-secret",
+        },
+    )
+
+    assert response.status_code == 401
+
+
 def test_file_and_command_routes_reject_wrong_bearer_token(monkeypatch):
     client = TestClient(_sandbox_app(monkeypatch, "sandbox-secret"))
 
@@ -120,25 +149,40 @@ def test_protected_routes_fail_closed_without_configured_token(monkeypatch):
     assert response.status_code == 503
 
 
-def test_sandbox_prefers_control_plane_token_for_api_headers():
+def test_private_sandbox_uses_hf_auth_and_control_plane_header():
     sandbox = Sandbox("owner/name", token="hf-token", api_token="sandbox-secret")
 
-    assert sandbox._client.headers["authorization"] == "Bearer sandbox-secret"
+    assert sandbox._client.headers["authorization"] == "Bearer hf-token"
+    assert sandbox._client.headers["x-sandbox-api-token"] == "sandbox-secret"
+
+
+def test_public_sandbox_omits_hf_auth_header():
+    sandbox = Sandbox(
+        "owner/name",
+        token="hf-token",
+        api_token="sandbox-secret",
+        private=False,
+    )
+
+    assert "authorization" not in sandbox._client.headers
+    assert sandbox._client.headers["x-sandbox-api-token"] == "sandbox-secret"
 
 
 def test_sandbox_does_not_fallback_to_hf_token_for_api_headers():
     sandbox = Sandbox("owner/name", token="hf-token")
 
-    assert "authorization" not in sandbox._client.headers
+    assert sandbox._client.headers["authorization"] == "Bearer hf-token"
+    assert "x-sandbox-api-token" not in sandbox._client.headers
     result = sandbox._call("exists", {"path": "/tmp"})
     assert result.success is False
     assert "Sandbox API token is required" in result.error
 
 
-def test_sandbox_api_token_is_hidden_from_repr():
+def test_tokens_are_hidden_from_repr():
     sandbox = Sandbox("owner/name", token="hf-token", api_token="sandbox-secret")
 
     assert "sandbox-secret" not in repr(sandbox)
+    assert "hf-token" not in repr(sandbox)
 
 
 def test_sandbox_variables_allow_trackio_only():

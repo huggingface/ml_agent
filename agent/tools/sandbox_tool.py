@@ -314,10 +314,6 @@ SANDBOX_CREATE_TOOL_SPEC = {
                 "enum": [e.value for e in SpaceHardware],
                 "description": "Hardware tier for the sandbox (default: cpu-basic)",
             },
-            "private": {
-                "type": "boolean",
-                "description": "If true, create a private Space",
-            },
             "trackio_space_id": {
                 "type": "string",
                 "description": (
@@ -381,9 +377,7 @@ async def sandbox_create_handler(
             f"Use bash/read/write/edit to interact with it."
         ), True
 
-    create_kwargs: dict[str, Any] = {}
-    if "private" in args:
-        create_kwargs["private"] = args["private"]
+    create_kwargs: dict[str, Any] = {"private": True}
 
     extra_variables: dict[str, str] = {}
     if trackio_space_id:
