@@ -55,7 +55,7 @@ def test_live_sandbox_authenticated_agent_communication():
         )
         try:
             denied = unauthenticated.post("exists", json={"path": "/tmp"})
-            assert denied.status_code in {401, 403, 404}
+            assert denied.status_code in {401, 403, 404}  # HF private-Space edge may 404 to avoid leaking existence
         finally:
             unauthenticated.close()
 

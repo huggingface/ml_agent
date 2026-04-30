@@ -235,7 +235,7 @@ async def _ensure_sandbox(
     if extra_secrets:
         secrets.update({k: v for k, v in extra_secrets.items() if v})
 
-    create_kwargs["private"] = True
+    create_kwargs["private"] = True  # enforce: overrides any caller-supplied value
     kwargs = {
         "owner": owner,
         "hardware": hardware,
@@ -383,7 +383,7 @@ async def sandbox_create_handler(
             f"Use bash/read/write/edit to interact with it."
         ), True
 
-    create_kwargs: dict[str, Any] = {"private": True}
+    create_kwargs: dict[str, Any] = {}
 
     extra_secrets: dict[str, str] = {}
     if trackio_space_id:

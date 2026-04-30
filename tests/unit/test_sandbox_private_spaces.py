@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+from agent.core import telemetry
 from agent.tools import sandbox_client, sandbox_tool
 from agent.tools.sandbox_client import Sandbox
 from agent.tools.sandbox_tool import sandbox_create_handler
@@ -63,5 +64,53 @@ def test_sandbox_tool_forces_private_spaces(monkeypatch):
     )
 
     assert ok is True
-    assert captured_kwargs["private"] is True
+    assert "private" not in captured_kwargs
     assert "Visibility: private" in out
+
+
+def test_ensure_sandbox_overrides_private_argument(monkeypatch):
+    captured_kwargs = {}
+
+    class FakeApi:
+        def __init__(self, token=None):
+            self.token = token
+
+        def whoami(self):
+            return {"name": "alice"}
+
+    class FakeSession:
+        def __init__(self):
+            self.hf_token = "hf-token"
+            self.sandbox = None
+            self.event_queue = SimpleNamespace(put_nowait=lambda event: None)
+            self._cancelled = asyncio.Event()
+
+        async def send_event(self, event):
+            pass
+
+    def fake_create(**kwargs):
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(
+            space_id="alice/sandbox-12345678",
+            url="https://huggingface.co/spaces/alice/sandbox-12345678",
+        )
+
+    async def fake_record_sandbox_create(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(sandbox_tool, "HfApi", FakeApi)
+    monkeypatch.setattr(sandbox_tool, "_cleanup_user_orphan_sandboxes", lambda *args: 0)
+    monkeypatch.setattr(Sandbox, "create", staticmethod(fake_create))
+    monkeypatch.setattr(telemetry, "record_sandbox_create", fake_record_sandbox_create)
+    monkeypatch.setattr("huggingface_hub.metadata_update", lambda *args, **kwargs: None)
+
+    async def run():
+        session = FakeSession()
+        sb, error = await sandbox_tool._ensure_sandbox(session, private=False)
+        return sb, error
+
+    sb, error = asyncio.run(run())
+
+    assert error is None
+    assert sb is not None
+    assert captured_kwargs["private"] is True
