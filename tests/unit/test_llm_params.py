@@ -30,6 +30,47 @@ def test_openai_max_effort_is_still_rejected():
         raise AssertionError("Expected UnsupportedEffortError for max effort")
 
 
+def test_openrouter_params_use_openrouter_provider(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", " openrouter-token ")
+    monkeypatch.setenv("OR_SITE_URL", " https://example.com/ml-intern ")
+    monkeypatch.setenv("OR_APP_NAME", " ML Intern ")
+
+    params = _resolve_llm_params(
+        "openrouter/anthropic/claude-sonnet-4-5",
+        reasoning_effort="high",
+        strict=True,
+    )
+
+    assert params["model"] == "openrouter/anthropic/claude-sonnet-4-5"
+    assert params["api_key"] == "openrouter-token"
+    assert params["reasoning_effort"] == "high"
+    assert params["extra_headers"] == {
+        "HTTP-Referer": "https://example.com/ml-intern",
+        "X-Title": "ML Intern",
+    }
+
+
+def test_openrouter_api_base_override(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_BASE", " https://openrouter.example/v1 ")
+
+    params = _resolve_llm_params("openrouter/openai/gpt-5.5")
+
+    assert params["api_base"] == "https://openrouter.example/v1"
+
+
+def test_openrouter_rejects_max_effort_in_strict_mode():
+    try:
+        _resolve_llm_params(
+            "openrouter/openai/gpt-5.5",
+            reasoning_effort="max",
+            strict=True,
+        )
+    except UnsupportedEffortError as exc:
+        assert "OpenRouter doesn't accept effort='max'" in str(exc)
+    else:
+        raise AssertionError("Expected UnsupportedEffortError for max effort")
+
+
 def test_hf_router_token_prefers_inference_token(monkeypatch):
     monkeypatch.setenv("INFERENCE_TOKEN", " inference-token ")
     monkeypatch.setenv("HF_TOKEN", "hf-token")

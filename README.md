@@ -28,6 +28,7 @@ Create a `.env` file in the project root (or export these in your shell):
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
 OPENAI_API_KEY=<your-openai-api-key> # if using openai models
+OPENROUTER_API_KEY=<your-openrouter-api-key> # if using openrouter models
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
@@ -52,9 +53,14 @@ ml-intern "fine-tune llama on my dataset"
 ```bash
 ml-intern --model anthropic/claude-opus-4-6 "your prompt"
 ml-intern --model openai/gpt-5.5 "your prompt"
+ml-intern --model openrouter/anthropic/claude-sonnet-4-5 "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
+
+OpenRouter models use the `openrouter/<provider>/<model>` naming convention and
+the `OPENROUTER_API_KEY` environment variable. Optional attribution headers can
+be set with `OR_SITE_URL` and `OR_APP_NAME`.
 
 ## Supported Gateways
 

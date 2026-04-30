@@ -5,6 +5,8 @@ can import it without pulling in the whole agent loop / tool router and
 creating circular imports.
 """
 
+import os
+
 from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
 
 
@@ -72,12 +74,14 @@ _patch_litellm_effort_validation()
 # Effort levels accepted on the wire.
 #   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
 #   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
+#   OpenRouter:        minimal | low | medium | high | xhigh (reasoning_effort top-level)
 #   HF router:         low | medium | high                 (extra_body.reasoning_effort)
 #
 # We validate *shape* here and let the probe cascade walk down on rejection;
 # we deliberately do NOT maintain a per-model capability table.
 _ANTHROPIC_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _OPENAI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+_OPENROUTER_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 _HF_EFFORTS = {"low", "medium", "high"}
 
 
@@ -113,6 +117,10 @@ def _resolve_llm_params(
 
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
+
+    • ``openrouter/<provider>/<model>`` — routed through LiteLLM's OpenRouter
+      provider. LiteLLM uses ``OPENROUTER_API_KEY``; optional attribution
+      headers can be set with ``OR_SITE_URL`` and ``OR_APP_NAME``.
 
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
@@ -175,6 +183,31 @@ def _resolve_llm_params(
                 if strict:
                     raise UnsupportedEffortError(
                         f"OpenAI doesn't accept effort={reasoning_effort!r}"
+                    )
+            else:
+                params["reasoning_effort"] = reasoning_effort
+        return params
+
+    if model_name.startswith("openrouter/"):
+        params = {"model": model_name}
+        if api_key := os.getenv("OPENROUTER_API_KEY", "").strip():
+            params["api_key"] = api_key
+        if api_base := os.getenv("OPENROUTER_API_BASE", "").strip():
+            params["api_base"] = api_base
+
+        extra_headers = {}
+        if site_url := os.getenv("OR_SITE_URL", "").strip():
+            extra_headers["HTTP-Referer"] = site_url
+        if app_name := os.getenv("OR_APP_NAME", "").strip():
+            extra_headers["X-Title"] = app_name
+        if extra_headers:
+            params["extra_headers"] = extra_headers
+
+        if reasoning_effort:
+            if reasoning_effort not in _OPENROUTER_EFFORTS:
+                if strict:
+                    raise UnsupportedEffortError(
+                        f"OpenRouter doesn't accept effort={reasoning_effort!r}"
                     )
             else:
                 params["reasoning_effort"] = reasoning_effort
