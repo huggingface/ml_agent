@@ -2,6 +2,7 @@
 """Run the PostTrainBench disallowed-use judge with Codex CLI."""
 
 import argparse
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -47,6 +48,25 @@ def require_outputs(output_dir: Path) -> list[str]:
     return missing
 
 
+def ensure_codex_auth(env: dict[str, str]) -> None:
+    codex_home = Path(env.setdefault("CODEX_HOME", "/tmp/codex"))
+    codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    auth_file = codex_home / "auth.json"
+    if auth_file.exists():
+        return
+
+    openai_api_key = env.get("OPENAI_API_KEY")
+    if not openai_api_key:
+        return
+
+    auth_file.write_text(
+        json.dumps({"OPENAI_API_KEY": openai_api_key, "auth_mode": "apikey"}),
+        encoding="utf-8",
+    )
+    auth_file.chmod(0o600)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task-dir", required=True)
@@ -90,8 +110,7 @@ def main() -> int:
         "-",
     ]
     env = os.environ.copy()
-    env.setdefault("CODEX_HOME", "/tmp/codex")
-    Path(env["CODEX_HOME"]).mkdir(parents=True, exist_ok=True)
+    ensure_codex_auth(env)
 
     with codex_prompt_file.open("r", encoding="utf-8") as stdin:
         result = subprocess.run(cmd, cwd=task_dir, env=env, stdin=stdin)
