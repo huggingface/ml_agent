@@ -305,10 +305,7 @@ if not model_path.is_dir():
 if not (model_path / "config.json").is_file():
     raise SystemExit("final_model/config.json is missing")
 AutoConfig.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
-try:
-    AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
-except Exception as exc:
-    print(f"tokenizer validation warning: {type(exc).__name__}: {exc}")
+AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
 print("final_model validation passed")
 PY
     ' > "$EVAL_DIR/final_model_validation.txt" 2>&1
