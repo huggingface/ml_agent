@@ -536,9 +536,7 @@ function InlineApproval({
                   {' '}({cost})
                 </Box>
               )}
-              {!!args.private && (
-                <Box component="span" sx={{ color: 'var(--muted-text)' }}>{' (private)'}</Box>
-              )}
+              <Box component="span" sx={{ color: 'var(--muted-text)' }}>{' (private)'}</Box>
             </Typography>
             <Typography variant="body2" sx={{ color: 'var(--muted-text)', fontSize: '0.7rem', opacity: 0.7 }}>
               Creates a temporary HF Space to develop and test scripts before running jobs. Takes 1-2 min to start.

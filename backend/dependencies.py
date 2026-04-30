@@ -111,7 +111,7 @@ async def _fetch_user_plan(token: str) -> str:
 
     # OAuth whoami sets `type: "user"` and surfaces Pro via the `isPro` boolean
     # — see Space discussion #21. HF-Jobs eligibility (PR #172) ignores plan
-    # entirely; the Claude daily-cap tier is still a free vs pro/org split.
+    # entirely; the premium-model daily-cap tier is still a free vs pro/org split.
     if whoami.get("isPro") is True or whoami.get("is_pro") is True:
         return "pro"
     plan_str = ""

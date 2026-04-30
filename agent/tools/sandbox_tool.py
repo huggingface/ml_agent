@@ -235,6 +235,7 @@ async def _ensure_sandbox(
     if extra_secrets:
         secrets.update({k: v for k, v in extra_secrets.items() if v})
 
+    create_kwargs["private"] = True  # enforce: overrides any caller-supplied value
     kwargs = {
         "owner": owner,
         "hardware": hardware,
@@ -292,7 +293,8 @@ SANDBOX_CREATE_TOOL_SPEC = {
     "description": (
         "Create a persistent remote Linux environment for developing and testing scripts.\n\n"
         "Workflow: sandbox_create → write script → pip install → test with small run → fix errors → hf_jobs at scale.\n"
-        "The sandbox persists across tool calls within the session. pip install works out of the box.\n\n"
+        "The sandbox persists across tool calls within the session. pip install works out of the box. "
+        "Sandboxes are always created as private HF Spaces.\n\n"
         "Use this when: you need to develop, test, and iterate on scripts before launching via hf_jobs. "
         "Especially for training scripts where you need to verify imports, test on a small subset, and fix errors interactively.\n\n"
         "Skip this when: the task is a simple one-shot operation (status check, resource search, quick data query), "
@@ -317,10 +319,6 @@ SANDBOX_CREATE_TOOL_SPEC = {
                 "type": "string",
                 "enum": [e.value for e in SpaceHardware],
                 "description": "Hardware tier for the sandbox (default: cpu-basic)",
-            },
-            "private": {
-                "type": "boolean",
-                "description": "If true, create a private Space",
             },
             "trackio_space_id": {
                 "type": "string",
@@ -386,8 +384,6 @@ async def sandbox_create_handler(
         ), True
 
     create_kwargs: dict[str, Any] = {}
-    if "private" in args:
-        create_kwargs["private"] = args["private"]
 
     extra_secrets: dict[str, str] = {}
     if trackio_space_id:
@@ -415,6 +411,7 @@ async def sandbox_create_handler(
         f"Sandbox created: {sb.space_id}\n"
         f"URL: {sb.url}\n"
         f"Hardware: {hardware}\n"
+        "Visibility: private\n"
         f"Use bash/read/write/edit to interact with it."
     ), True
 

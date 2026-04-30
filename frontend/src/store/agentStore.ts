@@ -113,7 +113,7 @@ interface AgentStore {
   user: User | null;
   error: string | null;
   llmHealthError: LLMHealthError | null;
-  /** Set when a Claude-send hits the daily quota — ChatInput opens the cap dialog in response. */
+  /** Set when a premium-model send hits the daily quota; ChatInput opens the cap dialog. */
   claudeQuotaExhausted: boolean;
   jobsUpgradeRequired: JobsUpgradeState | null;
 

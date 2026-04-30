@@ -13,7 +13,7 @@ Architecture:
   - Optionally deletes the Space when done
 
 Lifecycle:
-    sb = Sandbox.create(owner="burtenshaw")         # duplicate, wait, connect
+    sb = Sandbox.create(owner="burtenshaw")         # duplicate private Space, wait, connect
     sb = Sandbox.create(owner="burtenshaw",          # with options
                         hardware="t4-small",
                         private=True,
@@ -157,18 +157,20 @@ def _atomic_write(path: pathlib.Path, content: str):
 
 app = FastAPI()
 
-def _expected_api_token() -> str:
-    return os.environ.get("SANDBOX_API_TOKEN") or os.environ.get("HF_TOKEN") or ""
+def _bearer_token(header: str) -> str:
+    scheme, _, supplied = header.partition(" ")
+    if scheme.lower() != "bearer" or not supplied:
+        return ""
+    return supplied
 
 def _require_auth(request: Request) -> None:
-    expected = _expected_api_token()
-    if not expected:
+    sandbox_token = os.environ.get("SANDBOX_API_TOKEN") or ""
+    if not sandbox_token:
         raise HTTPException(status_code=503, detail="Sandbox API token not configured")
-    auth_header = request.headers.get("authorization", "")
-    scheme, _, supplied = auth_header.partition(" ")
-    if scheme.lower() != "bearer" or not supplied:
+    supplied = _bearer_token(request.headers.get("x-sandbox-authorization", ""))
+    if not supplied:
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    if not hmac.compare_digest(supplied, expected):
+    if not hmac.compare_digest(supplied, sandbox_token):
         raise HTTPException(status_code=401, detail="Invalid bearer token")
 
 _AUTH = [Depends(_require_auth)]
@@ -513,14 +515,27 @@ class Sandbox:
         # Trailing slash is critical: httpx resolves relative paths against base_url.
         # Without it, client.get("health") resolves to /health instead of /api/health.
         self._base_url = f"https://{slug}.hf.space/api/"
-        api_token = self.api_token or self.token
         self._client = httpx.Client(
             base_url=self._base_url,
-            headers={"Authorization": f"Bearer {api_token}"} if api_token else {},
+            headers=self._auth_headers(),
             timeout=httpx.Timeout(MAX_TIMEOUT, connect=30),
             follow_redirects=True,
         )
         self._hf_api = HfApi(token=self.token)
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Return headers for private HF Space access plus sandbox API auth.
+
+        Private Spaces require the HF token in ``Authorization`` at the Hub
+        edge. The sandbox server requires its control-plane token in the
+        dedicated ``X-Sandbox-Authorization`` header.
+        """
+        headers: dict[str, str] = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.api_token:
+            headers["X-Sandbox-Authorization"] = f"Bearer {self.api_token}"
+        return headers
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -535,7 +550,7 @@ class Sandbox:
         name: str | None = None,
         template: str = TEMPLATE_SPACE,
         hardware: str = "cpu-basic",
-        private: bool = False,
+        private: bool = True,
         sleep_time: int | None = None,
         token: str | None = None,
         secrets: dict[str, str] | None = None,
@@ -555,7 +570,7 @@ class Sandbox:
                   A unique suffix is always appended.
             template: Source Space to duplicate (default: burtenshaw/sandbox).
             hardware: Hardware tier (cpu-basic, t4-small, etc.).
-            private: Whether the Space should be private.
+            private: Whether the Space should be private. Defaults to True.
             sleep_time: Auto-sleep after N seconds of inactivity.
             token: HF API token (from user's OAuth session).
             wait_timeout: Max seconds to wait for Space to start (default: 300).
