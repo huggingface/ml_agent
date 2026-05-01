@@ -48,7 +48,27 @@ Verified anchors:
 
 Time: ~3 min wall, ~63k tokens executor. Commit follows.
 
-## Iteration 2: starting US-002 (Step 1.5 — requeue_claimed_for wiring)
+## Iteration 2: US-002 + US-003 (Steps 1.5 + 2 combined) — COMPLETE
 
-Note: US-002 wiring depends on US-003's heartbeat task. Per plan: US-002 lands ALONGSIDE US-003 (both modify backend/session_manager.py). Will dispatch them as a single coordinated executor task to avoid merge-conflict on the same file.
+Dispatched as one executor task (Opus) since both touch backend/session_manager.py.
+
+Result:
+- backend/session_manager.py: __init__ reads MODE env (validates main|worker, defaults main on invalid with WARN), computes self.mode + self._holder_id via make_holder_id, initializes self._heartbeat_task = None
+- start() launches _lease_heartbeat_loop (10s cadence = TTL/3)
+- close() cancels and awaits heartbeat task
+- _lease_heartbeat_loop snapshots session keys under lock, renews each lease, routes None to _on_lease_lost
+- _on_lease_lost calls requeue_claimed_for(holder_id), pops session, cancels task without awaiting, WARN log
+- create_session: claim_lease before _start_agent_session; RuntimeError if None and store enabled
+- ensure_session_loaded: claim_lease after ownership check; returns None on claim failure (refuses cross-process restore)
+- _run_session finally: release_lease after _cleanup_sandbox
+- shutdown_session + delete_session: release_lease before task.cancel
+- tests/test_session_manager_lease.py NEW (12 tests): holder identity (default/worker/invalid), claim wiring, heartbeat renewal, Noop skip, lease-loss handling, release in finally, close cancellation
+- tests/unit/test_session_manager_persistence.py: helper updated to seed new __init__ attributes
+
+Verification: 35 tests pass (12 new + 12 from US-001 + 11 pre-existing); ruff clean.
+
+## Iteration 3: starting US-004 (Step 3 — replace submission_queue + is_in_tool_call)
+
+This is the biggest single story — refactors _run_session's central loop from in-memory asyncio.Queue to Mongo-backed change-stream/poll, rewrites all submit* methods to enqueue_pending_submission, branches interrupt on holder, and adds is_in_tool_call flag at 3 dispatch sites in agent_loop.py + research_tool.py. Dispatching to Opus executor.
+
 

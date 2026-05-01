@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,7 +14,7 @@ from agent.config import load_config
 from agent.core.agent_loop import process_submission
 from agent.messaging.gateway import NotificationGateway
 from agent.core.session import Event, OpType, Session
-from agent.core.session_persistence import get_session_store
+from agent.core.session_persistence import get_session_store, make_holder_id
 from agent.core.tools import ToolRouter
 
 # Get project root (parent of backend directory)
@@ -128,17 +129,98 @@ class SessionManager:
         self._lock = asyncio.Lock()
         self.persistence_store = None
 
+        # Holder identity — pick once at process start, never recompute.
+        # MODE controls which lane this process owns ("main" = synchronous
+        # frontend handler, "worker" = background submission consumer).
+        raw_mode = os.environ.get("MODE", "main").lower().strip()
+        if raw_mode not in {"main", "worker"}:
+            logger.warning(
+                f"Unknown MODE={raw_mode!r}; falling back to 'main'"
+            )
+            raw_mode = "main"
+        self.mode: str = raw_mode
+        self._holder_id: str = make_holder_id(self.mode)
+        self._heartbeat_task: asyncio.Task | None = None
+        logger.info(
+            "SessionManager init: mode=%s holder_id=%s",
+            self.mode,
+            self._holder_id,
+        )
+
     async def start(self) -> None:
         """Start shared background resources."""
         self.persistence_store = get_session_store()
         await self.persistence_store.init()
         await self.messaging_gateway.start()
+        self._heartbeat_task = asyncio.create_task(self._lease_heartbeat_loop())
 
     async def close(self) -> None:
         """Flush and close shared background resources."""
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
         await self.messaging_gateway.close()
         if self.persistence_store is not None:
             await self.persistence_store.close()
+
+    async def _lease_heartbeat_loop(self) -> None:
+        """Renew leases every TTL/3 seconds for sessions held by this process.
+
+        On renewal failure for a session: requeue claimed submissions, drop
+        the session, log WARN. The loop must never crash — any unexpected
+        exception is logged and the loop sleeps before retrying.
+        """
+        HEARTBEAT_INTERVAL_S = 10  # TTL=30s, renew at TTL/3
+        while True:
+            try:
+                await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+                store = self._store()
+                if not getattr(store, "enabled", False):
+                    continue  # NoopSessionStore — nothing to renew
+                # Snapshot session_ids under lock to avoid mutation during iteration.
+                async with self._lock:
+                    session_ids = list(self.sessions.keys())
+                for session_id in session_ids:
+                    renewed = await store.renew_lease(
+                        session_id, self._holder_id, ttl_s=30
+                    )
+                    if renewed is None:
+                        # Lease lost — someone else holds it now.
+                        await self._on_lease_lost(session_id)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Heartbeat loop error: {e}")
+                # Don't crash the loop; sleep briefly and retry.
+                await asyncio.sleep(1)
+
+    async def _on_lease_lost(self, session_id: str) -> None:
+        """Called when our lease for ``session_id`` has been taken by another holder.
+
+        Per plan Step 1.5: requeue our claimed submissions, drop the session,
+        log WARN. The heartbeat loop must keep going, so we don't await the
+        cancelled task here.
+        """
+        store = self._store()
+        try:
+            requeued = await store.requeue_claimed_for(self._holder_id)
+            logger.warning(
+                f"Lease lost for session {session_id} (held_by={self._holder_id}); "
+                f"requeued {requeued} claimed submissions"
+            )
+        except Exception as e:
+            logger.error(
+                f"requeue_claimed_for failed during lease-loss for {session_id}: {e}"
+            )
+        async with self._lock:
+            agent_session = self.sessions.pop(session_id, None)
+        if agent_session and agent_session.task and not agent_session.task.done():
+            agent_session.task.cancel()
+            # Don't await — heartbeat loop must keep going.
 
     def _store(self):
         if self.persistence_store is None:
@@ -420,6 +502,19 @@ class SessionManager:
         if user_id != "dev" and owner != "dev" and owner != user_id:
             return None
 
+        # Claim the lease before instantiating runtime. If another holder
+        # owns it, refuse to restore — the natural enforcement of the
+        # "one holder at a time" invariant.
+        if getattr(store, "enabled", False):
+            claimed = await store.claim_lease(
+                session_id, self._holder_id, ttl_s=30
+            )
+            if claimed is None:
+                logger.info(
+                    f"Refusing restore of {session_id}: lease held by another process"
+                )
+                return None
+
         from litellm import Message
 
         model = meta.get("model") or self.config.model_name
@@ -556,6 +651,24 @@ class SessionManager:
             hf_username=hf_username,
             hf_token=hf_token,
         )
+
+        # Claim the lease before starting the runtime task — brand-new
+        # session_id, so this should always succeed; failure is treated as
+        # an internal error.
+        claimed = await self._store().claim_lease(
+            session_id, self._holder_id, ttl_s=30
+        )
+        if (
+            claimed is None
+            and getattr(self._store(), "enabled", False)
+        ):
+            logger.warning(
+                f"Failed to claim lease for new session {session_id} "
+                f"(holder={self._holder_id})"
+            )
+            raise RuntimeError(
+                f"Failed to claim lease for new session {session_id}"
+            )
 
         await self._start_agent_session(
             agent_session=agent_session,
@@ -751,6 +864,13 @@ class SessionManager:
 
             await self._cleanup_sandbox(session)
 
+            try:
+                await self._store().release_lease(session_id, self._holder_id)
+            except Exception as e:
+                logger.debug(
+                    f"release_lease failed for {session_id} on session end: {e}"
+                )
+
             # Final-flush: always save on session death so we capture ended
             # sessions even if the client disconnects without /shutdown.
             # Idempotent via session_id key; detached subprocess.
@@ -836,6 +956,14 @@ class SessionManager:
             async with self._lock:
                 agent_session = self.sessions.get(session_id)
                 if agent_session and agent_session.task:
+                    try:
+                        await self._store().release_lease(
+                            session_id, self._holder_id
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            f"release_lease failed during shutdown of {session_id}: {e}"
+                        )
                     # Wait for task to complete
                     try:
                         await asyncio.wait_for(agent_session.task, timeout=5.0)
@@ -857,6 +985,13 @@ class SessionManager:
 
         # Clean up sandbox Space before cancelling the task
         await self._cleanup_sandbox(agent_session.session)
+
+        try:
+            await self._store().release_lease(session_id, self._holder_id)
+        except Exception as e:
+            logger.debug(
+                f"release_lease failed during delete of {session_id}: {e}"
+            )
 
         # Cancel the task if running
         if agent_session.task and not agent_session.task.done():

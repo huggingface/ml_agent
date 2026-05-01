@@ -28,7 +28,7 @@
       "id": "US-002",
       "title": "requeue_claimed_for wired into lifespan + lease-renewal failure (Step 1.5)",
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "SessionManager exposes a private method that calls store.requeue_claimed_for(self._holder_id) on lease-renewal failure path (the path is added in US-003 / Step 2 heartbeat task; this story can land alongside it)",
         "Lifespan shutdown sweep (added in US-006 / Step 5) calls requeue_claimed_for(holder_id) before release_lease",
@@ -42,7 +42,7 @@
       "id": "US-003",
       "title": "SessionManager lease-holder awareness + heartbeat (Step 2)",
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "SessionManager.__init__ reads MODE env var (default 'main'), reads hostname (socket.gethostname()), and computes self._holder_id = f\"{mode}:{hostname}:{uuid_suffix}\" using the helper from US-001",
         "SessionManager exposes self.mode (\"main\"|\"worker\") and self._holder_id as instance attributes",

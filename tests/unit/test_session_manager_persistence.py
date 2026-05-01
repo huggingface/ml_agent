@@ -58,6 +58,11 @@ class RestoreStore(NoopSessionStore):
         metadata.setdefault("_id", session_id)
         return {"metadata": metadata, "messages": self.messages}
 
+    async def claim_lease(
+        self, session_id: str, holder_id: str, ttl_s: int = 30
+    ) -> dict[str, Any] | None:
+        return {"_id": session_id, "lease": {"holder_id": holder_id}}
+
 
 def _manager_with_store(store: NoopSessionStore) -> SessionManager:
     manager = object.__new__(SessionManager)
@@ -65,6 +70,9 @@ def _manager_with_store(store: NoopSessionStore) -> SessionManager:
     manager.sessions = {}
     manager._lock = asyncio.Lock()
     manager.persistence_store = store
+    manager.mode = "main"
+    manager._holder_id = "main:test-host:deadbeef"
+    manager._heartbeat_task = None
     return manager
 
 
