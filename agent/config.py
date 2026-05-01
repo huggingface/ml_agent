@@ -6,6 +6,7 @@ from typing import Any, Union
 
 from dotenv import load_dotenv
 
+from agent.core.observability import setup_langfuse
 from agent.messaging.models import MessagingConfig
 
 # Project root: two levels up from this file (agent/config.py -> project root)
@@ -207,4 +208,9 @@ def load_config(
         raw_config = apply_slack_user_defaults(raw_config)
 
     config_with_env = substitute_env_vars(raw_config)
+
+    # Opt-in: register litellm's LangFuse callback if the operator set the
+    # three LANGFUSE_* env vars. No-op otherwise. See agent/core/observability.py.
+    setup_langfuse()
+
     return Config.model_validate(config_with_env)

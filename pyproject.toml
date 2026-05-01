@@ -46,9 +46,14 @@ dev = [
     "pytest-asyncio>=1.2.0",
 ]
 
-# All dependencies (eval + dev)
+# Optional third-party observability backends
+observability = [
+    "langfuse>=2.0.0",
+]
+
+# All dependencies (eval + dev + observability)
 all = [
-    "ml-intern[eval,dev]",
+    "ml-intern[eval,dev,observability]",
 ]
 
 [project.scripts]
