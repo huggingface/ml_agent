@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Stack, Typography, Chip, Button, TextField, IconButton, Link, CircularProgress } from '@mui/material';
+import { Alert, Box, Stack, Typography, Chip, Button, TextField, IconButton, Link, CircularProgress } from '@mui/material';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
@@ -502,6 +502,7 @@ function InlineApproval({
 }) {
   const [feedback, setFeedback] = useState('');
   const args = input as Record<string, unknown> | undefined;
+  const autoApproval = useAgentStore((state) => state.budgetBlocks[toolCallId]);
   const { setPanel, getEditedScript } = useAgentStore();
   const { setRightPanelOpen, setLeftSidebarOpen } = useLayoutStore();
   const hasEditedScript = !!getEditedScript(toolCallId);
@@ -521,6 +522,24 @@ function InlineApproval({
 
   return (
     <Box sx={{ px: 1.5, py: 1.5, borderTop: '1px solid var(--tool-border)' }}>
+      {autoApproval && (
+        <Alert
+          severity="warning"
+          sx={{
+            mb: 1.5,
+            py: 0.5,
+            bgcolor: 'rgba(245,158,11,0.08)',
+            border: '1px solid rgba(245,158,11,0.18)',
+            color: 'var(--text)',
+            '& .MuiAlert-icon': { color: 'var(--accent-yellow)' },
+          }}
+        >
+          <Typography variant="body2" sx={{ fontSize: '0.72rem' }}>
+            YOLO paused: {autoApproval.reason || 'manual approval required.'}
+          </Typography>
+        </Alert>
+      )}
+
       {toolName === 'sandbox_create' && args && (() => {
         const hw = String(args.hardware || 'cpu-basic');
         const cost = costLabel(hw);

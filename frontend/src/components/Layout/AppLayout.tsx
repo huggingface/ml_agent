@@ -24,6 +24,7 @@ import SessionSidebar from '@/components/SessionSidebar/SessionSidebar';
 import SessionChat from '@/components/SessionChat';
 import CodePanel from '@/components/CodePanel/CodePanel';
 import WelcomeScreen from '@/components/WelcomeScreen/WelcomeScreen';
+import YoloControl from '@/components/YoloControl';
 import { apiFetch } from '@/utils/api';
 
 const DRAWER_WIDTH = 260;
@@ -252,6 +253,7 @@ export default function AppLayout() {
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            <YoloControl />
             <IconButton
               onClick={toggleTheme}
               size="small"
