@@ -37,6 +37,50 @@ def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     assert duplicate_kwargs["private"] is True
 
 
+def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
+    runtime_calls = 0
+
+    class FakeResponse:
+        status_code = 404
+
+    class FakeRuntime404(Exception):
+        response = FakeResponse()
+
+        def __str__(self):
+            return "404 Client Error: Repository Not Found"
+
+    class FakeApi:
+        def __init__(self, token=None):
+            self.token = token
+
+        def duplicate_space(self, **kwargs):
+            pass
+
+        def add_space_secret(self, *args, **kwargs):
+            pass
+
+        def get_space_runtime(self, space_id):
+            nonlocal runtime_calls
+            runtime_calls += 1
+            if runtime_calls == 1:
+                raise FakeRuntime404()
+            return SimpleNamespace(stage="RUNNING", hardware="cpu-basic")
+
+    monkeypatch.setattr(sandbox_client, "HfApi", FakeApi)
+    monkeypatch.setattr(sandbox_client.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        Sandbox,
+        "_setup_server",
+        staticmethod(lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(Sandbox, "_wait_for_api", lambda self, *args, **kwargs: None)
+
+    sandbox = Sandbox.create(owner="alice", token="hf-token", log=lambda msg: None)
+
+    assert sandbox.space_id.startswith("alice/sandbox-")
+    assert runtime_calls == 2
+
+
 def test_sandbox_tool_forces_private_spaces(monkeypatch):
     captured_kwargs = {}
 

@@ -66,6 +66,15 @@ WAIT_TIMEOUT = 600
 WAIT_INTERVAL = 5
 API_WAIT_TIMEOUT = 180
 
+
+def _is_transient_space_visibility_error(error: Exception) -> bool:
+    """Return True when a newly duplicated Space is not queryable yet."""
+    response = getattr(error, "response", None)
+    if getattr(response, "status_code", None) == 404:
+        return True
+    message = str(error)
+    return "Repository Not Found" in message or "404 Client Error" in message
+
 _DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
@@ -633,7 +642,14 @@ class Sandbox:
         deadline = time.time() + wait_timeout
         while time.time() < deadline:
             _check_cancel()
-            runtime = api.get_space_runtime(space_id)
+            try:
+                runtime = api.get_space_runtime(space_id)
+            except Exception as e:
+                if _is_transient_space_visibility_error(e):
+                    _log("  Space runtime not visible yet...")
+                    time.sleep(WAIT_INTERVAL)
+                    continue
+                raise
             if runtime.stage == "RUNNING":
                 _log(f"Space is running (hardware: {runtime.hardware})")
                 break
