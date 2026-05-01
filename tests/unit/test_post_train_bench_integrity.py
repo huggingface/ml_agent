@@ -145,6 +145,52 @@ def test_secret_scan_ignores_lowercase_token_parameter(tmp_path):
     assert payload["status"] == "clean"
 
 
+def test_protected_files_snapshot_and_verify_clean_with_extra_files(tmp_path):
+    task_dir = tmp_path / "task"
+    (task_dir / "templates").mkdir(parents=True)
+    (task_dir / "evaluate.py").write_text("print('eval')\n", encoding="utf-8")
+    (task_dir / "templates" / "qwen3.jinja").write_text("template\n", encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    integrity.write_json(manifest_path, integrity.snapshot_protected_files(task_dir))
+    (task_dir / "train.py").write_text("print('allowed new file')\n", encoding="utf-8")
+
+    payload = integrity.verify_protected_files(task_dir, manifest_path)
+
+    assert payload["status"] == "clean"
+    assert payload["missing"] == []
+    assert payload["changed"] == []
+
+
+def test_protected_files_verify_rejects_changed_file(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    protected = task_dir / "evaluate.py"
+    protected.write_text("original\n", encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    integrity.write_json(manifest_path, integrity.snapshot_protected_files(task_dir))
+    protected.write_text("tampered\n", encoding="utf-8")
+
+    payload = integrity.verify_protected_files(task_dir, manifest_path)
+
+    assert payload["status"] == "invalid"
+    assert payload["changed"][0]["path"] == "evaluate.py"
+
+
+def test_protected_files_verify_rejects_missing_file(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    protected = task_dir / "evaluate.py"
+    protected.write_text("original\n", encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    integrity.write_json(manifest_path, integrity.snapshot_protected_files(task_dir))
+    protected.unlink()
+
+    payload = integrity.verify_protected_files(task_dir, manifest_path)
+
+    assert payload["status"] == "invalid"
+    assert payload["missing"] == ["evaluate.py"]
+
+
 def test_runner_does_not_mount_result_into_solve_or_trust_remote_code():
     runner = (Path(__file__).parents[2] / "post_train_bench" / "run_task_docker.sh").read_text(
         encoding="utf-8"
@@ -155,3 +201,5 @@ def test_runner_does_not_mount_result_into_solve_or_trust_remote_code():
     )
     assert "${EVAL_DIR}:/result" not in solve_mount_line
     assert "trust_remote_code=True" not in runner
+    assert "snapshot-protected-files" in runner
+    assert "verify-protected-files" in runner

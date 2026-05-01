@@ -99,6 +99,8 @@ def main() -> int:
         "final_model_validation.txt",
         "final_model_precheck.json",
         "integrity_status.json",
+        "protected_files_check.json",
+        "protected_files_manifest.json",
         "metrics.json",
         "secret_scan.json",
         "contamination_judgement.txt",

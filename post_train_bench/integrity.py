@@ -2,6 +2,7 @@
 """Integrity checks used by the PostTrainBench Slurm runner."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -80,6 +81,7 @@ SCAN_SKIP_SUFFIXES = {
     ".safetensors",
 }
 MAX_SCAN_BYTES = 10 * 1024 * 1024
+HASH_CHUNK_BYTES = 1024 * 1024
 
 
 def utc_now() -> str:
@@ -89,6 +91,14 @@ def utc_now() -> str:
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(HASH_CHUNK_BYTES), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def normalize_model_id(value: str) -> str:
@@ -105,6 +115,92 @@ def load_json_file(path: Path) -> tuple[dict, str | None]:
     if not isinstance(data, dict):
         return {}, f"{path.name} must contain a JSON object"
     return data, None
+
+
+def snapshot_protected_files(task_dir: Path) -> dict:
+    files = []
+    for path in sorted(task_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        rel_path = path.relative_to(task_dir).as_posix()
+        files.append(
+            {
+                "path": rel_path,
+                "bytes": path.stat().st_size,
+                "sha256": sha256(path),
+            }
+        )
+    return {
+        "created_at": utc_now(),
+        "task_dir": str(task_dir),
+        "files": files,
+    }
+
+
+def verify_protected_files(task_dir: Path, manifest_path: Path) -> dict:
+    manifest, manifest_error = load_json_file(manifest_path)
+    if manifest_error:
+        return {
+            "created_at": utc_now(),
+            "status": "invalid",
+            "reason": manifest_error,
+            "missing": [],
+            "changed": [],
+            "details": {"manifest_path": str(manifest_path), "task_dir": str(task_dir)},
+        }
+
+    missing = []
+    changed = []
+    for entry in manifest.get("files", []):
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            changed.append({"path": "<malformed manifest entry>", "reason": repr(entry)})
+            continue
+        rel_path = entry["path"]
+        if rel_path.startswith("/") or ".." in Path(rel_path).parts:
+            changed.append({"path": rel_path, "reason": "unsafe manifest path"})
+            continue
+        path = task_dir / rel_path
+        if not path.is_file():
+            missing.append(rel_path)
+            continue
+        actual = {
+            "bytes": path.stat().st_size,
+            "sha256": sha256(path),
+        }
+        expected = {
+            "bytes": entry.get("bytes"),
+            "sha256": entry.get("sha256"),
+        }
+        if actual != expected:
+            changed.append(
+                {
+                    "path": rel_path,
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+
+    status = "invalid" if missing or changed else "clean"
+    if missing and changed:
+        reason = "protected benchmark files are missing or changed"
+    elif missing:
+        reason = "protected benchmark files are missing"
+    elif changed:
+        reason = "protected benchmark files changed"
+    else:
+        reason = "protected benchmark files are unchanged"
+    return {
+        "created_at": utc_now(),
+        "status": status,
+        "reason": reason,
+        "missing": missing,
+        "changed": changed,
+        "details": {
+            "manifest_path": str(manifest_path),
+            "task_dir": str(task_dir),
+            "protected_file_count": len(manifest.get("files", [])),
+        },
+    }
 
 
 def classify_judgement_text(text: str, clean_prefix: str, detected_prefix: str) -> str:
@@ -357,6 +453,18 @@ def command_write_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_snapshot_protected_files(args: argparse.Namespace) -> int:
+    payload = snapshot_protected_files(Path(args.task_dir))
+    write_json(Path(args.output), payload)
+    return 0
+
+
+def command_verify_protected_files(args: argparse.Namespace) -> int:
+    payload = verify_protected_files(Path(args.task_dir), Path(args.manifest))
+    write_json(Path(args.output), payload)
+    return 0 if payload["status"] == "clean" else 1
+
+
 def command_precheck_final_model(args: argparse.Namespace) -> int:
     payload = precheck_final_model(Path(args.model_path), args.base_model)
     write_json(Path(args.output), payload)
@@ -383,6 +491,17 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("--reason", required=True)
     status_parser.add_argument("--output", required=True)
     status_parser.set_defaults(func=command_write_status)
+
+    snapshot_parser = subparsers.add_parser("snapshot-protected-files")
+    snapshot_parser.add_argument("--task-dir", required=True)
+    snapshot_parser.add_argument("--output", required=True)
+    snapshot_parser.set_defaults(func=command_snapshot_protected_files)
+
+    verify_parser = subparsers.add_parser("verify-protected-files")
+    verify_parser.add_argument("--task-dir", required=True)
+    verify_parser.add_argument("--manifest", required=True)
+    verify_parser.add_argument("--output", required=True)
+    verify_parser.set_defaults(func=command_verify_protected_files)
 
     precheck_parser = subparsers.add_parser("precheck-final-model")
     precheck_parser.add_argument("--model-path", required=True)

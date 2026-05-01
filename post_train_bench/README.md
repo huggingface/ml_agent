@@ -123,6 +123,8 @@ post_train_bench/runs/{ML_INTERN_AGENT_MODEL}/{RUN_ID}
 |           |-- output.log              # runner stdout
 |           |-- error.log               # runner stderr
 |           |-- prompt.txt              # PostTrainBench prompt given to ml-intern
+|           |-- protected_files_check.json
+|           |-- protected_files_manifest.json
 |           |-- solve_out.txt           # raw ml-intern agent trace
 |           |-- solve_out_*.txt         # timestamped raw ml-intern agent trace
 |           |-- solve_exit.txt          # solve command exit status

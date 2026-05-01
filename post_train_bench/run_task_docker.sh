@@ -130,6 +130,9 @@ cp -r "$PTB_DIR/src/eval/templates" "$JOB_DIR/task/"
 if [ -d "$PTB_DIR/src/eval/tasks/${BENCHMARK}/task_context" ]; then
     cp -r "$PTB_DIR/src/eval/tasks/${BENCHMARK}/task_context/." "$JOB_DIR/task/"
 fi
+python "$JOB_REPO/post_train_bench/integrity.py" snapshot-protected-files \
+    --task-dir "$JOB_DIR/task" \
+    --output "$EVAL_DIR/protected_files_manifest.json"
 
 BENCHMARK_NAME="$(cat "$PTB_DIR/src/eval/tasks/${BENCHMARK}/benchmark.txt")"
 PROMPT="$(
@@ -266,6 +269,20 @@ with open(sys.argv[3], "w", encoding="utf-8") as f:
 PY
 
 echo "solve_exit=$SOLVE_EXIT"
+
+if ! python "$JOB_REPO/post_train_bench/integrity.py" verify-protected-files \
+    --task-dir "$JOB_DIR/task" \
+    --manifest "$EVAL_DIR/protected_files_manifest.json" \
+    --output "$EVAL_DIR/protected_files_check.json"; then
+    python "$JOB_REPO/post_train_bench/integrity.py" write-status \
+        --status invalid \
+        --reason "protected benchmark files changed during solve" \
+        --output "$EVAL_DIR/integrity_status.json"
+    rm -rf "$EVAL_DIR/task"
+    cp -r "$JOB_DIR/task" "$EVAL_DIR/task"
+    echo "Protected benchmark files changed during solve; see $EVAL_DIR/protected_files_check.json" >&2
+    exit 1
+fi
 
 echo "========================================="
 echo "=== RUNNING CONTAMINATION JUDGE ========"
