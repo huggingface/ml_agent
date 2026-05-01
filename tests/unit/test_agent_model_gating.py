@@ -91,6 +91,25 @@ async def test_default_gated_session_stays_default_for_hf_user(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_explicit_gated_session_allowed_for_hf_user(monkeypatch):
+    async def fake_require_hf_org_member(_request):
+        return True
+
+    monkeypatch.setattr(
+        agent,
+        "require_huggingface_org_member",
+        fake_require_hf_org_member,
+    )
+
+    model = await agent._model_override_for_new_session(
+        None,
+        agent.DEFAULT_CLAUDE_MODEL_ID,
+    )
+
+    assert model == agent.DEFAULT_CLAUDE_MODEL_ID
+
+
+@pytest.mark.asyncio
 async def test_explicit_gated_session_request_still_rejects_non_hf_user(monkeypatch):
     async def fake_require_hf_org_member(_request):
         return False
