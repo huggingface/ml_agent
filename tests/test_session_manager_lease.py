@@ -76,7 +76,6 @@ def _runtime_agent_session(session_id: str = "s1") -> AgentSession:
         session_id=session_id,
         session=FakeRuntimeSession(),  # type: ignore[arg-type]
         tool_router=object(),  # type: ignore[arg-type]
-        submission_queue=asyncio.Queue(),
         user_id="dev",
     )
 
@@ -327,7 +326,6 @@ async def test_run_session_releases_lease_in_finally():
     # _run_session calls _cleanup_sandbox(session) so it must have getattr targets.
     runtime_session.sandbox = None  # type: ignore[attr-defined]
 
-    submission_queue: asyncio.Queue = asyncio.Queue()
     event_queue: asyncio.Queue = asyncio.Queue()
 
     class FakeRouter:
@@ -341,7 +339,6 @@ async def test_run_session_releases_lease_in_finally():
         session_id="sess-finally",
         session=runtime_session,  # type: ignore[arg-type]
         tool_router=FakeRouter(),  # type: ignore[arg-type]
-        submission_queue=submission_queue,
         user_id="dev",
     )
     manager.sessions["sess-finally"] = agent_session
@@ -350,7 +347,6 @@ async def test_run_session_releases_lease_in_finally():
 
     await manager._run_session(
         "sess-finally",
-        submission_queue,
         event_queue,
         agent_session.tool_router,  # type: ignore[arg-type]
     )

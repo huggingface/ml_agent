@@ -87,7 +87,6 @@ def _runtime_agent_session(
         session_id=session_id,
         session=runtime_session,  # type: ignore[arg-type]
         tool_router=object(),  # type: ignore[arg-type]
-        submission_queue=asyncio.Queue(),
         user_id=user_id,
         hf_token=hf_token,
     )

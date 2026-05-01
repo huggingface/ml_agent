@@ -1113,37 +1113,41 @@ class Handlers:
                         )
                         return (tc, name, args, out, ok)
 
-                    gather_task = asyncio.ensure_future(asyncio.gather(
-                        *[
-                            _exec_tool(tc, name, args, valid, err)
-                            for tc, name, args, valid, err in parsed_tools
-                        ]
-                    ))
-                    cancel_task = asyncio.ensure_future(session._cancelled.wait())
+                    session.is_in_tool_call = True
+                    try:
+                        gather_task = asyncio.ensure_future(asyncio.gather(
+                            *[
+                                _exec_tool(tc, name, args, valid, err)
+                                for tc, name, args, valid, err in parsed_tools
+                            ]
+                        ))
+                        cancel_task = asyncio.ensure_future(session._cancelled.wait())
 
-                    done, _ = await asyncio.wait(
-                        [gather_task, cancel_task],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
+                        done, _ = await asyncio.wait(
+                            [gather_task, cancel_task],
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
 
-                    if cancel_task in done:
-                        gather_task.cancel()
-                        try:
-                            await gather_task
-                        except asyncio.CancelledError:
-                            pass
-                        # Notify frontend that in-flight tools were cancelled
-                        for tc, name, _args, valid, _ in parsed_tools:
-                            if valid:
-                                await session.send_event(Event(
-                                    event_type="tool_state_change",
-                                    data={"tool_call_id": tc.id, "tool": name, "state": "cancelled"},
-                                ))
-                        await _cleanup_on_cancel(session)
-                        break
+                        if cancel_task in done:
+                            gather_task.cancel()
+                            try:
+                                await gather_task
+                            except asyncio.CancelledError:
+                                pass
+                            # Notify frontend that in-flight tools were cancelled
+                            for tc, name, _args, valid, _ in parsed_tools:
+                                if valid:
+                                    await session.send_event(Event(
+                                        event_type="tool_state_change",
+                                        data={"tool_call_id": tc.id, "tool": name, "state": "cancelled"},
+                                    ))
+                            await _cleanup_on_cancel(session)
+                            break
 
-                    cancel_task.cancel()
-                    results = gather_task.result()
+                        cancel_task.cancel()
+                        results = gather_task.result()
+                    finally:
+                        session.is_in_tool_call = False
 
                     # 4. Record results and send outputs (order preserved)
                     for tc, tool_name, tool_args, output, success in results:
@@ -1392,40 +1396,44 @@ class Handlers:
 
         # Execute all approved tools concurrently (cancellable)
         if approved_tasks:
-            gather_task = asyncio.ensure_future(asyncio.gather(
-                *[
-                    execute_tool(tc, tool_name, tool_args, was_edited)
-                    for tc, tool_name, tool_args, was_edited in approved_tasks
-                ],
-                return_exceptions=True,
-            ))
-            cancel_task = asyncio.ensure_future(session._cancelled.wait())
+            session.is_in_tool_call = True
+            try:
+                gather_task = asyncio.ensure_future(asyncio.gather(
+                    *[
+                        execute_tool(tc, tool_name, tool_args, was_edited)
+                        for tc, tool_name, tool_args, was_edited in approved_tasks
+                    ],
+                    return_exceptions=True,
+                ))
+                cancel_task = asyncio.ensure_future(session._cancelled.wait())
 
-            done, _ = await asyncio.wait(
-                [gather_task, cancel_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+                done, _ = await asyncio.wait(
+                    [gather_task, cancel_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
 
-            if cancel_task in done:
-                gather_task.cancel()
-                try:
-                    await gather_task
-                except asyncio.CancelledError:
-                    pass
-                # Notify frontend that approved tools were cancelled
-                for tc, tool_name, _args, _was_edited in approved_tasks:
-                    await session.send_event(Event(
-                        event_type="tool_state_change",
-                        data={"tool_call_id": tc.id, "tool": tool_name, "state": "cancelled"},
-                    ))
-                await _cleanup_on_cancel(session)
-                await session.send_event(Event(event_type="interrupted"))
-                session.increment_turn()
-                await session.auto_save_if_needed()
-                return
+                if cancel_task in done:
+                    gather_task.cancel()
+                    try:
+                        await gather_task
+                    except asyncio.CancelledError:
+                        pass
+                    # Notify frontend that approved tools were cancelled
+                    for tc, tool_name, _args, _was_edited in approved_tasks:
+                        await session.send_event(Event(
+                            event_type="tool_state_change",
+                            data={"tool_call_id": tc.id, "tool": tool_name, "state": "cancelled"},
+                        ))
+                    await _cleanup_on_cancel(session)
+                    await session.send_event(Event(event_type="interrupted"))
+                    session.increment_turn()
+                    await session.auto_save_if_needed()
+                    return
 
-            cancel_task.cancel()
-            results = gather_task.result()
+                cancel_task.cancel()
+                results = gather_task.result()
+            finally:
+                session.is_in_tool_call = False
 
             # Process results and add to context
             for result in results:

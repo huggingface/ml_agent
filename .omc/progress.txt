@@ -67,8 +67,40 @@ Result:
 
 Verification: 35 tests pass (12 new + 12 from US-001 + 11 pre-existing); ruff clean.
 
-## Iteration 3: starting US-004 (Step 3 — replace submission_queue + is_in_tool_call)
+## Iteration 3: US-004 (Step 3 — replace submission_queue + is_in_tool_call) — COMPLETE
 
-This is the biggest single story — refactors _run_session's central loop from in-memory asyncio.Queue to Mongo-backed change-stream/poll, rewrites all submit* methods to enqueue_pending_submission, branches interrupt on holder, and adds is_in_tool_call flag at 3 dispatch sites in agent_loop.py + research_tool.py. Dispatching to Opus executor.
+Heart of the refactor. Result:
+
+backend/session_manager.py:
+- Removed submission_queue field from AgentSession; added last_submission_at: float for US-007.
+- Removed local submission_queue construction in 3 places (_create_session_sync, ensure_session_loaded, create_session).
+- Added _consume_submissions(agent_session): change-stream-with-poll-fallback consumer that drains via _drain_and_process on every signal.
+- Added _drain_and_process(agent_session): atomic FIFO claim loop. Handles op_type='interrupt' inline (calls session.cancel()) and op_type='shutdown' inline (session.is_running=False); other ops dispatch through process_submission. Marks every claimed submission done in finally so poison rows never redeliver.
+- Added _build_operation(op_type, payload).
+- Replaced _run_session's submission while/get/timeout loop with await self._consume_submissions(agent_session). Signature now (self, session_id, event_queue, tool_router).
+- Added shared helper _enqueue_or_false: gates on in-memory presence OR store.load_session() for cross-process delivery.
+- Rewrote submit, submit_user_input, submit_approval, undo, compact, shutdown_session to enqueue via the helper.
+- Rewrote interrupt: holder fast-path direct cancel; non-holder enqueues op_type='interrupt'.
+
+agent/core/session.py: added self.is_in_tool_call: bool = False in Session.__init__. OpType.INTERRUPT and OpType.SHUTDOWN already existed (lines 59, 62).
+
+agent/core/agent_loop.py: wrapped both asyncio.gather tool execution blocks (non-approval and approved-after-batch-approval) with try/finally setting is_in_tool_call=True/False.
+
+agent/tools/research_tool.py: wrapped sub-agent's tool_router.call_tool with same try/finally.
+
+tests/test_session_manager_submissions.py (NEW, 18 tests): enqueue paths, holder/non-holder interrupt, FIFO drain, inline interrupt/shutdown handling, poison containment, store-disabled paths, _build_operation reconstruction.
+Adjusted 3 existing test files to remove submission_queue=asyncio.Queue() kwargs.
+
+Verification:
+- ruff: clean on all modified files
+- pytest: 55 tests pass in verification suite (12 + 12 + 18 + 6 + 5 + 2 inline = previous + new)
+- Broader pytest tests/ --ignore=tests/integration: 248 pass; 2 pre-existing failures in test_doom_loop.py confirmed unrelated via git stash
+
+Edge case flagged by executor: standalone agent/main.py CLI uses its own submission_loop/asyncio.Queue (untouched). When MongoSessionStore is disabled at boot but a session was created earlier (CLI/test), submit* returns False rather than queuing in-memory. Acceptable for hosted backend (Mongo is required there).
+
+## Iteration 4: starting US-005 (Step 4 — holder-local fast-path overlay for SSE)
+
+EventBroadcaster KEPT as opt-in read-side cache. Branch SSE generators on holder match. Non-holder SSE falls through to Mongo change_stream_events. Replay-from-Mongo first in both branches.
+
 
 

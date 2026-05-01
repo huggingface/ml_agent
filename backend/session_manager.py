@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from pymongo.errors import PyMongoError
+
 from agent.config import load_config
 from agent.core.agent_loop import process_submission
 from agent.messaging.gateway import NotificationGateway
@@ -86,7 +88,6 @@ class AgentSession:
     session_id: str
     session: Session
     tool_router: ToolRouter
-    submission_queue: asyncio.Queue
     user_id: str = "dev"  # Owner of this session
     hf_username: str | None = None  # HF namespace used for personal trace uploads
     hf_token: str | None = None  # User's HF OAuth token for tool execution
@@ -100,6 +101,10 @@ class AgentSession:
     # Claude quota. Guards double-counting when the user re-selects an
     # Anthropic model mid-session.
     claude_counted: bool = False
+    # Wall-clock timestamp of the last submission processed for this
+    # session — used by US-007's idle eviction. Updated in one place
+    # inside ``_drain_and_process``.
+    last_submission_at: float = field(default_factory=lambda: 0.0)
 
 
 class SessionCapacityError(Exception):
@@ -395,7 +400,6 @@ class SessionManager:
         task = asyncio.create_task(
             self._run_session(
                 agent_session.session_id,
-                agent_session.submission_queue,
                 event_queue,
                 tool_router,
             )
@@ -519,7 +523,6 @@ class SessionManager:
 
         model = meta.get("model") or self.config.model_name
         event_queue: asyncio.Queue = asyncio.Queue()
-        submission_queue: asyncio.Queue = asyncio.Queue()
         tool_router, session = await asyncio.to_thread(
             self._create_session_sync,
             session_id=session_id,
@@ -555,7 +558,6 @@ class SessionManager:
             session_id=session_id,
             session=session,
             tool_router=tool_router,
-            submission_queue=submission_queue,
             user_id=owner or user_id,
             hf_username=hf_username,
             hf_token=hf_token,
@@ -626,8 +628,8 @@ class SessionManager:
 
         session_id = str(uuid.uuid4())
 
-        # Create queues for this session
-        submission_queue: asyncio.Queue = asyncio.Queue()
+        # Create queue for this session (events still flow through an
+        # in-process queue; submissions now live in Mongo).
         event_queue: asyncio.Queue = asyncio.Queue()
 
         # Run blocking constructors in a thread to keep the event loop responsive.
@@ -646,7 +648,6 @@ class SessionManager:
             session_id=session_id,
             session=session,
             tool_router=tool_router,
-            submission_queue=submission_queue,
             user_id=user_id,
             hf_username=hf_username,
             hf_token=hf_token,
@@ -803,10 +804,125 @@ class SessionManager:
             f"Orphan — sweep script will pick it up."
         )
 
+    async def _consume_submissions(self, agent_session: AgentSession) -> None:
+        """Consume pending submissions for this session.
+
+        Tries the Mongo change stream first (push-based, low-latency); on
+        replica-set unavailability or any ``PyMongoError`` from ``watch()``
+        falls back to a 500 ms polling loop. Either path drains all
+        currently-pending submissions through ``_drain_and_process``.
+        """
+        session = agent_session.session
+        session_id = agent_session.session_id
+        store = self._store()
+        use_change_stream = bool(getattr(store, "enabled", False))
+
+        # Drain anything that arrived before the consumer started — covers
+        # the race where ``enqueue`` happened during runtime startup.
+        await self._drain_and_process(agent_session)
+
+        while session.is_running:
+            try:
+                if use_change_stream:
+                    try:
+                        async for _change_doc in store.change_stream_pending_submissions(
+                            session_id
+                        ):
+                            await self._drain_and_process(agent_session)
+                            if not session.is_running:
+                                break
+                        # Stream exited without error (e.g. shutdown). Break.
+                        if not session.is_running:
+                            break
+                    except PyMongoError as e:
+                        logger.warning(
+                            f"Change stream failed for {session_id}, "
+                            f"falling back to polling: {e}"
+                        )
+                        use_change_stream = False
+                    except NotImplementedError:
+                        # NoopSessionStore (or any store without watch())
+                        use_change_stream = False
+                else:
+                    await asyncio.sleep(0.5)
+                    await self._drain_and_process(agent_session)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(
+                    f"Submission consume error for {session_id}: {e}"
+                )
+                await asyncio.sleep(1)
+
+    async def _drain_and_process(self, agent_session: AgentSession) -> None:
+        """Claim and process all pending submissions for ``agent_session``, FIFO.
+
+        Handles ``interrupt`` and ``shutdown`` ops inline (they don't go
+        through the agent loop). All other ops are reconstructed into a
+        ``Submission(Operation(...))`` and dispatched to ``process_submission``.
+        Marks each submission ``done`` in a finally so a poison submission
+        never gets redelivered.
+        """
+        session = agent_session.session
+        session_id = agent_session.session_id
+        store = self._store()
+        if not getattr(store, "enabled", False):
+            return
+        while session.is_running:
+            claimed = await store.claim_pending_submission(session_id, self._holder_id)
+            if claimed is None:
+                return
+            submission_id = claimed.get("_id")
+            op_type = claimed.get("op_type")
+            payload = claimed.get("payload") or {}
+            try:
+                agent_session.last_submission_at = asyncio.get_event_loop().time()
+                # Inline ops: interrupt + shutdown bypass the agent loop.
+                if op_type == "interrupt":
+                    session.cancel()
+                    continue
+                if op_type == "shutdown":
+                    session.is_running = False
+                    return
+                agent_session.is_processing = True
+                try:
+                    operation = self._build_operation(op_type, payload)
+                    submission = Submission(
+                        id=f"sub_{uuid.uuid4().hex[:8]}",
+                        operation=operation,
+                    )
+                    should_continue = await process_submission(session, submission)
+                finally:
+                    agent_session.is_processing = False
+                    await self.persist_session_snapshot(agent_session)
+                if not should_continue:
+                    session.is_running = False
+                    return
+            except Exception as e:
+                logger.error(
+                    f"Error processing submission {submission_id} "
+                    f"for {session_id}: {e}"
+                )
+            finally:
+                # Always mark done so a poison row is not redelivered.
+                try:
+                    await store.mark_submission_done(submission_id)
+                except Exception as e:
+                    logger.debug(
+                        f"mark_submission_done failed for {submission_id}: {e}"
+                    )
+
+    def _build_operation(self, op_type: Any, payload: dict) -> Operation:
+        """Reconstruct an ``Operation`` from a ``pending_submissions`` row."""
+        if isinstance(op_type, OpType):
+            enum_op = op_type
+        else:
+            enum_op = OpType(op_type)
+        return Operation(op_type=enum_op, data=payload or None)
+
     async def _run_session(
         self,
         session_id: str,
-        submission_queue: asyncio.Queue,
         event_queue: asyncio.Queue,
         tool_router: ToolRouter,
     ) -> None:
@@ -830,30 +946,15 @@ class SessionManager:
                     Event(event_type="ready", data={"message": "Agent initialized"})
                 )
 
-                while session.is_running:
-                    try:
-                        # Wait for submission with timeout to allow checking is_running
-                        submission = await asyncio.wait_for(
-                            submission_queue.get(), timeout=1.0
-                        )
-                        agent_session.is_processing = True
-                        try:
-                            should_continue = await process_submission(session, submission)
-                        finally:
-                            agent_session.is_processing = False
-                            await self.persist_session_snapshot(agent_session)
-                        if not should_continue:
-                            break
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        logger.info(f"Session {session_id} cancelled")
-                        break
-                    except Exception as e:
-                        logger.error(f"Error in session {session_id}: {e}")
-                        await session.send_event(
-                            Event(event_type="error", data={"error": str(e)})
-                        )
+                try:
+                    await self._consume_submissions(agent_session)
+                except asyncio.CancelledError:
+                    logger.info(f"Session {session_id} cancelled")
+                except Exception as e:
+                    logger.error(f"Error in session {session_id}: {e}")
+                    await session.send_event(
+                        Event(event_type="error", data={"error": str(e)})
+                    )
 
         finally:
             broadcast_task.cancel()
@@ -891,45 +992,89 @@ class SessionManager:
 
             logger.info(f"Session {session_id} ended")
 
-    async def submit(self, session_id: str, operation: Operation) -> bool:
-        """Submit an operation to a session."""
-        async with self._lock:
-            agent_session = self.sessions.get(session_id)
+    async def _enqueue_or_false(
+        self, session_id: str, op_type: str, payload: dict[str, Any]
+    ) -> bool:
+        """Enqueue a pending submission, returning False when no session
+        exists in either runtime memory or the durable store.
 
-        if not agent_session or not agent_session.is_active:
-            logger.warning(f"Session {session_id} not found or inactive")
+        The route layer's ``_check_session_access`` already gates by user;
+        this method only verifies the session exists somewhere we can
+        deliver to. When the store is the no-op (Mongo disabled), require
+        the session to be in our in-memory map and refuse if not — there
+        is no other holder to forward to.
+        """
+        store = self._store()
+        in_memory = self.sessions.get(session_id)
+        if not getattr(store, "enabled", False):
+            if in_memory is None or not in_memory.is_active:
+                logger.warning(f"Session {session_id} not found or inactive")
+                return False
+            # No durable queue — without Mongo we cannot enqueue. Drop and
+            # warn; this path is exercised in CLI/local-dev only and the
+            # legacy in-memory flow has been removed.
+            logger.warning(
+                f"Cannot enqueue submission for {session_id}: "
+                "Mongo persistence disabled"
+            )
             return False
-
-        submission = Submission(id=f"sub_{uuid.uuid4().hex[:8]}", operation=operation)
-        await agent_session.submission_queue.put(submission)
+        if in_memory is None:
+            doc = await store.load_session(session_id)
+            if doc is None:
+                logger.warning(f"Session {session_id} not found")
+                return False
+        await store.enqueue_pending_submission(
+            session_id, op_type=op_type, payload=payload
+        )
         return True
+
+    async def submit(self, session_id: str, operation: Operation) -> bool:
+        """Submit an operation to a session via the durable pending queue."""
+        return await self._enqueue_or_false(
+            session_id,
+            op_type=operation.op_type.value,
+            payload=operation.data or {},
+        )
 
     async def submit_user_input(self, session_id: str, text: str) -> bool:
         """Submit user input to a session."""
-        operation = Operation(op_type=OpType.USER_INPUT, data={"text": text})
-        return await self.submit(session_id, operation)
+        return await self._enqueue_or_false(
+            session_id, op_type="user_input", payload={"text": text}
+        )
 
     async def submit_approval(
         self, session_id: str, approvals: list[dict[str, Any]]
     ) -> bool:
         """Submit tool approvals to a session."""
-        operation = Operation(
-            op_type=OpType.EXEC_APPROVAL, data={"approvals": approvals}
+        return await self._enqueue_or_false(
+            session_id, op_type="exec_approval", payload={"approvals": approvals}
         )
-        return await self.submit(session_id, operation)
 
     async def interrupt(self, session_id: str) -> bool:
-        """Interrupt a session by signalling cancellation directly (bypasses queue)."""
-        agent_session = self.sessions.get(session_id)
-        if not agent_session or not agent_session.is_active:
+        """Interrupt by signalling cancellation. Holder fast-path; non-holder
+        enqueues an interrupt op for the actual lease holder to consume.
+        """
+        async with self._lock:
+            agent_session = self.sessions.get(session_id)
+        if agent_session and agent_session.is_active:
+            # We are the holder — fast path, cancel directly.
+            agent_session.session.cancel()
+            return True
+        store = self._store()
+        if not getattr(store, "enabled", False):
             return False
-        agent_session.session.cancel()
+        if await store.load_session(session_id) is None:
+            return False
+        await store.enqueue_pending_submission(
+            session_id, op_type="interrupt", payload={}
+        )
         return True
 
     async def undo(self, session_id: str) -> bool:
         """Undo last turn in a session."""
-        operation = Operation(op_type=OpType.UNDO)
-        return await self.submit(session_id, operation)
+        return await self._enqueue_or_false(
+            session_id, op_type="undo", payload={}
+        )
 
     async def truncate(self, session_id: str, user_message_index: int) -> bool:
         """Truncate conversation to before a specific user message (direct, no queue)."""
@@ -944,13 +1089,20 @@ class SessionManager:
 
     async def compact(self, session_id: str) -> bool:
         """Compact context in a session."""
-        operation = Operation(op_type=OpType.COMPACT)
-        return await self.submit(session_id, operation)
+        return await self._enqueue_or_false(
+            session_id, op_type="compact", payload={}
+        )
 
     async def shutdown_session(self, session_id: str) -> bool:
-        """Shutdown a specific session."""
-        operation = Operation(op_type=OpType.SHUTDOWN)
-        success = await self.submit(session_id, operation)
+        """Shutdown a specific session.
+
+        Enqueues a ``shutdown`` op (the consumer drains it inline by setting
+        ``session.is_running = False``), then releases the lease and awaits
+        the task locally so ``DELETE`` callers see a clean stop.
+        """
+        success = await self._enqueue_or_false(
+            session_id, op_type="shutdown", payload={}
+        )
 
         if success:
             async with self._lock:

@@ -59,7 +59,7 @@
       "id": "US-004",
       "title": "Replace submission_queue with Mongo-backed reader; add is_in_tool_call (Step 3)",
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "submission_queue: asyncio.Queue field is removed from AgentSession dataclass and from _create_session_sync",
         "_run_session loop body waits on change_stream_pending_submissions(session_id) (or 500ms poll fallback) instead of submission_queue.get(); each consumed doc → claim_pending_submission CAS → Submission(operation=Operation(...)) → process_submission → mark_submission_done in finally",

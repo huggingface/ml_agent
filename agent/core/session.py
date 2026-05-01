@@ -114,6 +114,7 @@ class Session:
         self.config = config
         self.is_running = True
         self._cancelled = asyncio.Event()
+        self.is_in_tool_call: bool = False
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
         self._running_job_ids: set[str] = set()  # HF job IDs currently executing
