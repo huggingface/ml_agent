@@ -116,6 +116,7 @@ class SessionCapacityError(Exception):
 # and per-request overhead.
 MAX_SESSIONS: int = 200
 MAX_SESSIONS_PER_USER: int = 10
+DEFAULT_YOLO_COST_CAP_USD: float = 5.0
 
 
 class SessionManager:
@@ -297,6 +298,20 @@ class SessionManager:
             return "ended"
         return "idle"
 
+    @staticmethod
+    def _auto_approval_summary(session: Session) -> dict[str, Any]:
+        if hasattr(session, "auto_approval_policy_summary"):
+            return session.auto_approval_policy_summary()
+        cap = getattr(session, "auto_approval_cost_cap_usd", None)
+        estimated = float(getattr(session, "auto_approval_estimated_spend_usd", 0.0) or 0.0)
+        remaining = None if cap is None else round(max(0.0, float(cap) - estimated), 4)
+        return {
+            "enabled": bool(getattr(session, "auto_approval_enabled", False)),
+            "cost_cap_usd": cap,
+            "estimated_spend_usd": round(estimated, 4),
+            "remaining_usd": remaining,
+        }
+
     async def _start_agent_session(
         self,
         *,
@@ -384,6 +399,20 @@ class SessionManager:
                 notification_destinations=list(
                     agent_session.session.notification_destinations
                 ),
+                auto_approval_enabled=bool(
+                    getattr(agent_session.session, "auto_approval_enabled", False)
+                ),
+                auto_approval_cost_cap_usd=getattr(
+                    agent_session.session, "auto_approval_cost_cap_usd", None
+                ),
+                auto_approval_estimated_spend_usd=float(
+                    getattr(
+                        agent_session.session,
+                        "auto_approval_estimated_spend_usd",
+                        0.0,
+                    )
+                    or 0.0
+                ),
             )
         except Exception as e:
             logger.warning(
@@ -465,6 +494,14 @@ class SessionManager:
 
         self._restore_pending_approval(session, meta.get("pending_approval") or [])
         session.turn_count = int(meta.get("turn_count") or 0)
+        session.auto_approval_enabled = bool(meta.get("auto_approval_enabled", False))
+        raw_cap = meta.get("auto_approval_cost_cap_usd")
+        session.auto_approval_cost_cap_usd = (
+            float(raw_cap) if isinstance(raw_cap, int | float) else None
+        )
+        session.auto_approval_estimated_spend_usd = float(
+            meta.get("auto_approval_estimated_spend_usd") or 0.0
+        )
 
         created_at = meta.get("created_at")
         if not isinstance(created_at, datetime):
@@ -893,6 +930,43 @@ class SessionManager:
         await self.persist_session_snapshot(agent_session, runtime_state="idle")
         return True
 
+    async def update_session_auto_approval(
+        self,
+        session_id: str,
+        *,
+        enabled: bool,
+        cost_cap_usd: float | None,
+        cap_provided: bool = False,
+    ) -> dict[str, Any]:
+        agent_session = self.sessions.get(session_id)
+        if not agent_session or not agent_session.is_active:
+            raise ValueError("Session not found or inactive")
+
+        session = agent_session.session
+        if enabled:
+            if not cap_provided and cost_cap_usd is None:
+                cost_cap_usd = getattr(
+                    session, "auto_approval_cost_cap_usd", None
+                )
+                if cost_cap_usd is None:
+                    cost_cap_usd = DEFAULT_YOLO_COST_CAP_USD
+            elif cost_cap_usd is None:
+                cost_cap_usd = DEFAULT_YOLO_COST_CAP_USD
+        else:
+            if not cap_provided:
+                cost_cap_usd = getattr(session, "auto_approval_cost_cap_usd", None)
+
+        if hasattr(session, "set_auto_approval_policy"):
+            session.set_auto_approval_policy(
+                enabled=enabled,
+                cost_cap_usd=cost_cap_usd,
+            )
+        else:
+            session.auto_approval_enabled = bool(enabled)
+            session.auto_approval_cost_cap_usd = cost_cap_usd
+        await self.persist_session_snapshot(agent_session)
+        return self._auto_approval_summary(session)
+
     def get_session_owner(self, session_id: str) -> str | None:
         """Get the user_id that owns a session, or None if session doesn't exist."""
         agent_session = self.sessions.get(session_id)
@@ -935,6 +1009,7 @@ class SessionManager:
             "notification_destinations": list(
                 agent_session.session.notification_destinations
             ),
+            "auto_approval": self._auto_approval_summary(agent_session.session),
         }
 
     def set_notification_destinations(
@@ -1001,6 +1076,25 @@ class SessionManager:
                         "model": row.get("model"),
                         "title": row.get("title"),
                         "notification_destinations": row.get("notification_destinations") or [],
+                        "auto_approval": {
+                            "enabled": bool(row.get("auto_approval_enabled", False)),
+                            "cost_cap_usd": row.get("auto_approval_cost_cap_usd"),
+                            "estimated_spend_usd": float(
+                                row.get("auto_approval_estimated_spend_usd") or 0.0
+                            ),
+                            "remaining_usd": (
+                                None
+                                if row.get("auto_approval_cost_cap_usd") is None
+                                else round(
+                                    max(
+                                        0.0,
+                                        float(row.get("auto_approval_cost_cap_usd") or 0.0)
+                                        - float(row.get("auto_approval_estimated_spend_usd") or 0.0),
+                                    ),
+                                    4,
+                                )
+                            ),
+                        },
                     }
                 )
             return results

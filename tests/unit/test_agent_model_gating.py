@@ -127,3 +127,48 @@ async def test_user_quota_response_uses_premium_fields_only(monkeypatch):
         "premium_daily_cap": 5,
         "premium_remaining": 3,
     }
+
+
+@pytest.mark.asyncio
+async def test_set_session_yolo_calls_manager_with_cap_presence(monkeypatch):
+    async def fake_check_session_access(session_id, user, request=None):
+        assert session_id == "s1"
+        assert user["user_id"] == "u1"
+        return object()
+
+    calls = []
+
+    async def fake_update_session_auto_approval(session_id, **kwargs):
+        calls.append((session_id, kwargs))
+        return {
+            "enabled": kwargs["enabled"],
+            "cost_cap_usd": 7.5,
+            "estimated_spend_usd": 0.0,
+            "remaining_usd": 7.5,
+        }
+
+    monkeypatch.setattr(agent, "_check_session_access", fake_check_session_access)
+    monkeypatch.setattr(
+        agent.session_manager,
+        "update_session_auto_approval",
+        fake_update_session_auto_approval,
+    )
+
+    response = await agent.set_session_yolo(
+        "s1",
+        agent.SessionYoloRequest(enabled=True, cost_cap_usd=7.5),
+        {"user_id": "u1"},
+    )
+
+    assert response["enabled"] is True
+    assert response["remaining_usd"] == 7.5
+    assert calls == [
+        (
+            "s1",
+            {
+                "enabled": True,
+                "cost_cap_usd": 7.5,
+                "cap_provided": True,
+            },
+        )
+    ]

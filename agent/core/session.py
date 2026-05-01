@@ -124,6 +124,9 @@ class Session:
         self.notification_gateway = notification_gateway
         self.notification_destinations = list(notification_destinations or [])
         self.defer_turn_complete_notification = defer_turn_complete_notification
+        self.auto_approval_enabled: bool = False
+        self.auto_approval_cost_cap_usd: float | None = None
+        self.auto_approval_estimated_spend_usd: float = 0.0
 
         # Session trajectory logging
         self.logged_events: list[dict] = []
@@ -316,6 +319,40 @@ class Session:
         """Switch the active model and update the context window limit."""
         self.config.model_name = model_name
         self.context_manager.model_max_tokens = _get_max_tokens_safe(model_name)
+
+    def set_auto_approval_policy(
+        self, *, enabled: bool, cost_cap_usd: float | None
+    ) -> None:
+        self.auto_approval_enabled = bool(enabled)
+        self.auto_approval_cost_cap_usd = cost_cap_usd
+
+    def add_auto_approval_estimated_spend(self, amount_usd: float | None) -> None:
+        if amount_usd is None or amount_usd <= 0:
+            return
+        self.auto_approval_estimated_spend_usd = round(
+            self.auto_approval_estimated_spend_usd + float(amount_usd), 4
+        )
+
+    @property
+    def auto_approval_remaining_usd(self) -> float | None:
+        if self.auto_approval_cost_cap_usd is None:
+            return None
+        return round(
+            max(
+                0.0,
+                self.auto_approval_cost_cap_usd
+                - self.auto_approval_estimated_spend_usd,
+            ),
+            4,
+        )
+
+    def auto_approval_policy_summary(self) -> dict[str, Any]:
+        return {
+            "enabled": self.auto_approval_enabled,
+            "cost_cap_usd": self.auto_approval_cost_cap_usd,
+            "estimated_spend_usd": round(self.auto_approval_estimated_spend_usd, 4),
+            "remaining_usd": self.auto_approval_remaining_usd,
+        }
 
     def effective_effort_for(self, model_name: str) -> str | None:
         """Resolve the effort level to actually send for ``model_name``.

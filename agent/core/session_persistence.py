@@ -176,6 +176,9 @@ class MongoSessionStore(NoopSessionStore):
         pending_approval: list[dict[str, Any]] | None = None,
         claude_counted: bool = False,
         notification_destinations: list[str] | None = None,
+        auto_approval_enabled: bool = False,
+        auto_approval_cost_cap_usd: float | None = None,
+        auto_approval_estimated_spend_usd: float = 0.0,
     ) -> None:
         if not self._ready():
             return
@@ -204,6 +207,9 @@ class MongoSessionStore(NoopSessionStore):
                     "pending_approval": pending_approval or [],
                     "claude_counted": claude_counted,
                     "notification_destinations": notification_destinations or [],
+                    "auto_approval_enabled": auto_approval_enabled,
+                    "auto_approval_cost_cap_usd": auto_approval_cost_cap_usd,
+                    "auto_approval_estimated_spend_usd": auto_approval_estimated_spend_usd,
                 },
             },
             upsert=True,
@@ -224,6 +230,9 @@ class MongoSessionStore(NoopSessionStore):
         claude_counted: bool = False,
         created_at: datetime | None = None,
         notification_destinations: list[str] | None = None,
+        auto_approval_enabled: bool = False,
+        auto_approval_cost_cap_usd: float | None = None,
+        auto_approval_estimated_spend_usd: float = 0.0,
     ) -> None:
         if not self._ready():
             return
@@ -241,6 +250,9 @@ class MongoSessionStore(NoopSessionStore):
             pending_approval=pending_approval,
             claude_counted=claude_counted,
             notification_destinations=notification_destinations,
+            auto_approval_enabled=auto_approval_enabled,
+            auto_approval_cost_cap_usd=auto_approval_cost_cap_usd,
+            auto_approval_estimated_spend_usd=auto_approval_estimated_spend_usd,
         )
         ops: list[Any] = []
         for idx, raw in enumerate(messages):

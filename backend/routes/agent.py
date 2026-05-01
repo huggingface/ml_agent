@@ -26,6 +26,7 @@ from models import (
     SessionInfo,
     SessionNotificationsRequest,
     SessionResponse,
+    SessionYoloRequest,
     SubmitRequest,
     TruncateRequest,
 )
@@ -496,6 +497,26 @@ async def set_session_notifications(
         "session_id": session_id,
         "notification_destinations": destinations,
     }
+
+
+@router.patch("/session/{session_id}/yolo")
+async def set_session_yolo(
+    session_id: str,
+    body: SessionYoloRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Update the session-scoped auto-approval policy."""
+    await _check_session_access(session_id, user)
+    try:
+        summary = await session_manager.update_session_auto_approval(
+            session_id,
+            enabled=body.enabled,
+            cost_cap_usd=body.cost_cap_usd,
+            cap_provided="cost_cap_usd" in body.model_fields_set,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"session_id": session_id, **summary}
 
 
 @router.get("/user/quota")

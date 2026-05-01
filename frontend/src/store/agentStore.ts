@@ -50,6 +50,12 @@ export interface JobsUpgradeState {
   namespace?: string | null;
 }
 
+export interface ToolBudgetBlockState {
+  reason?: string | null;
+  estimatedCostUsd?: number | null;
+  remainingCapUsd?: number | null;
+}
+
 export type ActivityStatus =
   | { type: 'idle' }
   | { type: 'thinking' }
@@ -145,6 +151,9 @@ interface AgentStore {
   // Tool rejected states (tool_call_id -> true if rejected by user) - persisted across renders
   rejectedTools: Record<string, boolean>;
 
+  // Tool budget-block metadata (tool_call_id -> display metadata) - transient UI state
+  budgetBlocks: Record<string, ToolBudgetBlockState>;
+
   // ── Per-session actions ─────────────────────────────────────────────
 
   /** Update a session's state. If it's the active session, also update flat state. */
@@ -196,6 +205,9 @@ interface AgentStore {
 
   setToolRejected: (toolCallId: string, isRejected: boolean) => void;
   getToolRejected: (toolCallId: string) => boolean | undefined;
+
+  setToolBudgetBlock: (toolCallId: string, block: ToolBudgetBlockState | null) => void;
+  getToolBudgetBlock: (toolCallId: string) => ToolBudgetBlockState | undefined;
 }
 
 /**
@@ -300,6 +312,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   trackioDashboards: loadTrackioDashboards(),
   toolErrors: loadToolErrors(),
   rejectedTools: loadRejectedTools(),
+  budgetBlocks: {},
 
   // ── Per-session state management ──────────────────────────────────
 
@@ -529,4 +542,24 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   },
 
   getToolRejected: (toolCallId) => get().rejectedTools[toolCallId],
+
+  // ── Tool Budget Blocks ───────────────────────────────────────────────
+
+  setToolBudgetBlock: (toolCallId, block) => {
+    set((state) => {
+      if (!block) {
+        const next = { ...state.budgetBlocks };
+        delete next[toolCallId];
+        return { budgetBlocks: next };
+      }
+      return {
+        budgetBlocks: {
+          ...state.budgetBlocks,
+          [toolCallId]: block,
+        },
+      };
+    });
+  },
+
+  getToolBudgetBlock: (toolCallId) => get().budgetBlocks[toolCallId],
 }));
