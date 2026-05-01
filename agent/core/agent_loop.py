@@ -356,6 +356,7 @@ async def _record_manual_approved_spend_if_needed(
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_DELAYS = [5, 15, 30]  # seconds between retries
 _LLM_RATE_LIMIT_RETRY_DELAYS = [30, 60]  # exceed Bedrock's ~60s TPM bucket window
+_LLM_TIMEOUT = 900  # seconds (15 minutes)
 
 
 def _is_rate_limit_error(error: Exception) -> bool:
@@ -727,23 +728,86 @@ def _assistant_message_from_result(
 
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
-    response = None
     _healed_effort = False  # one-shot safety net per call
     _healed_thinking_signature = False
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
+
+    # Initialize accumulators
+    full_content = ""
+    tool_calls_acc: dict[int, dict] = {}
+    token_count = 0
+    finish_reason = None
+    final_usage_chunk = None
+    chunks = []
+    should_replay_thinking = _should_replay_thinking_state(llm_params.get("model"))
+
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
+            # Reset accumulators on retry
+            full_content = ""
+            tool_calls_acc = {}
+            token_count = 0
+            finish_reason = None
+            final_usage_chunk = None
+            chunks = []
+
             response = await acompletion(
                 messages=messages,
                 tools=tools,
                 tool_choice="auto",
                 stream=True,
                 stream_options={"include_usage": True},
-                timeout=600,
+                timeout=_LLM_TIMEOUT,
                 **llm_params,
             )
+
+            async for chunk in response:
+                chunks.append(chunk)
+                if session.is_cancelled:
+                    tool_calls_acc.clear()
+                    break
+
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        token_count = chunk.usage.total_tokens
+                        final_usage_chunk = chunk
+                    continue
+
+                delta = choice.delta
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+                if delta.content:
+                    full_content += delta.content
+                    await session.send_event(
+                        Event(event_type="assistant_chunk", data={"content": delta.content})
+                    )
+
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {
+                                "id": "", "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc_delta.id:
+                            tool_calls_acc[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+
+                if hasattr(chunk, "usage") and chunk.usage:
+                    token_count = chunk.usage.total_tokens
+                    final_usage_chunk = chunk
+
+            # Success: exit the retry loop
             break
+
         except ContextWindowExceededError:
             raise
         except Exception as e:
@@ -778,57 +842,6 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
                 await asyncio.sleep(_delay)
                 continue
             raise
-
-    full_content = ""
-    tool_calls_acc: dict[int, dict] = {}
-    token_count = 0
-    finish_reason = None
-    final_usage_chunk = None
-    chunks = []
-    should_replay_thinking = _should_replay_thinking_state(llm_params.get("model"))
-
-    async for chunk in response:
-        chunks.append(chunk)
-        if session.is_cancelled:
-            tool_calls_acc.clear()
-            break
-
-        choice = chunk.choices[0] if chunk.choices else None
-        if not choice:
-            if hasattr(chunk, "usage") and chunk.usage:
-                token_count = chunk.usage.total_tokens
-                final_usage_chunk = chunk
-            continue
-
-        delta = choice.delta
-        if choice.finish_reason:
-            finish_reason = choice.finish_reason
-
-        if delta.content:
-            full_content += delta.content
-            await session.send_event(
-                Event(event_type="assistant_chunk", data={"content": delta.content})
-            )
-
-        if delta.tool_calls:
-            for tc_delta in delta.tool_calls:
-                idx = tc_delta.index
-                if idx not in tool_calls_acc:
-                    tool_calls_acc[idx] = {
-                        "id": "", "type": "function",
-                        "function": {"name": "", "arguments": ""},
-                    }
-                if tc_delta.id:
-                    tool_calls_acc[idx]["id"] = tc_delta.id
-                if tc_delta.function:
-                    if tc_delta.function.name:
-                        tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
-                    if tc_delta.function.arguments:
-                        tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
-
-        if hasattr(chunk, "usage") and chunk.usage:
-            token_count = chunk.usage.total_tokens
-            final_usage_chunk = chunk
 
     usage = await telemetry.record_llm_call(
         session,
@@ -873,7 +886,7 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
                 tools=tools,
                 tool_choice="auto",
                 stream=False,
-                timeout=600,
+                timeout=_LLM_TIMEOUT,
                 **llm_params,
             )
             break
