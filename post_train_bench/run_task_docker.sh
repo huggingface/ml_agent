@@ -316,8 +316,12 @@ srun \
             export HF_TOKEN="$HUGGING_FACE_HUB_READ_TOKEN"
             export HUGGING_FACE_HUB_TOKEN="$HUGGING_FACE_HUB_READ_TOKEN"
         fi
-        cd /ml-intern-src
+        rm -rf /tmp/ml-intern-install-src
+        cp -a /ml-intern-src /tmp/ml-intern-install-src
+        cd /tmp/ml-intern-install-src
         uv pip install --system .
+        cd /
+        rm -rf /tmp/ml-intern-install-src
         cd /workspace/task
         date --iso-8601=seconds > /tmp/solve_start.txt
         set +e
