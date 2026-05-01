@@ -66,6 +66,7 @@ class SessionResponse(BaseModel):
 
     session_id: str
     ready: bool = True
+    model: str | None = None
 
 
 class PendingApprovalTool(BaseModel):
