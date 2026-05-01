@@ -1609,10 +1609,14 @@ async def submission_loop(
         session_holder[0] = session
     logger.info("Agent loop started")
 
-    # Retry any failed uploads from previous sessions (fire-and-forget)
+    # Retry any failed uploads from previous sessions (fire-and-forget).
+    # Includes the personal trace repo when enabled so a session that failed
+    # to publish to the user's HF dataset gets a fresh attempt on next run.
     if config and config.save_sessions:
         Session.retry_failed_uploads_detached(
-            directory="session_logs", repo_id=config.session_dataset_repo
+            directory="session_logs",
+            repo_id=config.session_dataset_repo,
+            personal_repo_id=session._personal_trace_repo_id(),
         )
 
     try:

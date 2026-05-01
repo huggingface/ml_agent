@@ -427,6 +427,7 @@ HELP_TEXT = f"""\
 {_I}  [cyan]/effort[/cyan] [level]  Reasoning effort (minimal|low|medium|high|xhigh|max|off)
 {_I}  [cyan]/yolo[/cyan]            Toggle auto-approve mode
 {_I}  [cyan]/status[/cyan]          Current model & turn count
+{_I}  [cyan]/share-traces[/cyan] [public|private]  Show/flip visibility of your HF trace dataset
 {_I}  [cyan]/quit[/cyan]            Exit"""
 
 

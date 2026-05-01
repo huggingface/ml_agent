@@ -346,7 +346,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onError: (error) => {
       updateSession(sessionId, { isProcessing: false });
-      // Claude daily-cap: open the cap dialog instead of the generic error
+      // Premium-model daily cap: open the cap dialog instead of the generic error
       // banner. Transport marks the error with this sentinel.
       if (error.message === 'CLAUDE_QUOTA_EXHAUSTED') {
         if (isActiveRef.current) {

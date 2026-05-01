@@ -1,12 +1,15 @@
-"""Daily quota for Claude session creations.
+"""Daily quota for premium model session creations.
 
-Tracks per-user Claude session starts against a daily cap derived from the
-user's HF plan. MongoDB is the source of truth when configured; the
+Tracks per-user premium model session starts against a daily cap derived from
+the user's HF plan. MongoDB is the source of truth when configured; the
 in-process dict remains the fallback for local/dev/test runs.
 
-Unit: session *creations*, not messages. A user who selects Claude in a new
-session consumes one quota point; switching an existing Claude session to
-Claude again doesn't (`AgentSession.claude_counted` guards that).
+The public names still say ``claude`` because this quota bucket originally
+only covered Claude and the persisted session field uses that name.
+
+Unit: session *creations*, not messages. A user who sends with a premium model
+in a new session consumes one quota point; switching an already-counted session
+back to a premium model doesn't (`AgentSession.claude_counted` guards that).
 
 Cap tiers:
   free user   → CLAUDE_FREE_DAILY (1)

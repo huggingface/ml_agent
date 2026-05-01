@@ -87,6 +87,7 @@ class AgentSession:
     tool_router: ToolRouter
     submission_queue: asyncio.Queue
     user_id: str = "dev"  # Owner of this session
+    hf_username: str | None = None  # HF namespace used for personal trace uploads
     hf_token: str | None = None  # User's HF OAuth token for tool execution
     task: asyncio.Task | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -157,6 +158,7 @@ class SessionManager:
         *,
         session_id: str,
         user_id: str,
+        hf_username: str | None,
         hf_token: str | None,
         model: str | None,
         event_queue: asyncio.Queue,
@@ -178,6 +180,7 @@ class SessionManager:
             tool_router=tool_router,
             hf_token=hf_token,
             user_id=user_id,
+            hf_username=hf_username,
             notification_gateway=self.messaging_gateway,
             notification_destinations=notification_destinations or [],
             session_id=session_id,
@@ -327,11 +330,18 @@ class SessionManager:
         )
 
     @staticmethod
-    def _update_hf_token(agent_session: AgentSession, hf_token: str | None) -> None:
-        if not hf_token:
-            return
-        agent_session.hf_token = hf_token
-        agent_session.session.hf_token = hf_token
+    def _update_hf_identity(
+        agent_session: AgentSession,
+        *,
+        hf_token: str | None,
+        hf_username: str | None,
+    ) -> None:
+        if hf_token:
+            agent_session.hf_token = hf_token
+            agent_session.session.hf_token = hf_token
+        if hf_username:
+            agent_session.hf_username = hf_username
+            agent_session.session.hf_username = hf_username
 
     async def persist_session_snapshot(
         self,
@@ -373,13 +383,18 @@ class SessionManager:
         session_id: str,
         user_id: str,
         hf_token: str | None = None,
+        hf_username: str | None = None,
     ) -> AgentSession | None:
         """Return a live runtime session, lazily restoring it from Mongo."""
         async with self._lock:
             existing = self.sessions.get(session_id)
         if existing:
             if self._can_access_session(existing, user_id):
-                self._update_hf_token(existing, hf_token)
+                self._update_hf_identity(
+                    existing,
+                    hf_token=hf_token,
+                    hf_username=hf_username,
+                )
                 return existing
             return None
 
@@ -392,7 +407,11 @@ class SessionManager:
             existing = self.sessions.get(session_id)
         if existing:
             if self._can_access_session(existing, user_id):
-                self._update_hf_token(existing, hf_token)
+                self._update_hf_identity(
+                    existing,
+                    hf_token=hf_token,
+                    hf_username=hf_username,
+                )
                 return existing
             return None
 
@@ -410,6 +429,7 @@ class SessionManager:
             self._create_session_sync,
             session_id=session_id,
             user_id=owner or user_id,
+            hf_username=hf_username,
             hf_token=hf_token,
             model=model,
             event_queue=event_queue,
@@ -442,6 +462,7 @@ class SessionManager:
             tool_router=tool_router,
             submission_queue=submission_queue,
             user_id=owner or user_id,
+            hf_username=hf_username,
             hf_token=hf_token,
             created_at=created_at,
             is_active=True,
@@ -455,7 +476,11 @@ class SessionManager:
             tool_router=tool_router,
         )
         if started is not agent_session:
-            self._update_hf_token(started, hf_token)
+            self._update_hf_identity(
+                started,
+                hf_token=hf_token,
+                hf_username=hf_username,
+            )
             return started
         logger.info("Restored session %s for user %s", session_id, owner or user_id)
         return agent_session
@@ -463,6 +488,7 @@ class SessionManager:
     async def create_session(
         self,
         user_id: str = "dev",
+        hf_username: str | None = None,
         hf_token: str | None = None,
         model: str | None = None,
         is_pro: bool | None = None,
@@ -475,6 +501,7 @@ class SessionManager:
 
         Args:
             user_id: The ID of the user who owns this session.
+            hf_username: The HF username/namespace used for personal trace uploads.
             hf_token: The user's HF OAuth token, stored for tool execution.
             model: Optional model override. When set, replaces ``model_name``
                 on the per-session config clone. None falls back to the
@@ -513,6 +540,7 @@ class SessionManager:
             self._create_session_sync,
             session_id=session_id,
             user_id=user_id,
+            hf_username=hf_username,
             hf_token=hf_token,
             model=model,
             event_queue=event_queue,
@@ -525,6 +553,7 @@ class SessionManager:
             tool_router=tool_router,
             submission_queue=submission_queue,
             user_id=user_id,
+            hf_username=hf_username,
             hf_token=hf_token,
         )
 

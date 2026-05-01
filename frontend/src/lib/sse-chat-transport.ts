@@ -405,7 +405,7 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       this.sideChannel.onSessionDead(sessionId);
     }
     if (response.status === 429) {
-      // Claude daily-quota gate tripped. The prefix is the detection marker
+      // Premium-model daily quota gate tripped. The prefix is the detection marker
       // for useAgentChat's onError handler, which surfaces the cap dialog
       // instead of a generic error banner.
       throw new Error('CLAUDE_QUOTA_EXHAUSTED');

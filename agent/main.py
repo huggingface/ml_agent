@@ -892,8 +892,118 @@ async def _handle_slash_command(
             print(f"Context items: {len(session.context_manager.items)}")
         return None
 
+    if command == "/share-traces":
+        session = session_holder[0] if session_holder else None
+        await _handle_share_traces_command(arg, config, session)
+        return None
+
     print(f"Unknown command: {command}. Type /help for available commands.")
     return None
+
+
+async def _handle_share_traces_command(arg: str, config, session) -> None:
+    """Show or flip visibility of the user's personal trace dataset.
+
+    Uses the user's own HF_TOKEN (write-scoped to their namespace). Only
+    operates on the personal trace repo configured via
+    ``personal_trace_repo_template`` — never touches the shared org dataset.
+    """
+    from huggingface_hub import HfApi
+    from huggingface_hub.utils import HfHubHTTPError
+
+    console = get_console()
+    if session is None:
+        console.print("[bold red]No active session.[/bold red]")
+        return
+
+    repo_id = session._personal_trace_repo_id() if session is not None else None
+    if not repo_id:
+        if not getattr(config, "share_traces", False):
+            console.print(
+                "[yellow]share_traces is disabled in config. "
+                "Set it to true to publish per-session traces to your HF dataset."
+                "[/yellow]"
+            )
+            return
+        if not session.user_id:
+            console.print(
+                "[yellow]No HF username resolved \u2014 cannot pick a personal "
+                "trace repo. Set HF_TOKEN to a token tied to your account.[/yellow]"
+            )
+            return
+        console.print(
+            "[yellow]personal_trace_repo_template is unset \u2014 nothing to do.[/yellow]"
+        )
+        return
+
+    token = session.hf_token or resolve_hf_token()
+    if not token:
+        console.print(
+            "[bold red]No HF_TOKEN available.[/bold red] Cannot read or change "
+            "dataset visibility."
+        )
+        return
+
+    api = HfApi(token=token)
+    url = f"https://huggingface.co/datasets/{repo_id}"
+    target = arg.strip().lower()
+
+    if not target:
+        try:
+            info = await asyncio.to_thread(
+                api.repo_info, repo_id=repo_id, repo_type="dataset"
+            )
+            visibility = "private" if getattr(info, "private", False) else "public"
+            console.print(f"[bold]Trace dataset:[/bold] {url}")
+            console.print(f"[bold]Visibility:[/bold] {visibility}")
+            console.print(
+                "[dim]Use '/share-traces public' to publish, "
+                "'/share-traces private' to lock it back down.[/dim]"
+            )
+        except HfHubHTTPError as e:
+            if getattr(e.response, "status_code", None) == 404:
+                console.print(
+                    f"[dim]Dataset {repo_id} doesn't exist yet \u2014 it'll be "
+                    "created (private) on the next session save.[/dim]"
+                )
+            else:
+                console.print(f"[bold red]Hub error:[/bold red] {e}")
+        except Exception as e:
+            console.print(f"[bold red]Could not fetch dataset info:[/bold red] {e}")
+        return
+
+    if target not in {"public", "private"}:
+        console.print(
+            f"[bold red]Unknown argument:[/bold red] {target}. "
+            "Expected 'public' or 'private'."
+        )
+        return
+
+    private = target == "private"
+    try:
+        # Idempotent — create if missing so first-flip works even before any
+        # session has been saved yet.
+        await asyncio.to_thread(
+            api.create_repo,
+            repo_id=repo_id,
+            repo_type="dataset",
+            private=private,
+            token=token,
+            exist_ok=True,
+        )
+        await asyncio.to_thread(
+            api.update_repo_settings,
+            repo_id=repo_id,
+            repo_type="dataset",
+            private=private,
+            token=token,
+        )
+    except Exception as e:
+        console.print(f"[bold red]Failed to update visibility:[/bold red] {e}")
+        return
+
+    label = "PUBLIC" if not private else "private"
+    console.print(f"[green]Dataset is now {label}.[/green] {url}")
 
 
 async def main(

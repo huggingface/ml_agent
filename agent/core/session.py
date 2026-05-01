@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
 import uuid
@@ -88,10 +89,12 @@ class Session:
         defer_turn_complete_notification: bool = False,
         session_id: str | None = None,
         user_id: str | None = None,
+        hf_username: str | None = None,
         persistence_store: Any | None = None,
     ):
         self.hf_token: Optional[str] = hf_token
         self.user_id: Optional[str] = user_id
+        self.hf_username: Optional[str] = hf_username
         self.persistence_store = persistence_store
         self.tool_router = tool_router
         self.stream = stream
@@ -362,6 +365,7 @@ class Session:
         return {
             "session_id": self.session_id,
             "user_id": self.user_id,
+            "hf_username": self.hf_username,
             "session_start_time": self.session_start_time,
             "session_end_time": datetime.now().isoformat(),
             "model_name": self.config.model_name,
@@ -456,62 +460,174 @@ class Session:
             logger.error(f"Failed to update local save status: {e}")
             return False
 
-    def save_and_upload_detached(self, repo_id: str) -> Optional[str]:
-        """
-        Save session locally and spawn detached subprocess for upload (fire-and-forget)
+    def _personal_trace_repo_id(self) -> Optional[str]:
+        """Resolve the per-user trace repo id from config + HF username.
 
-        Args:
-            repo_id: HuggingFace dataset repo ID
-
-        Returns:
-            Path to local save file
+        Returns ``None`` when sharing is disabled, the user is anonymous,
+        or the template is missing — caller skips the personal upload in
+        those cases.
         """
-        # Save locally first (fast, synchronous)
-        local_path = self.save_trajectory_local(upload_status="pending")
-        if not local_path:
+        if not getattr(self.config, "share_traces", False):
+            return None
+        hf_user = self.hf_username or self.user_id
+        if not hf_user:
+            return None
+        template = getattr(self.config, "personal_trace_repo_template", None)
+        if not template:
+            return None
+        try:
+            return template.format(hf_user=hf_user)
+        except (KeyError, IndexError):
+            logger.debug("personal_trace_repo_template format failed: %r", template)
             return None
 
-        # Spawn detached subprocess for upload (fire-and-forget)
+    def _spawn_uploader(
+        self,
+        action: str,
+        target: str,
+        repo_id: str,
+        *,
+        format: str,
+        token_env: Optional[str],
+        private: bool,
+        token_value: Optional[str] = None,
+    ) -> None:
+        """Fire-and-forget spawn of ``session_uploader.py`` with the given args."""
         try:
             uploader_script = Path(__file__).parent / "session_uploader.py"
+            cmd = [
+                sys.executable,
+                str(uploader_script),
+                action,
+                target,
+                repo_id,
+                "--format",
+                format,
+                "--private",
+                "true" if private else "false",
+            ]
+            if token_env:
+                cmd.extend(["--token-env", token_env])
 
-            # Use Popen with detached process
+            env = os.environ.copy()
+            if token_value:
+                env["_ML_INTERN_PERSONAL_TOKEN"] = token_value
+
             subprocess.Popen(
-                [sys.executable, str(uploader_script), "upload", local_path, repo_id],
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=env,
                 start_new_session=True,  # Detach from parent
             )
         except Exception as e:
             logger.warning(f"Failed to spawn upload subprocess: {e}")
 
+    def save_and_upload_detached(self, repo_id: str) -> Optional[str]:
+        """
+        Save session locally and spawn detached subprocess(es) for upload
+        (fire-and-forget).
+
+        Always uploads to the shared org dataset (``repo_id``) in the
+        single-row format used by the KPI scheduler. When
+        ``config.share_traces`` is enabled and a username is known, also
+        uploads to the user's personal private dataset in Claude Code JSONL
+        format so the HF Agent Trace Viewer auto-renders it.
+
+        Args:
+            repo_id: HuggingFace dataset repo ID for the org/KPI upload.
+
+        Returns:
+            Path to local save file
+        """
+        local_path = self.save_trajectory_local(upload_status="pending")
+        if not local_path:
+            return None
+
+        self._spawn_uploader(
+            "upload",
+            local_path,
+            repo_id,
+            format="row",
+            token_env=None,  # default org token chain
+            private=False,
+        )
+
+        personal_repo = self._personal_trace_repo_id()
+        if personal_repo:
+            # User's own HF_TOKEN write-scoped to their namespace.
+            self._spawn_uploader(
+                "upload",
+                local_path,
+                personal_repo,
+                format="claude_code",
+                token_env="HF_TOKEN",
+                token_value=self.hf_token,
+                private=True,
+            )
+
         return local_path
 
     @staticmethod
     def retry_failed_uploads_detached(
-        directory: str = "session_logs", repo_id: Optional[str] = None
+        directory: str = "session_logs",
+        repo_id: Optional[str] = None,
+        *,
+        personal_repo_id: Optional[str] = None,
     ) -> None:
         """
-        Spawn detached subprocess to retry failed/pending uploads (fire-and-forget)
+        Spawn detached subprocess(es) to retry failed/pending uploads
+        (fire-and-forget).
 
         Args:
             directory: Directory containing session logs
-            repo_id: Target dataset repo ID
+            repo_id: Target dataset repo ID for the shared org/KPI upload.
+            personal_repo_id: Per-user dataset for Claude-Code-format
+                retries. ``None`` skips the personal retry pass.
         """
-        if not repo_id:
+        if not repo_id and not personal_repo_id:
             return
 
         try:
             uploader_script = Path(__file__).parent / "session_uploader.py"
 
-            # Spawn detached subprocess for retry
-            subprocess.Popen(
-                [sys.executable, str(uploader_script), "retry", directory, repo_id],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,  # Detach from parent
-            )
+            if repo_id:
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(uploader_script),
+                        "retry",
+                        directory,
+                        repo_id,
+                        "--format",
+                        "row",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+
+            if personal_repo_id:
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(uploader_script),
+                        "retry",
+                        directory,
+                        personal_repo_id,
+                        "--format",
+                        "claude_code",
+                        "--token-env",
+                        "HF_TOKEN",
+                        "--private",
+                        "true",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
         except Exception as e:
             logger.warning(f"Failed to spawn retry subprocess: {e}")
