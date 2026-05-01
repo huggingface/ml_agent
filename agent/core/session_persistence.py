@@ -620,7 +620,7 @@ class MongoSessionStore(NoopSessionStore):
     async def release_lease(self, session_id: str, holder_id: str) -> None:
         """Atomic release. No-op if we no longer hold the lease."""
         if not self._ready():
-            return None
+            return
         now = _now()
         try:
             await self.db.sessions.update_one(

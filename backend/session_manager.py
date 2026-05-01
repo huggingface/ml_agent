@@ -270,11 +270,9 @@ class SessionManager:
         try:
             requeued = await store.requeue_claimed_for(self._holder_id)
             logger.warning(
-                f"Lease lost for session {session_id} (held_by={self._holder_id}); "
-                f"requeued {requeued} claimed submissions"
+                "Lease lost for session %s (held_by=%s); requeued %d claimed submissions",
+                session_id, self._holder_id, requeued,
             )
-            if requeued > 0:
-                logger.info(f"requeue_claimed holder_id={self._holder_id} count={requeued}")
         except Exception as e:
             logger.error(
                 f"requeue_claimed_for failed during lease-loss for {session_id}: {e}"
@@ -1271,11 +1269,7 @@ class SessionManager:
         tool_router: ToolRouter,
     ) -> None:
         """Run the agent loop for a session and broadcast events via EventBroadcaster."""
-        agent_session = self.sessions.get(session_id)
-        if not agent_session:
-            logger.error(f"Session {session_id} not found")
-            return
-
+        agent_session = self.sessions[session_id]
         session = agent_session.session
 
         # Start event broadcaster task

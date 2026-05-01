@@ -747,7 +747,6 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     token_count = response.usage.total_tokens if response.usage else 0
     thinking_blocks, reasoning_content = _extract_thinking_state(message)
 
-    # Build tool_calls_acc in the same format as streaming
     tool_calls_acc: dict[int, dict] = {}
     if message.tool_calls:
         for idx, tc in enumerate(message.tool_calls):
@@ -760,7 +759,6 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
                 },
             }
 
-    # Emit the full message as a single event
     if content:
         await session.send_event(
             Event(event_type="assistant_message", data={"content": content})

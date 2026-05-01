@@ -452,9 +452,7 @@ async def research_handler(
                 continue
 
             try:
-                import json as _json
-
-                args_str = _json.dumps(tool_args)[:80]
+                args_str = json.dumps(tool_args)[:80]
                 await _log(f"▸ {tool_name}  {args_str}")
 
                 session.is_in_tool_call = True
