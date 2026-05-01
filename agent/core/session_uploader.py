@@ -36,10 +36,26 @@ _ORG_TOKEN_FALLBACK_CHAIN = (
     "HF_TOKEN",
     "HF_ADMIN_TOKEN",
 )
+_PERSONAL_TOKEN_ENV = "_ML_INTERN_PERSONAL_TOKEN"
 
 
 def _resolve_token(token_env: str | None) -> str:
     """Resolve an HF token from env. ``token_env`` overrides the fallback chain."""
+    if token_env == "HF_TOKEN":
+        try:
+            from agent.core.hf_tokens import resolve_hf_token
+
+            return (
+                resolve_hf_token(
+                    os.environ.get(_PERSONAL_TOKEN_ENV),
+                    os.environ.get("HF_TOKEN"),
+                )
+                or ""
+            )
+        except Exception:
+            token = os.environ.get(_PERSONAL_TOKEN_ENV) or os.environ.get("HF_TOKEN")
+            return token or ""
+
     if token_env:
         return os.environ.get(token_env, "") or ""
     for var in _ORG_TOKEN_FALLBACK_CHAIN:
@@ -139,7 +155,9 @@ def to_claude_code_jsonl(trajectory: dict) -> list[dict]:
     """
     session_id = trajectory["session_id"]
     model_name = trajectory.get("model_name") or ""
-    timestamp = trajectory.get("session_start_time") or datetime.now().isoformat()
+    fallback_timestamp = (
+        trajectory.get("session_start_time") or datetime.now().isoformat()
+    )
     messages: list[dict] = trajectory.get("messages") or []
 
     out: list[dict] = []
@@ -151,6 +169,7 @@ def to_claude_code_jsonl(trajectory: dict) -> list[dict]:
         role = msg.get("role")
         if role == "system":
             continue
+        timestamp = msg.get("timestamp") or fallback_timestamp
 
         if role == "user":
             content = _content_to_text(msg.get("content"))
@@ -277,6 +296,50 @@ def _url_field(format: str) -> str:
     return "personal_upload_url" if format == "claude_code" else "upload_url"
 
 
+def _read_session_file(session_file: str) -> dict:
+    """Read a local session file while respecting uploader file locks."""
+    import fcntl
+
+    with open(session_file, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        try:
+            return json.load(f)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _update_upload_status(
+    session_file: str,
+    status_key: str,
+    url_key: str,
+    status: str,
+    dataset_url: str | None = None,
+) -> None:
+    """Atomically update only this uploader's status fields.
+
+    The org and personal uploaders run as separate processes against the same
+    local session JSON file. Re-read under an exclusive lock so one uploader
+    cannot clobber fields written by the other.
+    """
+    import fcntl
+
+    with open(session_file, "r+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            data = json.load(f)
+            data[status_key] = status
+            if dataset_url is not None:
+                data[url_key] = dataset_url
+            data["last_save_time"] = datetime.now().isoformat()
+            f.seek(0)
+            json.dump(data, f, indent=2)
+            f.truncate()
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def dataset_card_readme(repo_id: str) -> str:
     """Dataset card for personal ML Intern session trace repos."""
     return f"""---
@@ -391,8 +454,7 @@ def upload_session_as_file(
     url_key = _url_field(format)
 
     try:
-        with open(session_file, "r") as f:
-            data = json.load(f)
+        data = _read_session_file(session_file)
 
         # Skip if already uploaded for this format.
         if data.get(status_key) == "success":
@@ -400,9 +462,7 @@ def upload_session_as_file(
 
         hf_token = _resolve_token(token_env)
         if not hf_token:
-            data[status_key] = "failed"
-            with open(session_file, "w") as f:
-                json.dump(data, f, indent=2)
+            _update_upload_status(session_file, status_key, url_key, "failed")
             return False
 
         # Build temp upload payload in the requested format.
@@ -453,11 +513,13 @@ def upload_session_as_file(
                         commit_message=f"Add session {session_id}",
                     )
 
-                    data[status_key] = "success"
-                    data[url_key] = f"https://huggingface.co/datasets/{repo_id}"
-                    with open(session_file, "w") as f:
-                        json.dump(data, f, indent=2)
-
+                    _update_upload_status(
+                        session_file,
+                        status_key,
+                        url_key,
+                        "success",
+                        f"https://huggingface.co/datasets/{repo_id}",
+                    )
                     return True
 
                 except Exception:
@@ -467,9 +529,9 @@ def upload_session_as_file(
                         wait_time = 2**attempt
                         time.sleep(wait_time)
                     else:
-                        data[status_key] = "failed"
-                        with open(session_file, "w") as f:
-                            json.dump(data, f, indent=2)
+                        _update_upload_status(
+                            session_file, status_key, url_key, "failed"
+                        )
                         return False
 
         finally:
@@ -500,8 +562,7 @@ def retry_failed_uploads(
 
     for filepath in session_files:
         try:
-            with open(filepath, "r") as f:
-                data = json.load(f)
+            data = _read_session_file(str(filepath))
 
             # Only retry pending or failed uploads. Files predating this
             # field don't have it; treat unknown as "not yet attempted" for

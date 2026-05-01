@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
 import uuid
@@ -485,6 +486,7 @@ class Session:
         format: str,
         token_env: Optional[str],
         private: bool,
+        token_value: Optional[str] = None,
     ) -> None:
         """Fire-and-forget spawn of ``session_uploader.py`` with the given args."""
         try:
@@ -503,11 +505,16 @@ class Session:
             if token_env:
                 cmd.extend(["--token-env", token_env])
 
+            env = os.environ.copy()
+            if token_value:
+                env["_ML_INTERN_PERSONAL_TOKEN"] = token_value
+
             subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=env,
                 start_new_session=True,  # Detach from parent
             )
         except Exception as e:
@@ -552,6 +559,7 @@ class Session:
                 personal_repo,
                 format="claude_code",
                 token_env="HF_TOKEN",
+                token_value=self.hf_token,
                 private=True,
             )
 
