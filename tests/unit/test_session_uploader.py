@@ -5,9 +5,15 @@ from agent.core.session_uploader import (
     _resolve_token,
     _update_upload_status,
     _upload_dataset_card,
+    _write_claude_code_payload,
+    _write_row_payload,
     dataset_card_readme,
     to_claude_code_jsonl,
 )
+
+HF_SECRET = "hf_" + "a" * 30
+ANTHROPIC_SECRET = "sk-ant-" + "b" * 24
+GITHUB_SECRET = "ghp_" + "c" * 36
 
 
 def test_dataset_card_readme_has_metadata_and_public_warning():
@@ -20,7 +26,11 @@ def test_dataset_card_readme_has_metadata_and_public_warning():
     assert "- coding-agent" in readme
     assert "- ml-intern" in readme
     assert 'path: "sessions/**/*.jsonl"' in readme
-    assert "**WARNING: no redaction or human review has been performed for this dataset.**" in readme
+    assert (
+        "**WARNING: no comprehensive redaction or human review has been performed for this dataset.**"
+        in readme
+    )
+    assert "automated best-effort scrubbing" in readme
     assert "Do not make this dataset public" in readme
 
 
@@ -43,7 +53,7 @@ def test_upload_dataset_card_only_for_claude_code_format():
     assert api.calls[0]["repo_id"] == "lewtun/ml-intern-sessions"
     assert api.calls[0]["repo_type"] == "dataset"
     assert api.calls[0]["token"] == "hf_token"
-    assert b"no redaction or human review" in api.calls[0]["path_or_fileobj"]
+    assert b"no comprehensive redaction or human review" in api.calls[0]["path_or_fileobj"]
 
 
 def test_personal_token_env_takes_precedence_for_hf_token(monkeypatch):
@@ -116,3 +126,74 @@ def test_claude_code_jsonl_uses_message_timestamps():
         "2026-01-01T00:00:02",
         "2026-01-01T00:00:03",
     ]
+
+
+def test_row_payload_scrubs_messages_events_and_tools(tmp_path):
+    tmp_file = tmp_path / "row.jsonl"
+    data = {
+        "session_id": "session-123",
+        "user_id": "lewtun",
+        "session_start_time": "2026-01-01T00:00:00",
+        "session_end_time": "2026-01-01T00:00:03",
+        "model_name": "anthropic/claude-opus-4-6",
+        "total_cost_usd": 0.01,
+        "messages": [{"role": "user", "content": f"token {HF_SECRET}"}],
+        "events": [{"type": "debug", "content": f"key {ANTHROPIC_SECRET}"}],
+        "tools": [{"name": "bash", "env": f"GITHUB_TOKEN={GITHUB_SECRET}"}],
+    }
+
+    _write_row_payload(data, str(tmp_file))
+
+    payload = tmp_file.read_text()
+    assert HF_SECRET not in payload
+    assert ANTHROPIC_SECRET not in payload
+    assert GITHUB_SECRET not in payload
+    assert "[REDACTED_HF_TOKEN]" in payload
+    assert "[REDACTED_ANTHROPIC_KEY]" in payload
+    assert "GITHUB_TOKEN=[REDACTED]" in payload
+
+
+def test_claude_code_payload_scrubs_messages_before_conversion(tmp_path):
+    tmp_file = tmp_path / "claude_code.jsonl"
+    data = {
+        "session_id": "session-123",
+        "model_name": "anthropic/claude-opus-4-6",
+        "session_start_time": "2026-01-01T00:00:00",
+        "messages": [
+            {
+                "role": "user",
+                "content": f"token {HF_SECRET}",
+                "timestamp": "2026-01-01T00:00:01",
+            },
+            {
+                "role": "assistant",
+                "content": "running tool",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {
+                            "name": "bash",
+                            "arguments": json.dumps({"key": ANTHROPIC_SECRET}),
+                        },
+                    }
+                ],
+                "timestamp": "2026-01-01T00:00:02",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": f"GITHUB_TOKEN={GITHUB_SECRET}",
+                "timestamp": "2026-01-01T00:00:03",
+            },
+        ],
+    }
+
+    _write_claude_code_payload(data, str(tmp_file))
+
+    payload = tmp_file.read_text()
+    assert HF_SECRET not in payload
+    assert ANTHROPIC_SECRET not in payload
+    assert GITHUB_SECRET not in payload
+    assert "[REDACTED_HF_TOKEN]" in payload
+    assert "[REDACTED_ANTHROPIC_KEY]" in payload
+    assert "GITHUB_TOKEN=[REDACTED]" in payload

@@ -253,12 +253,18 @@ def to_claude_code_jsonl(trajectory: dict) -> list[dict]:
     return out
 
 
+def _scrub_session_for_upload(data: dict) -> dict:
+    """Best-effort scrub of transcript fields before any upload temp file."""
+    scrubbed = dict(data)
+    scrubbed["messages"] = _scrub(data.get("messages") or [])
+    scrubbed["events"] = _scrub(data.get("events") or [])
+    scrubbed["tools"] = _scrub(data.get("tools") or [])
+    return scrubbed
+
+
 def _write_row_payload(data: dict, tmp_path: str) -> None:
     """Single-row JSONL (existing format) — used by KPI scheduler."""
-    scrubbed_messages = _scrub(data["messages"])
-    scrubbed_events = _scrub(data["events"])
-    scrubbed_tools = _scrub(data.get("tools") or [])
-
+    scrubbed = _scrub_session_for_upload(data)
     session_row = {
         "session_id": data["session_id"],
         "user_id": data.get("user_id"),
@@ -266,9 +272,9 @@ def _write_row_payload(data: dict, tmp_path: str) -> None:
         "session_end_time": data["session_end_time"],
         "model_name": data["model_name"],
         "total_cost_usd": data.get("total_cost_usd"),
-        "messages": json.dumps(scrubbed_messages),
-        "events": json.dumps(scrubbed_events),
-        "tools": json.dumps(scrubbed_tools),
+        "messages": json.dumps(scrubbed["messages"]),
+        "events": json.dumps(scrubbed["events"]),
+        "tools": json.dumps(scrubbed["tools"]),
     }
 
     with open(tmp_path, "w") as tmp:
@@ -277,9 +283,8 @@ def _write_row_payload(data: dict, tmp_path: str) -> None:
 
 def _write_claude_code_payload(data: dict, tmp_path: str) -> None:
     """Multi-line JSONL in Claude Code schema for the HF trace viewer."""
-    # Scrub messages before conversion so secrets never reach the converter.
-    scrubbed = dict(data)
-    scrubbed["messages"] = _scrub(data.get("messages") or [])
+    # Scrub before conversion so secrets never reach the upload temp file.
+    scrubbed = _scrub_session_for_upload(data)
     events = to_claude_code_jsonl(scrubbed)
     with open(tmp_path, "w") as tmp:
         for event in events:
@@ -386,7 +391,11 @@ sessions/YYYY-MM-DD/<session_id>.jsonl
 
 ## Redaction and review
 
-**WARNING: no redaction or human review has been performed for this dataset.**
+**WARNING: no comprehensive redaction or human review has been performed for this dataset.**
+
+ML Intern applies automated best-effort scrubbing for common secret patterns
+such as Hugging Face, Anthropic, OpenAI, GitHub, and AWS tokens before upload.
+This is not a privacy guarantee.
 
 These traces may contain sensitive information, including prompts, code,
 terminal output, file paths, repository names, private task context, tool
