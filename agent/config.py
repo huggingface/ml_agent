@@ -33,7 +33,7 @@ class Config(BaseModel):
     # on first use; user flips it public via /share-traces. ``{hf_user}`` is
     # substituted at upload time from ``Session.user_id``.
     share_traces: bool = True
-    personal_trace_repo_template: str = "{hf_user}/ml-intern-traces"
+    personal_trace_repo_template: str = "{hf_user}/ml-intern-sessions"
     auto_save_interval: int = 1  # Save every N user turns (0 = disabled)
     # Mid-turn heartbeat: save + upload every N seconds while events are being
     # emitted. Guards against losing trace data on long-running turns that

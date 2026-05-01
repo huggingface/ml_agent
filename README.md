@@ -63,7 +63,7 @@ in [Claude Code JSONL format](https://huggingface.co/changelog/agent-trace-viewe
 which the HF Agent Trace Viewer auto-detects so you can browse turns, tool
 calls, and model responses directly on the Hub.
 
-By default the dataset is named `{your-hf-username}/ml-intern-traces` and is
+By default the dataset is named `{your-hf-username}/ml-intern-sessions` and is
 **created private**. You can flip it to public from inside the CLI:
 
 ```bash

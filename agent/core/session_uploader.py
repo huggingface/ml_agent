@@ -12,7 +12,7 @@ Two formats are supported:
 * ``claude_code`` — one event per line in the Claude Code JSONL schema,
   auto-detected by the HF Agent Trace Viewer
   (https://huggingface.co/changelog/agent-trace-viewer). Used for the
-  per-user private dataset (default ``{hf_user}/ml-intern-traces``).
+  per-user private dataset (default ``{hf_user}/ml-intern-sessions``).
 """
 
 import argparse

@@ -143,7 +143,7 @@ async def _dev_user_from_env() -> dict[str, Any]:
 
     Local dev often runs without OAuth, but session trace uploads still need a
     real HF namespace. Deriving the dev user from HF_TOKEN keeps local uploads
-    pointed at the token owner's dataset instead of dev/ml-intern-traces.
+    pointed at the token owner's dataset instead of dev/ml-intern-sessions.
     """
     token = os.environ.get("HF_TOKEN", "")
     if not token:
