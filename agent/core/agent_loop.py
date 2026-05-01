@@ -156,12 +156,7 @@ def _base_needs_approval(
         return False
 
     if tool_name == "sandbox_create":
-        hardware = (
-            tool_args.get("hardware")
-            or tool_args.get("hardware_flavor")
-            or tool_args.get("flavor")
-            or DEFAULT_CPU_SANDBOX_HARDWARE
-        )
+        hardware = tool_args.get("hardware") or DEFAULT_CPU_SANDBOX_HARDWARE
         return hardware != DEFAULT_CPU_SANDBOX_HARDWARE
 
     if tool_name == "hf_jobs":

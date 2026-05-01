@@ -388,3 +388,34 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
     assert deleted == ["alice/sandbox-12345678"]
     assert session.sandbox is None
     assert session.sandbox_hardware is None
+
+
+def test_cancel_sandbox_preload_cancels_task_after_timeout(monkeypatch):
+    async def run():
+        async def fake_wait_for(awaitable, timeout):
+            await asyncio.sleep(0)
+            raise asyncio.TimeoutError
+
+        monkeypatch.setattr(sandbox_tool.asyncio, "wait_for", fake_wait_for)
+
+        cancel_event = threading.Event()
+        blocker = asyncio.Event()
+
+        async def preload():
+            await blocker.wait()
+
+        task = asyncio.create_task(preload())
+        session = SimpleNamespace(
+            sandbox_preload_task=task,
+            sandbox_preload_cancel_event=cancel_event,
+        )
+
+        await sandbox_tool.cancel_sandbox_preload(session)
+        await asyncio.sleep(0)
+
+        return task.cancelled(), cancel_event.is_set()
+
+    task_cancelled, cancel_event_set = asyncio.run(run())
+
+    assert task_cancelled is True
+    assert cancel_event_set is True

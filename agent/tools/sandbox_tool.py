@@ -398,7 +398,11 @@ async def cancel_sandbox_preload(session: Any) -> None:
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=30)
     except asyncio.TimeoutError:
-        logger.warning("Timed out waiting for CPU sandbox preload cancellation")
+        logger.warning(
+            "Timed out waiting for CPU sandbox preload cancellation; "
+            "task is still live, cancelling asyncio wrapper"
+        )
+        task.cancel()
     except asyncio.CancelledError:
         raise
     except Exception:

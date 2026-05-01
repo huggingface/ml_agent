@@ -186,6 +186,12 @@ async def test_concurrent_lazy_restore_starts_only_one_agent_task():
     store = RestoreStore(delay=0.01)
     manager = _manager_with_store(store)
     stop = _install_fake_runtime(manager)
+    scheduled: list[str] = []
+
+    def fake_start_cpu_sandbox_preload(agent_session: AgentSession) -> None:
+        scheduled.append(agent_session.session_id)
+
+    manager._start_cpu_sandbox_preload = fake_start_cpu_sandbox_preload  # type: ignore[method-assign]
 
     try:
         first, second = await asyncio.gather(
@@ -197,6 +203,7 @@ async def test_concurrent_lazy_restore_starts_only_one_agent_task():
         assert first is second
         assert list(manager.sessions) == ["persisted-session"]
         assert manager.run_calls == 1  # type: ignore[attr-defined]
+        assert scheduled == ["persisted-session"]
         assert not stop.is_set()
     finally:
         stop.set()
@@ -219,6 +226,28 @@ async def test_create_session_schedules_cpu_sandbox_preload():
 
         assert scheduled == [session_id]
         assert session_id in manager.sessions
+    finally:
+        stop.set()
+        await _cancel_runtime_tasks(manager)
+
+
+@pytest.mark.asyncio
+async def test_lazy_restore_schedules_cpu_sandbox_preload():
+    manager = _manager_with_store(RestoreStore())
+    stop = _install_fake_runtime(manager)
+    scheduled: list[str] = []
+
+    def fake_start_cpu_sandbox_preload(agent_session: AgentSession) -> None:
+        scheduled.append(agent_session.session_id)
+
+    manager._start_cpu_sandbox_preload = fake_start_cpu_sandbox_preload  # type: ignore[method-assign]
+
+    try:
+        restored = await manager.ensure_session_loaded("persisted-session", user_id="owner")
+
+        assert restored is not None
+        assert scheduled == ["persisted-session"]
+        assert "persisted-session" in manager.sessions
     finally:
         stop.set()
         await _cancel_runtime_tasks(manager)
