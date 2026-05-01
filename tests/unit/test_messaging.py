@@ -494,6 +494,7 @@ def test_session_manager_updates_notification_destinations_in_session_info():
         session_id="sess-manager",
         session=session,
         tool_router=DummyToolRouter(),
+        submission_queue=asyncio.Queue(),
     )
 
     updated = manager.set_notification_destinations(
