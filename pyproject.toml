@@ -44,7 +44,6 @@ eval = [
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.2.0",
-    "mongomock-motor>=0.0.36",
 ]
 
 # All dependencies (eval + dev)
