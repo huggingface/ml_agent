@@ -347,8 +347,8 @@ async def event_listener(
                 shimmer.stop()
                 stream_buf.discard()
                 print_turn_complete()
-                print_plan()
                 session = session_holder[0] if session_holder else None
+                print_plan(session=session)
                 if session is not None:
                     await session.send_deferred_turn_complete_notification(event)
                 turn_complete_event.set()

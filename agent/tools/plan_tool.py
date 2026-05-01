@@ -5,8 +5,9 @@ from agent.utils.terminal_display import format_plan_tool_output
 
 from .types import ToolResult
 
-# In-memory storage for the current plan (raw structure from agent)
-_current_plan: List[Dict[str, str]] = []
+# Per-session plan storage to avoid cross-session corruption
+_session_plans: Dict[str, List[Dict[str, str]]] = {}
+_last_plan_session_id: str | None = None
 
 
 class PlanTool:
@@ -26,7 +27,7 @@ class PlanTool:
         Returns:
             ToolResult with formatted output
         """
-        global _current_plan
+        global _session_plans, _last_plan_session_id
 
         todos = params.get("todos", [])
 
@@ -54,8 +55,10 @@ class PlanTool:
                     "isError": True,
                 }
 
-        # Store the raw todos structure in memory
-        _current_plan = todos
+        # Store per-session to prevent cross-session plan corruption
+        session_id = self.session.session_id if self.session else "__no_session__"
+        _session_plans[session_id] = todos
+        _last_plan_session_id = session_id
 
         # Emit plan update event if session is available
         if self.session:
@@ -76,9 +79,13 @@ class PlanTool:
         }
 
 
-def get_current_plan() -> List[Dict[str, str]]:
-    """Get the current plan (raw structure)."""
-    return _current_plan
+def get_current_plan(session_id: str | None = None) -> List[Dict[str, str]]:
+    """Get the current plan for a session (raw structure)."""
+    if session_id:
+        return _session_plans.get(session_id, [])
+    if _last_plan_session_id:
+        return _session_plans.get(_last_plan_session_id, [])
+    return []
 
 
 # Tool specification
