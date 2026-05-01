@@ -14,6 +14,7 @@ import yaml
 from jinja2 import Template
 from litellm import Message, acompletion
 
+from agent.core.llm_messages import to_provider_messages
 from agent.core.prompt_caching import with_prompt_caching
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,7 @@ async def summarize_messages(
 
     prompt_messages = list(messages) + [Message(role="user", content=prompt)]
     llm_params = _resolve_llm_params(model_name, hf_token, reasoning_effort="high")
+    prompt_messages = to_provider_messages(prompt_messages)
     prompt_messages, tool_specs = with_prompt_caching(
         prompt_messages, tool_specs, llm_params.get("model")
     )
