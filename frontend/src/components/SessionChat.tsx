@@ -24,7 +24,8 @@ interface SessionChatProps {
 export default function SessionChat({ sessionId, isActive, onSessionDead }: SessionChatProps) {
   const { isConnected, isProcessing, activityStatus, updateSession } = useAgentStore();
   const { updateSessionTitle, sessions } = useSessionStore();
-  const isExpired = sessions.find((s) => s.id === sessionId)?.expired === true;
+  const sessionMeta = sessions.find((s) => s.id === sessionId);
+  const isExpired = sessionMeta?.expired === true;
 
   const { messages, sendMessage, stop, status, undoLastTurn, editAndRegenerate, approveTools } = useAgentChat({
     sessionId,
@@ -112,6 +113,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
       ) : (
         <ChatInput
           sessionId={sessionId}
+          initialModelPath={sessionMeta?.model}
           onSend={handleSendMessage}
           onStop={handleStop}
           isProcessing={busy}

@@ -9,11 +9,12 @@ interface SessionStore {
   activeSessionId: string | null;
 
   // Actions
-  createSession: (id: string) => void;
+  createSession: (id: string, model?: string | null) => void;
   deleteSession: (id: string) => void;
   switchSession: (id: string) => void;
   setSessionActive: (id: string, isActive: boolean) => void;
   updateSessionTitle: (id: string, title: string) => void;
+  updateSessionModel: (id: string, model: string | null) => void;
   setNeedsAttention: (id: string, needs: boolean) => void;
   /** Mark a session as expired (backend no longer has it). The UI shows a
    *  recovery banner and disables input. */
@@ -26,6 +27,7 @@ interface SessionStore {
     title?: string | null;
     created_at: string;
     is_active?: boolean;
+    model?: string | null;
     pending_approval?: unknown[] | null;
     auto_approval?: {
       enabled?: boolean;
@@ -52,13 +54,14 @@ export const useSessionStore = create<SessionStore>()(
       sessions: [],
       activeSessionId: null,
 
-      createSession: (id: string) => {
+      createSession: (id: string, model?: string | null) => {
         const newSession: SessionMeta = {
           id,
           title: `Chat ${get().sessions.length + 1}`,
           createdAt: new Date().toISOString(),
           isActive: true,
           needsAttention: false,
+          model: model ?? null,
           autoApprovalEnabled: false,
           autoApprovalCostCapUsd: null,
           autoApprovalEstimatedSpendUsd: 0,
@@ -114,6 +117,7 @@ export const useSessionStore = create<SessionStore>()(
                 ...existing,
                 title: server.title || existing.title,
                 isActive: server.is_active ?? existing.isActive,
+                model: server.model ?? existing.model ?? null,
                 needsAttention: Boolean(server.pending_approval?.length) || existing.needsAttention,
                 expired: false,
                 ...(auto
@@ -136,6 +140,7 @@ export const useSessionStore = create<SessionStore>()(
               createdAt: server.created_at || new Date().toISOString(),
               isActive: server.is_active ?? true,
               needsAttention: Boolean(server.pending_approval?.length),
+              model: server.model ?? null,
               expired: false,
               autoApprovalEnabled: Boolean(server.auto_approval?.enabled),
               autoApprovalCostCapUsd: server.auto_approval?.cost_cap_usd ?? null,
@@ -201,6 +206,14 @@ export const useSessionStore = create<SessionStore>()(
         set((state) => ({
           sessions: state.sessions.map((s) =>
             s.id === id ? { ...s, title } : s
+          ),
+        }));
+      },
+
+      updateSessionModel: (id: string, model: string | null) => {
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, model } : s
           ),
         }));
       },

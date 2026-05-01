@@ -413,7 +413,11 @@ async def create_session(
     except SessionCapacityError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    return SessionResponse(session_id=session_id, ready=True)
+    return SessionResponse(
+        session_id=session_id,
+        ready=True,
+        model=model or session_manager.config.model_name,
+    )
 
 
 @router.post("/session/restore-summary", response_model=SessionResponse)
@@ -464,7 +468,11 @@ async def restore_session_summary(
         f"Seeded session {session_id} for {user.get('username', 'unknown')} "
         f"(summary of {summarized} messages)"
     )
-    return SessionResponse(session_id=session_id, ready=True)
+    return SessionResponse(
+        session_id=session_id,
+        ready=True,
+        model=model or session_manager.config.model_name,
+    )
 
 
 @router.get("/session/{session_id}", response_model=SessionInfo)
