@@ -54,6 +54,7 @@ def _bare_manager() -> SessionManager:
     manager._holder_id = "main:test-host:deadbeef"
     manager._heartbeat_task = None
     manager._grace_sweep_task = None
+    manager._idle_eviction_task = None
     manager._subscriber_counts = {}
     manager._no_subscriber_since = {}
     return manager

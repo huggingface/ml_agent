@@ -143,9 +143,34 @@ Verification: ruff clean on session_manager.py + new tests; 8 pre-existing ruff 
 
 Subtlety: grace-sweep predicate requires BOTH (no subs ≥ grace period) AND (has work). This avoids evicting brand-new tabs the user opened, walked away from, and never typed in.
 
-## Iteration 6: starting US-007 (Step 6 — Worker entrypoint + MODE flag + idle eviction)
+## Iteration 6: US-007 (Step 6 — Worker entrypoint + MODE flag + idle eviction) — COMPLETE
 
-Worker mode: backend/start.sh branches on $MODE; backend/worker.py shim; backend/main.py defines worker_loop. Plus idle eviction (separate task on SessionManager) using last_submission_at + IDLE_EVICTION_SECONDS predicate.
+backend/start.sh: rewritten to 21 lines. MODE=worker branch (exec python -m worker) FIRST, preserves Main port-conflict graceful exit-0 hack.
+
+backend/worker.py NEW (7-line shim): asyncio.run(worker_loop()). Uses `from main import worker_loop` to match WORKDIR=/app/backend import contract.
+
+backend/main.py: added asyncio import. Added _worker_claim_tick() (polls pending_submissions for status=pending, skips held session_ids, delegates to claim_dormant_session). Added worker_loop() (calls session_manager.start, runs tick at 1s cadence with 2s back-off on errors, calls close on shutdown).
+
+backend/session_manager.py:
+- _idle_eviction_task field; _idle_eviction_loop method (60s tick, drops held sessions past IDLE_EVICTION_SECONDS default 1800s AND not processing AND not is_in_tool_call AND no pending submissions in Mongo); start/close manage the task.
+- _rebuild_agent_session_from_store extracted from ensure_session_loaded; shared with new claim_dormant_session.
+- claim_dormant_session(session_id) — bypasses user-ownership check (process-level trust); lease CAS still enforces one-holder invariant.
+- last_submission_at switched from asyncio.get_event_loop().time() (monotonic) to time.time() (wall clock) for consistency with _no_subscriber_since and idle predicate.
+
+tests/test_worker_idle_eviction.py NEW (13 tests): idle eviction predicate matrix, claim_dormant_session bypass + lease-taken paths, worker claim tick skips held sessions.
+3 existing test files: added manager._idle_eviction_task = None to _bare_manager() fixtures.
+
+Verification:
+- bash -n backend/start.sh: syntax OK
+- ruff: clean on all changed files; 6 pre-existing E402 in main.py from intentional load_dotenv ordering (verified via git stash)
+- pytest: 83 passed, 0 failed in cumulative suite
+
+Subtleties: worker claim tick polls db.pending_submissions directly rather than walking sessions (works without prior knowledge of session set). last_submission_at unified to time.time() wall-clock.
+
+## Iteration 7: starting US-008 (Step 7 — observability + deployment migration)
+
+Smallest story. Add log lines for lease ops + replay scan + pending lag. Add deployment runbook (deploy ordering: Workers first, Main last; backfill via init).
+
 
 
 

@@ -1,5 +1,6 @@
 """FastAPI application for HF Agent web interface."""
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -132,3 +133,73 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 7860))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+# ── Worker mode entrypoint ───────────────────────────────────────────────
+
+
+async def _worker_claim_tick() -> None:
+    """One pass: find sessions with pending submissions and no live lease,
+    claim each via ``claim_dormant_session`` so the existing
+    ``_consume_submissions`` loop in ``_run_session`` will pick up their
+    pending docs.
+
+    Sessions already held by this process (in ``session_manager.sessions``)
+    are skipped — heartbeat keeps their leases alive.
+    """
+    store = session_manager._store()
+    if not getattr(store, "enabled", False):
+        return
+    db = getattr(store, "db", None)
+    if db is None:
+        return
+
+    held = set(session_manager.sessions.keys())
+    cursor = db.pending_submissions.find(
+        {"status": "pending"}, {"session_id": 1}
+    ).limit(200)
+    candidate_session_ids: set[str] = set()
+    async for doc in cursor:
+        sid = doc.get("session_id")
+        if sid and sid not in held:
+            candidate_session_ids.add(sid)
+
+    for sid in candidate_session_ids:
+        try:
+            # claim_dormant_session does claim_lease internally; if claim
+            # fails (another process holds it) we'll just try the next
+            # session in the next tick.
+            await session_manager.claim_dormant_session(sid)
+        except Exception as e:
+            logger.warning(f"Worker failed to claim {sid}: {e}")
+
+
+async def worker_loop() -> None:
+    """Worker mode entrypoint. Initializes a SessionManager in worker mode,
+    polls Mongo for pending submissions across all sessions, claims their
+    leases, and runs their agent loops.
+
+    Heartbeat (US-002) renews held leases on a 10s cadence; the grace
+    sweeper (US-006) auto-backgrounds inactive held sessions; idle
+    eviction (US-007) drops fully idle ones.
+    """
+    logger.info("Starting ml-intern worker mode...")
+    # Use the global session_manager (already imported); it has read MODE
+    # at construction time.
+    await session_manager.start()
+    try:
+        # Single coordinator task: scan ``pending_submissions`` across
+        # all sessions and claim those with no current holder. Polling
+        # cadence is 1s; that's enough for v1.
+        while True:
+            try:
+                await _worker_claim_tick()
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Worker claim tick error: {e}")
+                await asyncio.sleep(2.0)
+    finally:
+        await session_manager.close()
+        logger.info("Worker shut down cleanly.")

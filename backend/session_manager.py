@@ -155,6 +155,7 @@ class SessionManager:
         self._holder_id: str = make_holder_id(self.mode)
         self._heartbeat_task: asyncio.Task | None = None
         self._grace_sweep_task: asyncio.Task | None = None
+        self._idle_eviction_task: asyncio.Task | None = None
         # SSE subscriber bookkeeping — used by the US-006 grace-period
         # sweeper to decide when a session has had no readers for long
         # enough to be evicted. Populated by ``_attach_subscriber`` /
@@ -198,6 +199,7 @@ class SessionManager:
         await self.messaging_gateway.start()
         self._heartbeat_task = asyncio.create_task(self._lease_heartbeat_loop())
         self._grace_sweep_task = asyncio.create_task(self._grace_period_sweep_loop())
+        self._idle_eviction_task = asyncio.create_task(self._idle_eviction_loop())
 
     async def close(self) -> None:
         """Flush and close shared background resources."""
@@ -215,6 +217,13 @@ class SessionManager:
             except asyncio.CancelledError:
                 pass
             self._grace_sweep_task = None
+        if self._idle_eviction_task is not None:
+            self._idle_eviction_task.cancel()
+            try:
+                await self._idle_eviction_task
+            except asyncio.CancelledError:
+                pass
+            self._idle_eviction_task = None
         await self.messaging_gateway.close()
         if self.persistence_store is not None:
             await self.persistence_store.close()
@@ -380,6 +389,84 @@ class SessionManager:
             except Exception as e:
                 logger.error(f"Grace sweep loop error: {e}")
                 await asyncio.sleep(1)
+
+    async def _idle_eviction_loop(self) -> None:
+        """Every 60s, drop sessions held by this process that are fully idle
+        past ``IDLE_EVICTION_SECONDS`` (default 1800s = 30min).
+
+        "Idle" predicate (US-007 spec):
+            * not ``is_in_tool_call`` (tool may still be executing)
+            * not ``is_processing`` (agent loop currently busy)
+            * no pending submissions in Mongo
+            * ``now - last_submission_at > IDLE_TTL_S``
+
+        On eviction, the lease is released and the session is dropped from
+        the in-memory map. No ``migrating`` event is emitted — by definition
+        nobody is watching.
+        """
+        SWEEP_INTERVAL_S = 60
+        IDLE_TTL_S = float(os.environ.get("IDLE_EVICTION_SECONDS", "1800"))
+        while True:
+            try:
+                await asyncio.sleep(SWEEP_INTERVAL_S)
+                now = time.time()
+                store = self._store()
+                async with self._lock:
+                    session_ids = list(self.sessions.keys())
+                for sid in session_ids:
+                    agent_session = self.sessions.get(sid)
+                    if agent_session is None:
+                        continue
+                    if agent_session.holder_id != self._holder_id:
+                        continue
+                    if agent_session.is_processing:
+                        continue
+                    if getattr(agent_session.session, "is_in_tool_call", False):
+                        continue
+                    if agent_session.last_submission_at == 0.0:
+                        # Never had a submission yet (just-created); allow
+                        # IDLE_TTL grace measured from creation.
+                        last = (
+                            agent_session.created_at.timestamp()
+                            if hasattr(agent_session.created_at, "timestamp")
+                            else 0.0
+                        )
+                    else:
+                        last = agent_session.last_submission_at
+                    if now - last < IDLE_TTL_S:
+                        continue
+                    # Pending submissions in Mongo? If so, skip — a worker
+                    # tick will pick them up.
+                    if getattr(store, "enabled", False):
+                        try:
+                            pending_docs = await store.poll_pending_submissions_after(
+                                sid, None
+                            )
+                            if pending_docs:
+                                continue
+                        except Exception:
+                            # If Mongo flapped, err on the side of NOT
+                            # evicting — heartbeat will renew the lease and
+                            # we'll try again on the next sweep.
+                            continue
+                    logger.info(
+                        f"Idle-evicting {sid} (idle for {now - last:.0f}s)"
+                    )
+                    try:
+                        await store.release_lease(sid, self._holder_id)
+                    except Exception as e:
+                        logger.warning(
+                            f"release_lease failed during idle evict for {sid}: {e}"
+                        )
+                    async with self._lock:
+                        popped = self.sessions.pop(sid, None)
+                    if popped and popped.task and not popped.task.done():
+                        popped.task.cancel()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Idle eviction loop error: {e}")
+                await asyncio.sleep(2)
 
     def _store(self):
         if self.persistence_store is None:
@@ -618,6 +705,87 @@ class SessionManager:
                 e,
             )
 
+    async def _rebuild_agent_session_from_store(
+        self,
+        loaded: dict[str, Any],
+        session_id: str,
+        hf_token: str | None,
+        hf_username: str | None,
+        owner: str,
+    ) -> AgentSession:
+        """Reconstruct an ``AgentSession`` from a Mongo ``load_session`` result.
+
+        Caller is expected to have already claimed the lease (or persistence
+        is disabled). Shared by ``ensure_session_loaded`` and
+        ``claim_dormant_session``.
+        """
+        from litellm import Message
+
+        meta = loaded.get("metadata") or {}
+        model = meta.get("model") or self.config.model_name
+        event_queue: asyncio.Queue = asyncio.Queue()
+        tool_router, session = await asyncio.to_thread(
+            self._create_session_sync,
+            session_id=session_id,
+            user_id=owner,
+            hf_username=hf_username,
+            hf_token=hf_token,
+            model=model,
+            event_queue=event_queue,
+            notification_destinations=meta.get("notification_destinations") or [],
+        )
+
+        restored_messages: list[Message] = []
+        for raw in loaded.get("messages") or []:
+            if not isinstance(raw, dict) or raw.get("role") == "system":
+                continue
+            try:
+                restored_messages.append(Message.model_validate(raw))
+            except Exception as e:
+                logger.warning("Dropping malformed restored message: %s", e)
+        if restored_messages:
+            # Keep the freshly-rendered system prompt, then attach the durable
+            # non-system context so tools/date/user context stay current.
+            session.context_manager.items = [session.context_manager.items[0], *restored_messages]
+
+        self._restore_pending_approval(session, meta.get("pending_approval") or [])
+        session.turn_count = int(meta.get("turn_count") or 0)
+
+        created_at = meta.get("created_at")
+        if not isinstance(created_at, datetime):
+            created_at = datetime.utcnow()
+
+        agent_session = AgentSession(
+            session_id=session_id,
+            session=session,
+            tool_router=tool_router,
+            user_id=owner,
+            hf_username=hf_username,
+            hf_token=hf_token,
+            created_at=created_at,
+            is_active=True,
+            is_processing=False,
+            claude_counted=bool(meta.get("claude_counted")),
+            title=meta.get("title"),
+            # Caller has already claimed the lease (or persistence is
+            # disabled and we're the only process) — tag so the SSE
+            # fast-path branch picks the in-process broadcaster.
+            holder_id=self._holder_id,
+        )
+        started = await self._start_agent_session(
+            agent_session=agent_session,
+            event_queue=event_queue,
+            tool_router=tool_router,
+        )
+        if started is not agent_session:
+            self._update_hf_identity(
+                started,
+                hf_token=hf_token,
+                hf_username=hf_username,
+            )
+            return started
+        return agent_session
+
     async def ensure_session_loaded(
         self,
         session_id: str,
@@ -673,71 +841,63 @@ class SessionManager:
                 )
                 return None
 
-        from litellm import Message
-
-        model = meta.get("model") or self.config.model_name
-        event_queue: asyncio.Queue = asyncio.Queue()
-        tool_router, session = await asyncio.to_thread(
-            self._create_session_sync,
+        agent_session = await self._rebuild_agent_session_from_store(
+            loaded=loaded,
             session_id=session_id,
-            user_id=owner or user_id,
-            hf_username=hf_username,
             hf_token=hf_token,
-            model=model,
-            event_queue=event_queue,
-            notification_destinations=meta.get("notification_destinations") or [],
-        )
-
-        restored_messages: list[Message] = []
-        for raw in loaded.get("messages") or []:
-            if not isinstance(raw, dict) or raw.get("role") == "system":
-                continue
-            try:
-                restored_messages.append(Message.model_validate(raw))
-            except Exception as e:
-                logger.warning("Dropping malformed restored message: %s", e)
-        if restored_messages:
-            # Keep the freshly-rendered system prompt, then attach the durable
-            # non-system context so tools/date/user context stay current.
-            session.context_manager.items = [session.context_manager.items[0], *restored_messages]
-
-        self._restore_pending_approval(session, meta.get("pending_approval") or [])
-        session.turn_count = int(meta.get("turn_count") or 0)
-
-        created_at = meta.get("created_at")
-        if not isinstance(created_at, datetime):
-            created_at = datetime.utcnow()
-
-        agent_session = AgentSession(
-            session_id=session_id,
-            session=session,
-            tool_router=tool_router,
-            user_id=owner or user_id,
             hf_username=hf_username,
-            hf_token=hf_token,
-            created_at=created_at,
-            is_active=True,
-            is_processing=False,
-            claude_counted=bool(meta.get("claude_counted")),
-            title=meta.get("title"),
-            # We just claimed the lease (or persistence is disabled and
-            # we're the only process) — tag so the SSE fast-path branch
-            # picks the in-process broadcaster.
-            holder_id=self._holder_id,
+            owner=owner or user_id,
         )
-        started = await self._start_agent_session(
-            agent_session=agent_session,
-            event_queue=event_queue,
-            tool_router=tool_router,
-        )
-        if started is not agent_session:
-            self._update_hf_identity(
-                started,
-                hf_token=hf_token,
-                hf_username=hf_username,
-            )
-            return started
         logger.info("Restored session %s for user %s", session_id, owner or user_id)
+        return agent_session
+
+    async def claim_dormant_session(
+        self, session_id: str
+    ) -> AgentSession | None:
+        """Internal: claim and load a dormant session without a user-ownership
+        check. Used by ``worker_loop``'s claim tick — the worker process is
+        process-level trusted, and the lease CAS still enforces the
+        "one holder at a time" invariant.
+
+        Returns the live ``AgentSession`` on success; ``None`` if the session
+        doesn't exist, the lease is already held, or persistence is disabled.
+        """
+        async with self._lock:
+            existing = self.sessions.get(session_id)
+        if existing:
+            return existing
+
+        store = self._store()
+        if not getattr(store, "enabled", False):
+            return None
+
+        loaded = await store.load_session(session_id)
+        if not loaded:
+            return None
+
+        # Claim the lease BEFORE building the session — fast bail out if
+        # someone else holds it.
+        claimed = await store.claim_lease(
+            session_id, self._holder_id, ttl_s=30
+        )
+        if claimed is None:
+            logger.debug(
+                f"Worker refusing to claim {session_id}: lease held by another process"
+            )
+            return None
+
+        meta = loaded.get("metadata") or {}
+        owner = str(meta.get("user_id") or "") or "dev"
+        agent_session = await self._rebuild_agent_session_from_store(
+            loaded=loaded,
+            session_id=session_id,
+            hf_token=None,
+            hf_username=None,
+            owner=owner,
+        )
+        logger.info(
+            "Worker claimed dormant session %s (owner=%s)", session_id, owner
+        )
         return agent_session
 
     async def create_session(
@@ -1039,7 +1199,9 @@ class SessionManager:
             op_type = claimed.get("op_type")
             payload = claimed.get("payload") or {}
             try:
-                agent_session.last_submission_at = asyncio.get_event_loop().time()
+                # Wall-clock (time.time()) so it composes with the same clock
+                # used by ``_no_subscriber_since`` and the idle-eviction loop.
+                agent_session.last_submission_at = time.time()
                 # Inline ops: interrupt + shutdown bypass the agent loop.
                 if op_type == "interrupt":
                     session.cancel()

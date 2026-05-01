@@ -111,7 +111,7 @@
       "id": "US-007",
       "title": "Worker entrypoint via MODE flag in start.sh + idle eviction (Step 6)",
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "backend/start.sh branches on $MODE: if 'worker' → exec python -m backend.worker; else → existing 8 lines preserved verbatim including port-conflict graceful exit-0 hack",
         "backend/worker.py exists as a 3-line shim: import asyncio; from backend.main import worker_loop; asyncio.run(worker_loop())",
