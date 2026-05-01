@@ -277,6 +277,86 @@ def _url_field(format: str) -> str:
     return "personal_upload_url" if format == "claude_code" else "upload_url"
 
 
+def dataset_card_readme(repo_id: str) -> str:
+    """Dataset card for personal ML Intern session trace repos."""
+    return f"""---
+pretty_name: "ML Intern Session Traces"
+language:
+- en
+license: other
+task_categories:
+- text-generation
+tags:
+- agent-traces
+- coding-agent
+- ml-intern
+- session-traces
+- claude-code
+- hf-agent-trace-viewer
+configs:
+- config_name: default
+  data_files:
+  - split: train
+    path: "sessions/**/*.jsonl"
+---
+
+# ML Intern session traces
+
+This dataset contains ML Intern coding agent session traces uploaded from local
+ML Intern runs. The traces are stored as JSON Lines files under `sessions/`,
+with one file per session.
+
+Repository: https://huggingface.co/datasets/{repo_id}
+
+## Data description
+
+Each `*.jsonl` file contains a single ML Intern session converted to a
+Claude-Code-style event stream for the Hugging Face Agent Trace Viewer. Entries
+can include user messages, assistant messages, tool calls, tool results, model
+metadata, and timestamps.
+
+Session files are written to paths of the form:
+
+```text
+sessions/YYYY-MM-DD/<session_id>.jsonl
+```
+
+## Redaction and review
+
+**WARNING: no redaction or human review has been performed for this dataset.**
+
+These traces may contain sensitive information, including prompts, code,
+terminal output, file paths, repository names, private task context, tool
+outputs, or other data from the local development environment. Treat every
+session as potentially sensitive.
+
+Do not make this dataset public unless you have manually inspected the uploaded
+sessions and are comfortable sharing their full contents.
+
+## Limitations
+
+Coding agent transcripts can include private or off-topic content, failed
+experiments, credentials accidentally pasted by a user, and outputs copied from
+local files or services. Use with appropriate caution, especially before
+changing repository visibility.
+"""
+
+
+def _upload_dataset_card(api: Any, repo_id: str, token: str, format: str) -> None:
+    """Create/update a README for personal trace datasets."""
+    if format != "claude_code":
+        return
+
+    api.upload_file(
+        path_or_fileobj=dataset_card_readme(repo_id).encode("utf-8"),
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        repo_type="dataset",
+        token=token,
+        commit_message="Update dataset card",
+    )
+
+
 def upload_session_as_file(
     session_file: str,
     repo_id: str,
@@ -361,6 +441,8 @@ def upload_session_as_file(
                         )
                     except Exception:
                         pass
+
+                    _upload_dataset_card(api, repo_id, hf_token, format)
 
                     api.upload_file(
                         path_or_fileobj=tmp_path,
