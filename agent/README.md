@@ -19,3 +19,37 @@ Async agent loop with LiteLLM.
 | **`context_manager/`** | Manages conversation history, very rudimentary context engineering support | Implement intelligent context engineering to keep the agent on track |
 | **`config.py`** | Loads JSON config for the agent | Support different configs etc. |
 | **`main.py`** | Interactive CLI with async queue architecture (submission→agent, agent→events) (simple way to interact with the agent now)| Serve as reference implementation for other UIs (web, API, programmatic) |
+
+## Observability (optional)
+
+LLM calls can additionally be streamed to a [LangFuse](https://langfuse.com)
+instance — useful for local development and for self-hosted deployments
+that already run LangFuse / Phoenix / Langsmith. The primary
+HF-Dataset-based telemetry pipeline (`agent/core/telemetry.py`) is unchanged.
+
+Set the LangFuse host plus both keys to opt in. Either env-var name for
+the host works — Langfuse SDK v4 issues credentials as `LANGFUSE_BASE_URL`,
+while litellm's callback reads `LANGFUSE_HOST`; this integration accepts
+either and mirrors the value through to litellm:
+
+```
+LANGFUSE_BASE_URL=https://your-langfuse.example.com   # or LANGFUSE_HOST=...
+LANGFUSE_PUBLIC_KEY=pk-...
+LANGFUSE_SECRET_KEY=sk-...
+```
+
+Both self-hosted LangFuse and the SaaS endpoint
+(`https://cloud.langfuse.com`) are supported. The host is mandatory so the
+destination is always an explicit choice — there is no silent fallback.
+With any of the three vars unset the integration is a no-op.
+
+Install the optional dependency:
+
+```
+pip install ml-intern[observability]
+```
+
+**Privacy.** The callback ships the full prompt, tool calls, tool results,
+and completions of every LLM turn to the configured host. Pick the
+destination deliberately. See
+https://github.com/huggingface/ml-intern/issues/196 for full details.
