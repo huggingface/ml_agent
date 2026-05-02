@@ -80,13 +80,12 @@ def _is_transient_space_visibility_error(error: Exception) -> bool:
 def _is_transient_space_management_error(error: Exception) -> bool:
     """Return True when a just-created private Space is not manageable yet."""
     response = getattr(error, "response", None)
-    if getattr(response, "status_code", None) in {401, 403, 404}:
+    if getattr(response, "status_code", None) in {401, 404}:
         return True
     message = str(error)
     return (
         "Repository Not Found" in message
         or "401 Client Error" in message
-        or "403 Client Error" in message
         or "404 Client Error" in message
     )
 
@@ -128,6 +127,7 @@ def _request_space_hardware_with_retry(
                 f"retrying ({attempt})..."
             )
             time.sleep(min(WAIT_INTERVAL, remaining))
+
 
 _DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
