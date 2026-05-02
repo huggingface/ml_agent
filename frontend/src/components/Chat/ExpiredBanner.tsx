@@ -18,7 +18,7 @@ interface Props {
 }
 
 export default function ExpiredBanner({ sessionId }: Props) {
-  const { renameSession, deleteSession } = useSessionStore();
+  const { renameSession, deleteSession, updateSessionModel } = useSessionStore();
   const [busy, setBusy] = useState<'catch-up' | 'start-over' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,12 +50,13 @@ export default function ExpiredBanner({ sessionId }: Props) {
 
       useAgentStore.getState().clearSessionState(sessionId);
       renameSession(sessionId, newId);
+      if (data.model) updateSessionModel(newId, data.model);
     } catch (e) {
       logger.warn('Catch-up failed:', e);
       setError("Couldn't catch up — try starting over.");
       setBusy(null);
     }
-  }, [sessionId, renameSession]);
+  }, [sessionId, renameSession, updateSessionModel]);
 
   const handleStartOver = useCallback(() => {
     setBusy('start-over');

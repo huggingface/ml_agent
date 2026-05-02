@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
+from typing import Any
 
 from litellm import acompletion
 
@@ -139,6 +141,7 @@ async def probe_effort(
     model_name: str,
     preference: str | None,
     hf_token: str | None,
+    session: Any = None,
 ) -> ProbeOutcome:
     """Walk the cascade for ``preference`` on ``model_name``.
 
@@ -147,6 +150,12 @@ async def probe_effort(
     transient errors (5xx, timeout) — persistent 4xx that aren't thinking/
     effort related bubble as the original exception so callers can surface
     them (auth, model-not-found, quota, etc.).
+
+    ``session`` is optional; when provided, each successful probe attempt
+    is recorded via ``telemetry.record_llm_call(kind="effort_probe")`` so
+    the cost shows up in the session's ``total_cost_usd``. Failed probes
+    (rejected by the provider) typically aren't billed, so we only record
+    on success.
     """
     loop = asyncio.get_event_loop()
     start = loop.time()
@@ -174,7 +183,8 @@ async def probe_effort(
 
         attempts += 1
         try:
-            await asyncio.wait_for(
+            _t0 = time.monotonic()
+            response = await asyncio.wait_for(
                 acompletion(
                     messages=[{"role": "user", "content": "ping"}],
                     max_tokens=_PROBE_MAX_TOKENS,
@@ -183,6 +193,21 @@ async def probe_effort(
                 ),
                 timeout=_PROBE_TIMEOUT,
             )
+            if session is not None:
+                # Best-effort telemetry — never let a logging blip propagate
+                # out of the probe and break model switching.
+                try:
+                    from agent.core import telemetry
+                    await telemetry.record_llm_call(
+                        session,
+                        model=model_name,
+                        response=response,
+                        latency_ms=int((time.monotonic() - _t0) * 1000),
+                        finish_reason=response.choices[0].finish_reason if response.choices else None,
+                        kind="effort_probe",
+                    )
+                except Exception as _telem_err:
+                    logger.debug("effort_probe telemetry failed: %s", _telem_err)
         except Exception as e:
             last_error = e
             if _is_thinking_unsupported(e):

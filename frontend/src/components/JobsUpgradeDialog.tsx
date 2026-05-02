@@ -1,191 +1,187 @@
-import { useEffect, useState } from 'react';
-import {
-  Box,
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
-  FormControl,
-  InputLabel,
-  MenuItem,
-  Select,
-  Typography,
-} from '@mui/material';
+import { Box, Button, Typography } from '@mui/material';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import CreditCardIcon from '@mui/icons-material/CreditCard';
+import ReplayIcon from '@mui/icons-material/Replay';
+import CloseIcon from '@mui/icons-material/Close';
 
-const HF_PRICING_URL = 'https://huggingface.co/pricing';
+const HF_BILLING_URL = 'https://huggingface.co/settings/billing';
 
 interface JobsUpgradeDialogProps {
   open: boolean;
-  mode: 'upgrade' | 'namespace';
   message: string;
-  eligibleNamespaces: string[];
+  /** True after the user clicked "Add credits" — the visibility-change auto-retry
+   *  in the parent uses this; it is unused inside the screen itself, which always
+   *  shows both actions ("Add credits" and "I've added credits"). */
+  awaitingTopUp: boolean;
   onUpgrade: () => void;
-  onDecline: () => void;
+  onRetry: () => void;
   onClose: () => void;
-  onContinueWithNamespace: (namespace: string) => void;
 }
 
 export default function JobsUpgradeDialog({
   open,
-  mode,
   message,
-  eligibleNamespaces,
+  awaitingTopUp,
   onUpgrade,
-  onDecline,
+  onRetry,
   onClose,
-  onContinueWithNamespace,
 }: JobsUpgradeDialogProps) {
-  const [selectedNamespace, setSelectedNamespace] = useState('');
+  if (!open) return null;
 
-  useEffect(() => {
-    if (!open) return;
-    setSelectedNamespace(eligibleNamespaces[0] || '');
-  }, [open, eligibleNamespaces]);
+  const primarySx = {
+    bgcolor: 'var(--text)',
+    color: 'var(--bg)',
+    fontWeight: 700,
+    fontSize: '0.85rem',
+    textTransform: 'none' as const,
+    px: 2.5,
+    py: 1,
+    borderRadius: '10px',
+    boxShadow: 'none',
+    '&:hover': { bgcolor: 'var(--text)', opacity: 0.9, boxShadow: 'none' },
+  };
+
+  const secondarySx = {
+    bgcolor: 'transparent',
+    color: 'var(--text)',
+    fontWeight: 600,
+    fontSize: '0.85rem',
+    textTransform: 'none' as const,
+    px: 2.5,
+    py: 1,
+    borderRadius: '10px',
+    border: '1px solid var(--border-hover)',
+    '&:hover': { bgcolor: 'var(--hover-bg)', borderColor: 'var(--border-hover)' },
+  };
 
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      slotProps={{
-        backdrop: { sx: { backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' } },
+    <Box
+      sx={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1300,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(0,0,0,0.55)',
+        backdropFilter: 'blur(8px)',
+        px: 2,
       }}
-      PaperProps={{
-        sx: {
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="jobs-billing-title"
+    >
+      <Box
+        sx={{
+          position: 'relative',
+          width: '100%',
+          maxWidth: 480,
           bgcolor: 'var(--panel)',
           border: '1px solid var(--border)',
           borderRadius: 'var(--radius-md)',
           boxShadow: 'var(--shadow-1)',
-          maxWidth: 500,
-          mx: 2,
-        },
-      }}
-    >
-      <DialogTitle
-        sx={{ color: 'var(--text)', fontWeight: 700, fontSize: '1rem', pt: 2.5, pb: 0, px: 3 }}
+          px: 4,
+          py: 4,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          textAlign: 'center',
+        }}
       >
-        {mode === 'namespace' ? 'Choose the org for this job' : 'Jobs need Pro or a paid org'}
-      </DialogTitle>
-      <DialogContent sx={{ px: 3, pt: 1.25, pb: 0 }}>
-        <DialogContentText
-          sx={{ color: 'var(--muted-text)', fontSize: '0.85rem', lineHeight: 1.6 }}
+        <Button
+          onClick={onClose}
+          aria-label="Close"
+          sx={{
+            position: 'absolute',
+            top: 10,
+            right: 10,
+            minWidth: 0,
+            width: 28,
+            height: 28,
+            borderRadius: '8px',
+            color: 'var(--muted-text)',
+            '&:hover': { bgcolor: 'var(--hover-bg)', color: 'var(--text)' },
+          }}
         >
-          {message}
-        </DialogContentText>
-        {eligibleNamespaces.length > 0 && (
-          <Box
-            sx={{
-              mt: 2,
-              p: 1.5,
-              borderRadius: '8px',
-              bgcolor: 'var(--accent-yellow-weak)',
-              border: '1px solid var(--border)',
-            }}
-          >
-            <Typography
-              variant="caption"
-              sx={{
-                display: 'block',
-                fontWeight: 700,
-                color: 'var(--text)',
-                fontSize: '0.78rem',
-                mb: 1,
-                letterSpacing: '0.02em',
-              }}
-            >
-              Eligible namespaces
-            </Typography>
-            {mode === 'namespace' ? (
-              <FormControl fullWidth size="small">
-                <InputLabel id="jobs-namespace-label">Organization</InputLabel>
-                <Select
-                  labelId="jobs-namespace-label"
-                  value={selectedNamespace}
-                  label="Organization"
-                  onChange={(e) => setSelectedNamespace(String(e.target.value))}
-                >
-                  {eligibleNamespaces.map((namespace) => (
-                    <MenuItem key={namespace} value={namespace}>
-                      {namespace}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            ) : (
-              <Typography
-                variant="caption"
-                sx={{ display: 'block', color: 'var(--muted-text)', fontSize: '0.78rem', lineHeight: 1.55 }}
-              >
-                {eligibleNamespaces.join(', ')}
-              </Typography>
-            )}
-          </Box>
-        )}
+          <CloseIcon sx={{ fontSize: 16 }} />
+        </Button>
+
+        <Box
+          sx={{
+            width: 44,
+            height: 44,
+            borderRadius: '12px',
+            bgcolor: 'var(--surface)',
+            border: '1px solid var(--border)',
+            color: 'var(--muted-text)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            mb: 2,
+          }}
+        >
+          <CreditCardIcon sx={{ fontSize: 22 }} />
+        </Box>
+
         <Typography
-          variant="caption"
-          sx={{ display: 'block', mt: 2, color: 'var(--muted-text)', fontSize: '0.78rem', lineHeight: 1.55 }}
+          id="jobs-billing-title"
+          sx={{
+            color: 'var(--text)',
+            fontWeight: 700,
+            fontSize: '1.05rem',
+            letterSpacing: '-0.01em',
+            mb: 1,
+          }}
         >
-          If you decline, the agent will have to find another way forward without `hf_jobs`.
+          {awaitingTopUp ? 'Resume when you’re ready' : 'Add credits to launch this job'}
         </Typography>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2.5, pt: 2, gap: 1 }}>
-        {mode === 'namespace' ? (
-          <Button
-            onClick={() => onContinueWithNamespace(selectedNamespace)}
-            disabled={!selectedNamespace}
-            variant="contained"
-            size="small"
-            sx={{
-              fontSize: '0.82rem',
-              px: 2.5,
-              bgcolor: 'var(--accent-yellow)',
-              color: '#000',
-              textTransform: 'none',
-              fontWeight: 700,
-              boxShadow: 'none',
-              '&:hover': { bgcolor: '#FFB340', boxShadow: 'none' },
-            }}
-          >
-            Run under selected org
-          </Button>
-        ) : (
+
+        <Typography
+          sx={{
+            color: 'var(--muted-text)',
+            fontSize: '0.85rem',
+            lineHeight: 1.6,
+            mb: 3,
+            maxWidth: 380,
+          }}
+        >
+          {awaitingTopUp
+            ? 'Once your top-up is through, click below to resume — the agent will pick the run back up where it left off.'
+            : message ||
+              'Hugging Face Jobs need credits on the namespace running them. Add some, then resume — the agent waits here in the meantime.'}
+        </Typography>
+
+        <Box
+          sx={{
+            display: 'flex',
+            flexDirection: { xs: 'column', sm: 'row' },
+            gap: 1.25,
+            width: '100%',
+            justifyContent: 'center',
+          }}
+        >
           <Button
             component="a"
-            href={HF_PRICING_URL}
+            href={HF_BILLING_URL}
             target="_blank"
             rel="noopener noreferrer"
             onClick={onUpgrade}
+            startIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
             variant="contained"
-            size="small"
-            sx={{
-              fontSize: '0.82rem',
-              px: 2.5,
-              bgcolor: 'var(--accent-yellow)',
-              color: '#000',
-              textTransform: 'none',
-              fontWeight: 700,
-              boxShadow: 'none',
-              '&:hover': { bgcolor: '#FFB340', boxShadow: 'none' },
-            }}
+            sx={primarySx}
           >
-            Upgrade to Pro
+            Add credits
           </Button>
-        )}
-        <Button
-          onClick={onDecline}
-          size="small"
-          sx={{
-            color: 'var(--muted-text)',
-            fontSize: '0.82rem',
-            px: 2,
-            textTransform: 'none',
-            '&:hover': { bgcolor: 'var(--hover-bg)' },
-          }}
-        >
-          Decline tool call
-        </Button>
-      </DialogActions>
-    </Dialog>
+          <Button
+            onClick={onRetry}
+            startIcon={<ReplayIcon sx={{ fontSize: 16 }} />}
+            variant="outlined"
+            sx={secondarySx}
+          >
+            I’ve added credits
+          </Button>
+        </Box>
+      </Box>
+    </Box>
   );
 }

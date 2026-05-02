@@ -224,7 +224,7 @@ def _session_metrics(session: dict) -> dict:
         "failures": 0, "regenerate_sessions": 0,
         "thumbs_up": 0, "thumbs_down": 0,
         "hf_jobs_submitted": 0, "hf_jobs_succeeded": 0, "hf_jobs_blocked": 0,
-        "pro_cta_clicks": 0,
+        "pro_cta_clicks": 0, "pro_conversions": 0, "credits_topped_up": 0,
         "sandboxes_created": 0, "sandboxes_cpu": 0, "sandboxes_gpu": 0,
         "first_tool_s": -1,
     }
@@ -251,6 +251,8 @@ def _session_metrics(session: dict) -> dict:
     sandboxes_gpu = 0
     jobs_blocked = 0
     pro_cta_clicks = 0
+    pro_conversions = 0
+    credits_topped_up = 0
     pro_cta_by_source: dict[str, int] = defaultdict(int)
     # Per-tool counters from tool_call events. Counted off tool_call (which
     # carries data["tool"]) rather than tool_output (which only carries
@@ -321,6 +323,12 @@ def _session_metrics(session: dict) -> dict:
             source = str(data.get("source") or "unknown")
             pro_cta_by_source[source] += 1
 
+        elif et == "pro_conversion":
+            pro_conversions += 1
+
+        elif et == "credits_topped_up":
+            credits_topped_up += 1
+
         elif et == "sandbox_create":
             sandboxes_created += 1
             hardware = (data.get("hardware") or "").lower()
@@ -347,6 +355,8 @@ def _session_metrics(session: dict) -> dict:
     out["sandboxes_gpu"] = sandboxes_gpu
     out["hf_jobs_blocked"] = jobs_blocked
     out["pro_cta_clicks"] = pro_cta_clicks
+    out["pro_conversions"] = pro_conversions
+    out["credits_topped_up"] = credits_topped_up
     out["first_tool_s"] = first_tool_ts if first_tool_ts is not None else -1
     out["_gpu_hours_by_flavor"] = dict(gpu_hours_by_flavor)
     out["_pro_cta_by_source"] = dict(pro_cta_by_source)
@@ -462,6 +472,8 @@ def _aggregate(per_session: list[dict]) -> dict:
         "sandboxes_gpu": int(sum(s.get("sandboxes_gpu", 0) for s in per_session)),
         "hf_jobs_blocked": int(sum(s.get("hf_jobs_blocked", 0) for s in per_session)),
         "pro_cta_clicks": int(sum(s.get("pro_cta_clicks", 0) for s in per_session)),
+        "pro_conversions": int(sum(s.get("pro_conversions", 0) for s in per_session)),
+        "credits_topped_up": int(sum(s.get("credits_topped_up", 0) for s in per_session)),
         "gpu_hours_by_flavor_json": json.dumps(dict(gpu_hours), sort_keys=True),
         # Research KPIs — answer "is the agent reaching for research?".
         "research_calls": research_calls_total,

@@ -1,9 +1,16 @@
-"""Helpers for Hugging Face account / org access decisions."""
+"""Helpers for Hugging Face account / org access decisions.
+
+HF Jobs are gated by *credits*, not by HF Pro subscriptions. Any user who
+has credits — on their personal account or on an org they belong to — can
+launch jobs under that namespace. The picker UI lets the caller choose
+which wallet to bill.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,35 +21,34 @@ OPENID_PROVIDER_URL = os.environ.get("OPENID_PROVIDER_URL", "https://huggingface
 
 @dataclass(frozen=True)
 class JobsAccess:
-    """Jobs entitlement derived from whoami-v2."""
+    """Namespaces the caller may bill HF Jobs to."""
 
     username: str | None
-    plan: str
-    personal_can_run_jobs: bool
-    paid_org_names: list[str]
+    org_names: list[str]
     eligible_namespaces: list[str]
     default_namespace: str | None
     access_known: bool = True
 
-    @property
-    def can_run_jobs(self) -> bool:
-        return bool(self.default_namespace)
-
 
 class JobsAccessError(Exception):
-    """Structured jobs access error for upgrade / namespace gating."""
+    """Structured jobs-namespace error.
+
+    ``namespace_required`` fires when the caller belongs to more than one
+    eligible namespace and the UI must prompt them to pick one. There is no
+    longer an ``upgrade_required`` state — Pro is irrelevant; HF Jobs are
+    gated on per-wallet credits, surfaced separately when the API returns
+    a billing error at job-creation time.
+    """
 
     def __init__(
         self,
         message: str,
         *,
         access: JobsAccess | None = None,
-        upgrade_required: bool = False,
         namespace_required: bool = False,
     ) -> None:
         super().__init__(message)
         self.access = access
-        self.upgrade_required = upgrade_required
         self.namespace_required = namespace_required
 
 
@@ -54,61 +60,38 @@ def _extract_username(whoami: dict[str, Any]) -> str | None:
     return None
 
 
-def _normalize_personal_plan(whoami: dict[str, Any]) -> str:
-    plan_str = ""
-    for key in ("plan", "type", "accountType"):
-        value = whoami.get(key)
-        if isinstance(value, str) and value:
-            plan_str = value.lower()
-            break
+def _org_names(whoami: dict[str, Any]) -> list[str]:
+    """All orgs the caller belongs to.
 
-    if not plan_str and (whoami.get("isPro") is True or whoami.get("is_pro") is True):
-        return "pro"
-
-    if any(tag in plan_str for tag in ("pro", "enterprise", "team")):
-        return "pro"
-    return "free"
-
-
-def _paid_org_names(whoami: dict[str, Any]) -> list[str]:
+    Plan/tier is ignored — credits live on the namespace itself, so any
+    org the user belongs to can host a job as long as it has credits.
+    """
     names: list[str] = []
     orgs = whoami.get("orgs") or []
     if not isinstance(orgs, list):
         return names
-
     for org in orgs:
         if not isinstance(org, dict):
             continue
         name = org.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        org_plan = str(org.get("plan") or org.get("type") or "").lower()
-        if any(tag in org_plan for tag in ("pro", "enterprise", "team")):
+        if isinstance(name, str) and name:
             names.append(name)
     return sorted(set(names))
 
 
 def jobs_access_from_whoami(whoami: dict[str, Any]) -> JobsAccess:
     username = _extract_username(whoami)
-    personal_plan = _normalize_personal_plan(whoami)
-    paid_orgs = _paid_org_names(whoami)
-    personal_can_run = personal_plan == "pro"
-
-    eligible_namespaces: list[str] = []
-    if personal_can_run and username:
-        eligible_namespaces.append(username)
-    eligible_namespaces.extend(paid_orgs)
-
-    plan = "pro" if personal_can_run else ("org" if paid_orgs else "free")
-    default_namespace = username if personal_can_run and username else None
-
+    org_names = _org_names(whoami)
+    eligible: list[str] = []
+    if username:
+        eligible.append(username)
+    eligible.extend(org_names)
+    default = username if username else (org_names[0] if org_names else None)
     return JobsAccess(
         username=username,
-        plan=plan,
-        personal_can_run_jobs=personal_can_run,
-        paid_org_names=paid_orgs,
-        eligible_namespaces=eligible_namespaces,
-        default_namespace=default_namespace,
+        org_names=org_names,
+        eligible_namespaces=eligible,
+        default_namespace=default,
     )
 
 
@@ -150,26 +133,18 @@ async def resolve_jobs_namespace(
             if requested_namespace in access.eligible_namespaces:
                 return requested_namespace, access
             raise JobsAccessError(
-                f"You can only run jobs under your own Pro account or a paid org you belong to. "
+                f"You can only run jobs under your own account or an org you belong to. "
                 f"Allowed namespaces: {', '.join(access.eligible_namespaces) or '(none)'}",
                 access=access,
             )
         if access.default_namespace:
             return access.default_namespace, access
-        if access.paid_org_names:
-            raise JobsAccessError(
-                "Choose which paid organization should own this job run.",
-                access=access,
-                namespace_required=True,
-            )
         raise JobsAccessError(
-            "Hugging Face Jobs are available only to Pro users and Team or Enterprise organizations. "
-            "Upgrade to Pro, or run the job under a paid org you belong to.",
+            "Couldn't resolve a Hugging Face namespace for this token.",
             access=access,
-            upgrade_required=True,
         )
 
-    # Fallback: whoami-v2 unavailable. Do not block the call pre-emptively.
+    # Fallback: whoami-v2 unavailable. Don't block the call pre-emptively.
     from huggingface_hub import HfApi
 
     username = None
@@ -179,3 +154,19 @@ async def resolve_jobs_namespace(
     if not username:
         raise JobsAccessError("No HF token available to resolve a jobs namespace.")
     return requested_namespace or username, None
+
+
+_BILLING_PATTERNS = re.compile(
+    r"\b(insufficient[_\s-]?credits?|out\s+of\s+credits?|payment\s+required|"
+    r"billing|no\s+credits?|add\s+credits?|requires?\s+credits?)\b",
+    re.IGNORECASE,
+)
+
+
+def is_billing_error(message: str) -> bool:
+    """True if an HF API error message looks like an out-of-credits / billing error."""
+    if not message:
+        return False
+    if "402" in message:
+        return True
+    return bool(_BILLING_PATTERNS.search(message))

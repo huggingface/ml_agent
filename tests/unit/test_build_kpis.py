@@ -104,6 +104,32 @@ def test_hf_job_blocked_and_pro_clicks_are_counted():
     }
 
 
+def test_pro_conversions_and_credits_topped_up_per_session():
+    mod = _load()
+    events = [
+        _ev("pro_conversion", {"first_seen_at": "2026-04-20T10:00:00"}),
+        _ev("credits_topped_up", {"namespace": "smolagents"}),
+        _ev("credits_topped_up", {"namespace": "smolagents"}),
+    ]
+    m = mod._session_metrics(_session(events))
+    assert m["pro_conversions"] == 1
+    assert m["credits_topped_up"] == 2
+
+
+def test_aggregate_sums_pro_conversions_and_credits_topped_up():
+    mod = _load()
+    s1 = mod._session_metrics(_session([
+        _ev("pro_conversion", {}),
+    ], user_id="u1"))
+    s2 = mod._session_metrics(_session([
+        _ev("credits_topped_up", {"namespace": "ns"}),
+    ], user_id="u2"))
+    s3 = mod._session_metrics(_session([], user_id="u3"))
+    row = mod._aggregate([s1, s2, s3])
+    assert row["pro_conversions"] == 1
+    assert row["credits_topped_up"] == 1
+
+
 def test_feedback_counts():
     mod = _load()
     events = [

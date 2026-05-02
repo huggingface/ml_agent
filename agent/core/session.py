@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
 import uuid
@@ -65,6 +66,7 @@ class OpType(Enum):
 class Event:
     event_type: str
     data: Optional[dict[str, Any]] = None
+    seq: Optional[int] = None
 
 
 class Session:
@@ -87,9 +89,13 @@ class Session:
         defer_turn_complete_notification: bool = False,
         session_id: str | None = None,
         user_id: str | None = None,
+        hf_username: str | None = None,
+        persistence_store: Any | None = None,
     ):
         self.hf_token: Optional[str] = hf_token
         self.user_id: Optional[str] = user_id
+        self.hf_username: Optional[str] = hf_username
+        self.persistence_store = persistence_store
         self.tool_router = tool_router
         self.stream = stream
         if config is None:
@@ -110,10 +116,17 @@ class Session:
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
+        self.sandbox_hardware: Optional[str] = None
+        self.sandbox_preload_task: Optional[asyncio.Task] = None
+        self.sandbox_preload_error: Optional[str] = None
+        self.sandbox_preload_cancel_event: Any | None = None
         self._running_job_ids: set[str] = set()  # HF job IDs currently executing
         self.notification_gateway = notification_gateway
         self.notification_destinations = list(notification_destinations or [])
         self.defer_turn_complete_notification = defer_turn_complete_notification
+        self.auto_approval_enabled: bool = False
+        self.auto_approval_cost_cap_usd: float | None = None
+        self.auto_approval_estimated_spend_usd: float = 0.0
 
         # Session trajectory logging
         self.logged_events: list[dict] = []
@@ -135,11 +148,10 @@ class Session:
         #          thinking params at all
         # Key absent → not probed yet; fall back to the raw preference.
         self.model_effective_effort: dict[str, str | None] = {}
+        self.context_manager.on_message_added = self._schedule_trace_message
 
     async def send_event(self, event: Event) -> None:
         """Send event back to client and log to trajectory"""
-        await self.event_queue.put(event)
-
         # Log event to trajectory
         self.logged_events.append(
             {
@@ -148,12 +160,40 @@ class Session:
                 "data": event.data,
             }
         )
+        if self.persistence_store is not None:
+            try:
+                event.seq = await self.persistence_store.append_event(
+                    self.session_id, event.event_type, event.data
+                )
+            except Exception as e:
+                logger.debug("Event persistence failed for %s: %s", self.session_id, e)
+
+        await self.event_queue.put(event)
         await self._enqueue_auto_notification_requests(event)
 
         # Mid-turn heartbeat flush (owned by telemetry module).
         from agent.core.telemetry import HeartbeatSaver
 
         HeartbeatSaver.maybe_fire(self)
+
+    def _schedule_trace_message(self, message: Any) -> None:
+        """Best-effort append-only trace save for SFT/KPI export."""
+        if self.persistence_store is None:
+            return
+        try:
+            payload = message.model_dump(mode="json")
+        except Exception:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        source = str(payload.get("role") or "message")
+        loop.create_task(
+            self.persistence_store.append_trace_message(
+                self.session_id, payload, source=source
+            )
+        )
 
     def set_notification_destinations(self, destinations: list[str]) -> None:
         """Replace the session's opted-in auto-notification destinations."""
@@ -280,6 +320,40 @@ class Session:
         self.config.model_name = model_name
         self.context_manager.model_max_tokens = _get_max_tokens_safe(model_name)
 
+    def set_auto_approval_policy(
+        self, *, enabled: bool, cost_cap_usd: float | None
+    ) -> None:
+        self.auto_approval_enabled = bool(enabled)
+        self.auto_approval_cost_cap_usd = cost_cap_usd
+
+    def add_auto_approval_estimated_spend(self, amount_usd: float | None) -> None:
+        if amount_usd is None or amount_usd <= 0:
+            return
+        self.auto_approval_estimated_spend_usd = round(
+            self.auto_approval_estimated_spend_usd + float(amount_usd), 4
+        )
+
+    @property
+    def auto_approval_remaining_usd(self) -> float | None:
+        if self.auto_approval_cost_cap_usd is None:
+            return None
+        return round(
+            max(
+                0.0,
+                self.auto_approval_cost_cap_usd
+                - self.auto_approval_estimated_spend_usd,
+            ),
+            4,
+        )
+
+    def auto_approval_policy_summary(self) -> dict[str, Any]:
+        return {
+            "enabled": self.auto_approval_enabled,
+            "cost_cap_usd": self.auto_approval_cost_cap_usd,
+            "estimated_spend_usd": round(self.auto_approval_estimated_spend_usd, 4),
+            "remaining_usd": self.auto_approval_remaining_usd,
+        }
+
     def effective_effort_for(self, model_name: str) -> str | None:
         """Resolve the effort level to actually send for ``model_name``.
 
@@ -332,6 +406,7 @@ class Session:
         return {
             "session_id": self.session_id,
             "user_id": self.user_id,
+            "hf_username": self.hf_username,
             "session_start_time": self.session_start_time,
             "session_end_time": datetime.now().isoformat(),
             "model_name": self.config.model_name,
@@ -426,62 +501,174 @@ class Session:
             logger.error(f"Failed to update local save status: {e}")
             return False
 
-    def save_and_upload_detached(self, repo_id: str) -> Optional[str]:
-        """
-        Save session locally and spawn detached subprocess for upload (fire-and-forget)
+    def _personal_trace_repo_id(self) -> Optional[str]:
+        """Resolve the per-user trace repo id from config + HF username.
 
-        Args:
-            repo_id: HuggingFace dataset repo ID
-
-        Returns:
-            Path to local save file
+        Returns ``None`` when sharing is disabled, the user is anonymous,
+        or the template is missing — caller skips the personal upload in
+        those cases.
         """
-        # Save locally first (fast, synchronous)
-        local_path = self.save_trajectory_local(upload_status="pending")
-        if not local_path:
+        if not getattr(self.config, "share_traces", False):
+            return None
+        hf_user = self.hf_username or self.user_id
+        if not hf_user:
+            return None
+        template = getattr(self.config, "personal_trace_repo_template", None)
+        if not template:
+            return None
+        try:
+            return template.format(hf_user=hf_user)
+        except (KeyError, IndexError):
+            logger.debug("personal_trace_repo_template format failed: %r", template)
             return None
 
-        # Spawn detached subprocess for upload (fire-and-forget)
+    def _spawn_uploader(
+        self,
+        action: str,
+        target: str,
+        repo_id: str,
+        *,
+        format: str,
+        token_env: Optional[str],
+        private: bool,
+        token_value: Optional[str] = None,
+    ) -> None:
+        """Fire-and-forget spawn of ``session_uploader.py`` with the given args."""
         try:
             uploader_script = Path(__file__).parent / "session_uploader.py"
+            cmd = [
+                sys.executable,
+                str(uploader_script),
+                action,
+                target,
+                repo_id,
+                "--format",
+                format,
+                "--private",
+                "true" if private else "false",
+            ]
+            if token_env:
+                cmd.extend(["--token-env", token_env])
 
-            # Use Popen with detached process
+            env = os.environ.copy()
+            if token_value:
+                env["_ML_INTERN_PERSONAL_TOKEN"] = token_value
+
             subprocess.Popen(
-                [sys.executable, str(uploader_script), "upload", local_path, repo_id],
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=env,
                 start_new_session=True,  # Detach from parent
             )
         except Exception as e:
             logger.warning(f"Failed to spawn upload subprocess: {e}")
 
+    def save_and_upload_detached(self, repo_id: str) -> Optional[str]:
+        """
+        Save session locally and spawn detached subprocess(es) for upload
+        (fire-and-forget).
+
+        Always uploads to the shared org dataset (``repo_id``) in the
+        single-row format used by the KPI scheduler. When
+        ``config.share_traces`` is enabled and a username is known, also
+        uploads to the user's personal private dataset in Claude Code JSONL
+        format so the HF Agent Trace Viewer auto-renders it.
+
+        Args:
+            repo_id: HuggingFace dataset repo ID for the org/KPI upload.
+
+        Returns:
+            Path to local save file
+        """
+        local_path = self.save_trajectory_local(upload_status="pending")
+        if not local_path:
+            return None
+
+        self._spawn_uploader(
+            "upload",
+            local_path,
+            repo_id,
+            format="row",
+            token_env=None,  # default org token chain
+            private=False,
+        )
+
+        personal_repo = self._personal_trace_repo_id()
+        if personal_repo:
+            # User's own HF_TOKEN write-scoped to their namespace.
+            self._spawn_uploader(
+                "upload",
+                local_path,
+                personal_repo,
+                format="claude_code",
+                token_env="HF_TOKEN",
+                token_value=self.hf_token,
+                private=True,
+            )
+
         return local_path
 
     @staticmethod
     def retry_failed_uploads_detached(
-        directory: str = "session_logs", repo_id: Optional[str] = None
+        directory: str = "session_logs",
+        repo_id: Optional[str] = None,
+        *,
+        personal_repo_id: Optional[str] = None,
     ) -> None:
         """
-        Spawn detached subprocess to retry failed/pending uploads (fire-and-forget)
+        Spawn detached subprocess(es) to retry failed/pending uploads
+        (fire-and-forget).
 
         Args:
             directory: Directory containing session logs
-            repo_id: Target dataset repo ID
+            repo_id: Target dataset repo ID for the shared org/KPI upload.
+            personal_repo_id: Per-user dataset for Claude-Code-format
+                retries. ``None`` skips the personal retry pass.
         """
-        if not repo_id:
+        if not repo_id and not personal_repo_id:
             return
 
         try:
             uploader_script = Path(__file__).parent / "session_uploader.py"
 
-            # Spawn detached subprocess for retry
-            subprocess.Popen(
-                [sys.executable, str(uploader_script), "retry", directory, repo_id],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,  # Detach from parent
-            )
+            if repo_id:
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(uploader_script),
+                        "retry",
+                        directory,
+                        repo_id,
+                        "--format",
+                        "row",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+
+            if personal_repo_id:
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(uploader_script),
+                        "retry",
+                        directory,
+                        personal_repo_id,
+                        "--format",
+                        "claude_code",
+                        "--token-env",
+                        "HF_TOKEN",
+                        "--private",
+                        "true",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
         except Exception as e:
             logger.warning(f"Failed to spawn retry subprocess: {e}")

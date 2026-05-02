@@ -28,6 +28,7 @@ def _make_cm() -> ContextManager:
     cm.running_context_usage = 0
     cm.untouched_messages = 5
     cm.items = [Message(role="system", content="system")]
+    cm.on_message_added = None
     return cm
 
 
@@ -64,6 +65,15 @@ def test_no_orphan_means_no_stub():
     tool_msgs = [m for m in cm.items if getattr(m, "role", None) == "tool"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0].content == "ok"
+
+
+def test_add_message_records_message_timestamp():
+    cm = _make_cm()
+    msg = Message(role="user", content="hello")
+
+    cm.add_message(msg)
+
+    assert getattr(cm.items[-1], "timestamp", None)
 
 
 def test_multiple_dangling_tool_calls_in_one_assistant_message_are_all_patched():

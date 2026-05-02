@@ -78,9 +78,29 @@ async def record_llm_call(
     response: Any = None,
     latency_ms: int,
     finish_reason: str | None,
+    kind: str = "main",
 ) -> dict:
     """Emit an ``llm_call`` event and return the extracted usage dict so
-    callers can stash it on their result object if they want."""
+    callers can stash it on their result object if they want.
+
+    ``kind`` tags the call site so downstream analytics can break spend
+    down by category. Values currently emitted by the codebase:
+
+    * ``main``        — agent loop turn (user-facing reply or tool follow-up)
+    * ``research``    — research sub-agent inner loop (3 call sites)
+    * ``compaction``  — context-window summary on overflow
+    * ``effort_probe``— effort cascade walk on rejection / model switch
+    * ``restore``     — session re-seed summary after a Space restart
+
+    Pre-2026-04-29 only ``main`` calls were instrumented; observed gap on
+    Cost Explorer was ~67%, with the other 5 call sites accounting for
+    the rest. Tagging lets us split the dataset's ``total_cost_usd`` by
+    category and validate against AWS billing.
+
+    The ``/title`` (HF Router, not Bedrock) and ``/health/llm`` (diagnostic
+    endpoint, no session context) call sites are intentionally not
+    instrumented — together they're <1% of spend.
+    """
     usage = extract_usage(response) if response is not None else {}
     cost_usd = 0.0
     if response is not None:
@@ -98,6 +118,7 @@ async def record_llm_call(
                 "latency_ms": latency_ms,
                 "finish_reason": finish_reason,
                 "cost_usd": cost_usd,
+                "kind": kind,
                 **usage,
             },
         ))
@@ -275,6 +296,44 @@ async def record_pro_cta_click(
         ))
     except Exception as e:
         logger.debug("record_pro_cta_click failed (non-fatal): %s", e)
+
+
+async def record_pro_conversion(
+    session: Any,
+    *,
+    first_seen_at: str | None = None,
+) -> None:
+    """Emit a ``pro_conversion`` event for a user we've previously observed
+    as non-Pro and now see as Pro for the first time. Detected upstream in
+    ``MongoSessionStore.mark_pro_seen``; fired into the user's first Pro
+    session so the rollup picks it up alongside other event-driven KPIs."""
+    from agent.core.session import Event
+    try:
+        await session.send_event(Event(
+            event_type="pro_conversion",
+            data={"first_seen_at": first_seen_at},
+        ))
+    except Exception as e:
+        logger.debug("record_pro_conversion failed (non-fatal): %s", e)
+
+
+async def record_credits_topped_up(
+    session: Any,
+    *,
+    namespace: str | None = None,
+) -> None:
+    """Emit a ``credits_topped_up`` event when an hf_job submits successfully
+    in a session that previously hit ``jobs_access_blocked`` — i.e. the user
+    came back from the HF billing top-up flow and unblocked themselves.
+    Caller is responsible for firing this at most once per session."""
+    from agent.core.session import Event
+    try:
+        await session.send_event(Event(
+            event_type="credits_topped_up",
+            data={"namespace": namespace},
+        ))
+    except Exception as e:
+        logger.debug("record_credits_topped_up failed (non-fatal): %s", e)
 
 
 # ── heartbeat ──────────────────────────────────────────────────────────────
