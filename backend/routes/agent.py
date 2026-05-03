@@ -103,6 +103,12 @@ def _available_models() -> list[dict[str, Any]]:
             "provider": "huggingface",
             "tier": "free",
         },
+        {
+            "id": "ollama/llama3:8b",
+            "label": "Ollama Llama 3 (Local)",
+            "provider": "ollama",
+            "tier": "free",
+        }
     ]
     return models
 

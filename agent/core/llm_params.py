@@ -114,6 +114,9 @@ def _resolve_llm_params(
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
 
+    • ``ollama/<model>`` — routes locally to an Ollama instance at
+      ``http://localhost:11434``.
+
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
       ``https://router.huggingface.co/v1``. The id can be bare or carry an
@@ -179,6 +182,12 @@ def _resolve_llm_params(
             else:
                 params["reasoning_effort"] = reasoning_effort
         return params
+
+    if model_name.startswith("ollama/"):
+        return {
+            "model": model_name,
+            "api_base": "http://localhost:11434"
+        }
 
     hf_model = model_name.removeprefix("huggingface/")
     api_key = _resolve_hf_router_token(session_hf_token)

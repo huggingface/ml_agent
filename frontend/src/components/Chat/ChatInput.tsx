@@ -77,6 +77,13 @@ const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
     modelPath: 'deepseek-ai/DeepSeek-V4-Pro:deepinfra',
     avatarUrl: getHfAvatarUrl('deepseek-ai/DeepSeek-V4-Pro'),
   },
+  {
+    id: 'ollama-llama3-8b',
+    name: 'Ollama Llama 3 (Local)',
+    description: 'Ollama',
+    modelPath: 'ollama/llama3:8b',
+    avatarUrl: 'https://huggingface.co/api/avatars/ollama',
+  },
 ];
 
 const findModelByPath = (path: string, options: ModelOption[]): ModelOption | undefined => {
@@ -359,8 +366,8 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
             border: '1px solid var(--border)',
             transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
             '&:focus-within': {
-                borderColor: 'var(--accent-yellow)',
-                boxShadow: 'var(--focus)',
+              borderColor: 'var(--accent-yellow)',
+              boxShadow: 'var(--focus)',
             }
           }}
         >
@@ -376,27 +383,27 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
             variant="standard"
             inputRef={inputRef}
             InputProps={{
-                disableUnderline: true,
-                sx: {
-                    color: 'var(--text)',
-                    fontSize: '15px',
-                    fontFamily: 'inherit',
-                    padding: 0,
-                    lineHeight: 1.5,
-                    minHeight: { xs: '44px', md: '56px' },
-                    alignItems: 'flex-start',
-                }
+              disableUnderline: true,
+              sx: {
+                color: 'var(--text)',
+                fontSize: '15px',
+                fontFamily: 'inherit',
+                padding: 0,
+                lineHeight: 1.5,
+                minHeight: { xs: '44px', md: '56px' },
+                alignItems: 'flex-start',
+              }
             }}
             sx={{
-                flex: 1,
-                '& .MuiInputBase-root': {
-                    p: 0,
-                    backgroundColor: 'transparent',
-                },
-                '& textarea': {
-                    resize: 'none',
-                    padding: '0 !important',
-                }
+              flex: 1,
+              '& .MuiInputBase-root': {
+                p: 0,
+                backgroundColor: 'transparent',
+              },
+              '& textarea': {
+                resize: 'none',
+                padding: '0 !important',
+              }
             }}
           />
           {isProcessing ? (
