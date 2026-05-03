@@ -508,15 +508,15 @@ class ContextManager:
         idx = len(self.items) - self.untouched_messages
         while idx > 1 and self.items[idx].role != "user":
             idx -= 1
-        # The while loop's `idx > 1` guard expresses "do not include the
-        # system message in recent_messages". But when len(self.items) ==
-        # untouched_messages (the canonical 5-message early-compaction case
-        # — system + user-task + giant-tool-output + user-followup +
-        # assistant-reply), idx initialises to 0 and the while is a no-op.
-        # Without this clamp, recent_messages = self.items[0:] would include
-        # the system message, and the rebuild path duplicates it.
-        if idx < 1:
-            idx = 1
+        # The real invariant is "idx must be strictly after first_user_idx,
+        # otherwise recent_messages overlaps with the messages we put in
+        # head". The walk-back's `idx > 1` guard is necessary (no system in
+        # recent) but insufficient (first_user is also in head and would be
+        # duplicated). Anthropic API rejects two consecutive user messages
+        # with a 400 — bot review on PR #213 caught this on the second clamp
+        # iteration.
+        if idx <= first_user_idx:
+            idx = first_user_idx + 1
 
         recent_messages = self.items[idx:]
         messages_to_summarize = self.items[first_user_idx + 1:idx]

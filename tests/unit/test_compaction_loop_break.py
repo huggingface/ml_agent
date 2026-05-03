@@ -226,6 +226,28 @@ async def test_compact_does_not_duplicate_system_when_idx_is_zero():
         f"Expected exactly 1 system message, found {system_count}. "
         f"Roles: {[m.role for m in cm.items]}"
     )
+    # And the first-user "task" message must also appear exactly once.
+    # Bot review on PR #213 caught a follow-up bug: clamping idx=1
+    # excludes the system but still overlaps with first_user_idx (also 1),
+    # so first_user_msg ends up in BOTH head and recent_messages →
+    # duplicate user message → Anthropic 400 (two consecutive user roles).
+    task_count = sum(
+        1 for m in cm.items
+        if m.role == "user" and (m.content or "") == "task"
+    )
+    assert task_count == 1, (
+        f"Expected exactly 1 'task' user message, found {task_count}. "
+        f"Roles+content: {[(m.role, (m.content or '')[:20]) for m in cm.items]}"
+    )
+    # Defense in depth: no two consecutive same-role messages (Anthropic
+    # API contract). System counts separately.
+    non_system = [m for m in cm.items if m.role != "system"]
+    for i in range(1, len(non_system)):
+        assert non_system[i].role != non_system[i-1].role, (
+            f"Two consecutive {non_system[i].role} messages at non-system "
+            f"position {i-1},{i} — Anthropic API rejects this. "
+            f"Roles: {[m.role for m in cm.items]}"
+        )
 
 
 @pytest.mark.asyncio
