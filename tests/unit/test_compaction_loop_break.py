@@ -104,6 +104,23 @@ def test_truncate_oversized_preserves_thinking_blocks():
     assert getattr(out[0], "reasoning_content", None) == "deep thought"
 
 
+def test_truncate_oversized_never_touches_system_message():
+    """The system prompt is the agent's instructions — must never be truncated.
+
+    Caught by the integration smoke test on PR #213: when items has fewer than
+    ``untouched_messages`` entries, the slice math in ``compact()`` can let
+    ``items[0]`` (the system message) leak into the ``recent_messages`` list
+    that gets passed to ``_truncate_oversized``. The function must guard
+    explicitly against this.
+    """
+    cm = _make_cm()
+    huge_system = "x" * (_MAX_TOKENS_PER_MESSAGE * 5)
+    msgs = [_msg("system", huge_system)]
+    with patch("litellm.token_counter", return_value=_MAX_TOKENS_PER_MESSAGE * 2):
+        out = cm._truncate_oversized(msgs, "anthropic/claude-opus-4-6")
+    assert out[0].content == huge_system, "system message must never be truncated"
+
+
 def test_truncate_oversized_resilient_to_token_counter_failure():
     """token_counter occasionally raises on edge-case content. A blip there
     must NOT drop the message — better to leave it and let compaction

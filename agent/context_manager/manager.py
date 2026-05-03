@@ -405,6 +405,13 @@ class ContextManager:
 
         out: list[Message] = []
         for msg in messages:
+            # System messages are sacred — they're the agent's instructions.
+            # In edge cases (items < untouched_messages), the slice math in
+            # compact() can let items[0] (the system message) leak into the
+            # recent_messages list. Defense-in-depth: never truncate it.
+            if msg.role == "system":
+                out.append(msg)
+                continue
             try:
                 n = token_counter(model=model_name, messages=[msg.model_dump()])
             except Exception:
