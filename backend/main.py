@@ -70,15 +70,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware for development
+# CORS middleware
+allow_origins = [
+    "http://localhost:5173",  # Vite dev server
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+]
+
+# Add production HF Spaces URL when deployed
+space_host = os.environ.get("SPACE_HOST")
+if space_host:
+    allow_origins.append(f"https://{space_host}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

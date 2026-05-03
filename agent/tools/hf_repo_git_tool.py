@@ -285,11 +285,14 @@ class HfRepoGitTool:
         repo_type = args.get("repo_type", "model")
         status = args.get("status", "all")  # open, closed, all
 
-        discussions = list(self.api.get_repo_discussions(
-            repo_id=repo_id,
-            repo_type=repo_type,
-            discussion_status=status if status != "all" else None,
-        ))
+        def _fetch():
+            return list(self.api.get_repo_discussions(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                discussion_status=status if status != "all" else None,
+            ))
+
+        discussions = await _async_call(_fetch)
 
         if not discussions:
             return {"formatted": f"No discussions in {repo_id}", "totalResults": 0, "resultsShared": 0}

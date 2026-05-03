@@ -437,11 +437,12 @@ def print_help() -> None:
 
 # ── Plan display ───────────────────────────────────────────────────────
 
-def format_plan_display() -> str:
+def format_plan_display(session=None) -> str:
     """Format the current plan for display."""
     from agent.tools.plan_tool import get_current_plan
 
-    plan = get_current_plan()
+    session_id = session.session_id if session else None
+    plan = get_current_plan(session_id=session_id)
     if not plan:
         return ""
 
@@ -462,8 +463,8 @@ def format_plan_display() -> str:
     return "\n".join(lines)
 
 
-def print_plan() -> None:
-    plan_str = format_plan_display()
+def print_plan(session=None) -> None:
+    plan_str = format_plan_display(session=session)
     if plan_str:
         _console.print(plan_str)
 
