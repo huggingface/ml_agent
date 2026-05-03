@@ -179,6 +179,56 @@ async def test_compact_raises_when_post_compact_still_over_threshold():
 
 
 @pytest.mark.asyncio
+async def test_compact_does_not_duplicate_system_when_idx_is_zero():
+    """Regression for the second P0 caught by bot review on PR #213.
+
+    When ``len(items) == untouched_messages`` (the canonical 5-message
+    early-compaction case: system + user-task + giant-tool-output +
+    user-followup + assistant-reply), ``idx`` initialises to 0 and the
+    walk-back ``while idx > 1`` loop is a no-op. Without an explicit
+    clamp ``if idx < 1: idx = 1``, ``recent_messages = items[0:]``
+    starts at the system message, and the rebuild duplicates system +
+    first-user. Anthropic API rejects two system messages.
+    """
+    cm = _make_cm(model_max_tokens=100_000, untouched_messages=5)
+    cm.items = [
+        Message(role="system", content="system"),
+        Message(role="user", content="task"),
+        Message(role="assistant", content="ok"),  # would be the only
+                                                   # message_to_summarize but the
+                                                   # idx bug pulls it into recent
+        Message(role="user", content="followup"),
+        Message(role="assistant", content="reply"),
+    ]  # exactly 5 = untouched_messages, so idx initialises to 0
+    cm.running_context_usage = 95_000
+
+    async def fake_summarize(*args, **kwargs):
+        return ("summary", 10)
+
+    def fake_recompute(self, model_name):
+        self.running_context_usage = 5_000
+
+    with (
+        patch("agent.context_manager.manager.summarize_messages", side_effect=fake_summarize),
+        patch.object(ContextManager, "_recompute_usage", fake_recompute),
+        patch("litellm.token_counter", return_value=100),
+    ):
+        await cm.compact(
+            model_name="anthropic/claude-opus-4-6",
+            tool_specs=None,
+            hf_token=None,
+            session=None,
+        )
+
+    # Critical assertion: only ONE system message in items
+    system_count = sum(1 for m in cm.items if m.role == "system")
+    assert system_count == 1, (
+        f"Expected exactly 1 system message, found {system_count}. "
+        f"Roles: {[m.role for m in cm.items]}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_compact_succeeds_when_post_compact_under_threshold():
     """Happy path: when compaction does its job, no exception raised."""
     cm = _make_cm(model_max_tokens=100_000)

@@ -508,6 +508,15 @@ class ContextManager:
         idx = len(self.items) - self.untouched_messages
         while idx > 1 and self.items[idx].role != "user":
             idx -= 1
+        # The while loop's `idx > 1` guard expresses "do not include the
+        # system message in recent_messages". But when len(self.items) ==
+        # untouched_messages (the canonical 5-message early-compaction case
+        # — system + user-task + giant-tool-output + user-followup +
+        # assistant-reply), idx initialises to 0 and the while is a no-op.
+        # Without this clamp, recent_messages = self.items[0:] would include
+        # the system message, and the rebuild path duplicates it.
+        if idx < 1:
+            idx = 1
 
         recent_messages = self.items[idx:]
         messages_to_summarize = self.items[first_user_idx + 1:idx]
