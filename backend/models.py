@@ -66,6 +66,7 @@ class SessionResponse(BaseModel):
 
     session_id: str
     ready: bool = True
+    model: str | None = None
 
 
 class PendingApprovalTool(BaseModel):
@@ -74,6 +75,15 @@ class PendingApprovalTool(BaseModel):
     tool: str
     tool_call_id: str
     arguments: dict[str, Any] = {}
+
+
+class SessionAutoApprovalInfo(BaseModel):
+    """Per-session auto-approval budget state."""
+
+    enabled: bool = False
+    cost_cap_usd: float | None = None
+    estimated_spend_usd: float = 0.0
+    remaining_usd: float | None = None
 
 
 class SessionInfo(BaseModel):
@@ -89,12 +99,22 @@ class SessionInfo(BaseModel):
     model: str | None = None
     title: str | None = None
     notification_destinations: list[str] = Field(default_factory=list)
+    auto_approval: SessionAutoApprovalInfo = Field(
+        default_factory=SessionAutoApprovalInfo
+    )
 
 
 class SessionNotificationsRequest(BaseModel):
     """Replace the session's auto-notification destinations."""
 
     destinations: list[str]
+
+
+class SessionYoloRequest(BaseModel):
+    """Update a session's auto-approval policy."""
+
+    enabled: bool
+    cost_cap_usd: float | None = Field(default=None, ge=0)
 
 
 class HealthResponse(BaseModel):

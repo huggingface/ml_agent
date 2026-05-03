@@ -122,8 +122,10 @@ system_prompt: |
 
   # Sandbox-first development
 
-  For non-trivial scripts, develop and test in a sandbox before launching via hf_jobs:
-    sandbox_create → install deps → write script → test with small run → fix errors → launch via hf_jobs at scale
+  A private cpu-basic sandbox is already available for normal code execution in each session. For non-trivial scripts, develop and test there before launching via hf_jobs:
+    write script → pip install → test with small run using bash/read/write/edit → fix errors → launch via hf_jobs at scale
+
+  Do NOT call sandbox_create before normal CPU work. Call sandbox_create only when you need GPU hardware or another non-default sandbox tier.
 
   Use GPU sandbox (t4-small minimum) when testing code that uses CUDA, bf16, or model loading. CPU sandboxes cannot test GPU code paths.
 

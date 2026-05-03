@@ -19,6 +19,11 @@ from litellm import (
 from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
+from agent.core.approval_policy import (
+    is_scheduled_operation,
+    normalize_tool_operation,
+)
+from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
 from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
 from agent.core.attachments import build_user_content
@@ -28,6 +33,7 @@ from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.tools.jobs_tool import CPU_FLAVORS
+from agent.tools.sandbox_tool import DEFAULT_CPU_SANDBOX_HARDWARE
 
 logger = logging.getLogger(__name__)
 
@@ -111,13 +117,39 @@ def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
     return True, None
 
 
-def _needs_approval(
+_IMMEDIATE_HF_JOB_RUNS = {"run", "uv"}
+
+@dataclass(frozen=True)
+class ApprovalDecision:
+    requires_approval: bool
+    auto_approved: bool = False
+    auto_approval_blocked: bool = False
+    block_reason: str | None = None
+    estimated_cost_usd: float | None = None
+    remaining_cap_usd: float | None = None
+    billable: bool = False
+
+
+def _operation(tool_args: dict) -> str:
+    return normalize_tool_operation(tool_args.get("operation"))
+
+
+def _is_immediate_hf_job_run(tool_name: str, tool_args: dict) -> bool:
+    return tool_name == "hf_jobs" and _operation(tool_args) in _IMMEDIATE_HF_JOB_RUNS
+
+
+def _is_scheduled_hf_job_run(tool_name: str, tool_args: dict) -> bool:
+    return tool_name == "hf_jobs" and is_scheduled_operation(_operation(tool_args))
+
+
+def _is_budgeted_auto_approval_target(tool_name: str, tool_args: dict) -> bool:
+    return tool_name == "sandbox_create" or _is_immediate_hf_job_run(tool_name, tool_args)
+
+
+def _base_needs_approval(
     tool_name: str, tool_args: dict, config: Config | None = None
 ) -> bool:
-    """Check if a tool call requires user approval before execution."""
-    # Yolo mode: skip all approvals
-    if config and config.yolo_mode:
-        return False
+    """Check if a tool call requires approval before YOLO policy is applied."""
 
     # If args are malformed, skip approval (validation error will be shown later)
     args_valid, _ = _validate_tool_args(tool_args)
@@ -125,11 +157,14 @@ def _needs_approval(
         return False
 
     if tool_name == "sandbox_create":
-        return True
+        hardware = tool_args.get("hardware") or DEFAULT_CPU_SANDBOX_HARDWARE
+        return hardware != DEFAULT_CPU_SANDBOX_HARDWARE
 
     if tool_name == "hf_jobs":
-        operation = tool_args.get("operation", "")
-        if operation not in ["run", "uv", "scheduled run", "scheduled uv"]:
+        operation = _operation(tool_args)
+        if is_scheduled_operation(operation):
+            return True
+        if operation not in _IMMEDIATE_HF_JOB_RUNS:
             return False
 
         # Check if this is a CPU-only job
@@ -179,6 +214,143 @@ def _needs_approval(
             return True
 
     return False
+
+
+def _needs_approval(
+    tool_name: str, tool_args: dict, config: Config | None = None
+) -> bool:
+    """Legacy sync approval predicate used by tests and CLI display helpers."""
+    if _is_scheduled_hf_job_run(tool_name, tool_args):
+        return True
+    if config and config.yolo_mode:
+        return False
+    return _base_needs_approval(tool_name, tool_args, config)
+
+
+def _session_auto_approval_enabled(session: Session | None) -> bool:
+    return bool(session and getattr(session, "auto_approval_enabled", False))
+
+
+def _effective_yolo_enabled(session: Session | None, config: Config | None) -> bool:
+    return bool((config and config.yolo_mode) or _session_auto_approval_enabled(session))
+
+
+def _remaining_budget_after_reservations(
+    session: Session | None, reserved_spend_usd: float
+) -> float | None:
+    if not session or getattr(session, "auto_approval_cost_cap_usd", None) is None:
+        return None
+    cap = float(getattr(session, "auto_approval_cost_cap_usd") or 0.0)
+    spent = float(getattr(session, "auto_approval_estimated_spend_usd", 0.0) or 0.0)
+    return round(max(0.0, cap - spent - reserved_spend_usd), 4)
+
+
+def _budget_block_reason(
+    estimate: CostEstimate,
+    *,
+    remaining_cap_usd: float | None,
+) -> str | None:
+    if estimate.estimated_cost_usd is None:
+        return estimate.block_reason or "Could not estimate the cost safely."
+    if remaining_cap_usd is not None and estimate.estimated_cost_usd > remaining_cap_usd:
+        return (
+            f"Estimated cost ${estimate.estimated_cost_usd:.2f} exceeds "
+            f"remaining YOLO cap ${remaining_cap_usd:.2f}."
+        )
+    return None
+
+
+async def _approval_decision(
+    tool_name: str,
+    tool_args: dict,
+    session: Session,
+    *,
+    reserved_spend_usd: float = 0.0,
+) -> ApprovalDecision:
+    """Return the approval decision for one parsed tool call."""
+    config = session.config
+    base_requires_approval = _base_needs_approval(tool_name, tool_args, config)
+
+    # Scheduled jobs are recurring/unbounded enough that YOLO never bypasses
+    # the human confirmation, including legacy config.yolo_mode.
+    if _is_scheduled_hf_job_run(tool_name, tool_args):
+        return ApprovalDecision(
+            requires_approval=True,
+            auto_approval_blocked=_effective_yolo_enabled(session, config),
+            block_reason="Scheduled HF jobs always require manual approval.",
+        )
+
+    yolo_enabled = _effective_yolo_enabled(session, config)
+    budgeted_target = _is_budgeted_auto_approval_target(tool_name, tool_args)
+
+    # Cost caps are a session-scoped web policy. Legacy config.yolo_mode
+    # remains uncapped for CLI/headless, except for scheduled jobs above.
+    session_yolo_enabled = _session_auto_approval_enabled(session)
+    if yolo_enabled and budgeted_target and session_yolo_enabled:
+        estimate = await estimate_tool_cost(tool_name, tool_args, session=session)
+        remaining = _remaining_budget_after_reservations(session, reserved_spend_usd)
+        reason = _budget_block_reason(estimate, remaining_cap_usd=remaining)
+        if reason:
+            return ApprovalDecision(
+                requires_approval=True,
+                auto_approval_blocked=True,
+                block_reason=reason,
+                estimated_cost_usd=estimate.estimated_cost_usd,
+                remaining_cap_usd=remaining,
+                billable=estimate.billable,
+            )
+        if base_requires_approval:
+            return ApprovalDecision(
+                requires_approval=False,
+                auto_approved=True,
+                estimated_cost_usd=estimate.estimated_cost_usd,
+                remaining_cap_usd=remaining,
+                billable=estimate.billable,
+            )
+        return ApprovalDecision(
+            requires_approval=False,
+            estimated_cost_usd=estimate.estimated_cost_usd,
+            remaining_cap_usd=remaining,
+            billable=estimate.billable,
+        )
+
+    if base_requires_approval and yolo_enabled:
+        return ApprovalDecision(requires_approval=False, auto_approved=True)
+
+    return ApprovalDecision(requires_approval=base_requires_approval)
+
+
+def _record_estimated_spend(session: Session, decision: ApprovalDecision) -> None:
+    if not decision.billable or decision.estimated_cost_usd is None:
+        return
+    if hasattr(session, "add_auto_approval_estimated_spend"):
+        session.add_auto_approval_estimated_spend(decision.estimated_cost_usd)
+    else:
+        session.auto_approval_estimated_spend_usd = round(
+            float(getattr(session, "auto_approval_estimated_spend_usd", 0.0) or 0.0)
+            + float(decision.estimated_cost_usd),
+            4,
+        )
+
+
+async def _record_manual_approved_spend_if_needed(
+    session: Session,
+    tool_name: str,
+    tool_args: dict,
+) -> None:
+    if not _session_auto_approval_enabled(session):
+        return
+    if not _is_budgeted_auto_approval_target(tool_name, tool_args):
+        return
+    estimate = await estimate_tool_cost(tool_name, tool_args, session=session)
+    _record_estimated_spend(
+        session,
+        ApprovalDecision(
+            requires_approval=False,
+            billable=estimate.billable,
+            estimated_cost_usd=estimate.estimated_cost_usd,
+        ),
+    )
 
 
 # -- LLM retry constants --------------------------------------------------
@@ -1089,29 +1261,49 @@ class Handlers:
                 if session.is_cancelled:
                     break
 
-                # Separate good tools into approval-required vs auto-execute
-                approval_required_tools: list[tuple[ToolCall, str, dict]] = []
-                non_approval_tools: list[tuple[ToolCall, str, dict]] = []
+                # Separate good tools into approval-required vs auto-execute.
+                # Track reserved spend while classifying a batch so two
+                # auto-approved jobs in one model response cannot jointly
+                # exceed the remaining session cap.
+                approval_required_tools: list[
+                    tuple[ToolCall, str, dict, ApprovalDecision]
+                ] = []
+                non_approval_tools: list[
+                    tuple[ToolCall, str, dict, ApprovalDecision]
+                ] = []
+                reserved_auto_spend_usd = 0.0
                 for tc, tool_name, tool_args in good_tools:
-                    if _needs_approval(tool_name, tool_args, session.config):
-                        approval_required_tools.append((tc, tool_name, tool_args))
+                    decision = await _approval_decision(
+                        tool_name,
+                        tool_args,
+                        session,
+                        reserved_spend_usd=reserved_auto_spend_usd,
+                    )
+                    if decision.requires_approval:
+                        approval_required_tools.append((tc, tool_name, tool_args, decision))
                     else:
-                        non_approval_tools.append((tc, tool_name, tool_args))
+                        non_approval_tools.append((tc, tool_name, tool_args, decision))
+                        if (
+                            decision.auto_approved
+                            and decision.billable
+                            and decision.estimated_cost_usd is not None
+                        ):
+                            reserved_auto_spend_usd += decision.estimated_cost_usd
 
                 # Execute non-approval tools (in parallel when possible)
                 if non_approval_tools:
                     # 1. Validate args upfront
                     parsed_tools: list[
-                        tuple[ToolCall, str, dict, bool, str]
+                        tuple[ToolCall, str, dict, ApprovalDecision, bool, str]
                     ] = []
-                    for tc, tool_name, tool_args in non_approval_tools:
+                    for tc, tool_name, tool_args, decision in non_approval_tools:
                         args_valid, error_msg = _validate_tool_args(tool_args)
                         parsed_tools.append(
-                            (tc, tool_name, tool_args, args_valid, error_msg)
+                            (tc, tool_name, tool_args, decision, args_valid, error_msg)
                         )
 
                     # 2. Send all tool_call events upfront (so frontend shows them all)
-                    for tc, tool_name, tool_args, args_valid, _ in parsed_tools:
+                    for tc, tool_name, tool_args, _decision, args_valid, _ in parsed_tools:
                         if args_valid:
                             await session.send_event(
                                 Event(
@@ -1129,11 +1321,14 @@ class Handlers:
                         tc: ToolCall,
                         name: str,
                         args: dict,
+                        decision: ApprovalDecision,
                         valid: bool,
                         err: str,
                     ) -> tuple[ToolCall, str, dict, str, bool]:
                         if not valid:
                             return (tc, name, args, err, False)
+                        if decision.billable:
+                            _record_estimated_spend(session, decision)
                         out, ok = await session.tool_router.call_tool(
                             name, args, session=session, tool_call_id=tc.id
                         )
@@ -1141,8 +1336,8 @@ class Handlers:
 
                     gather_task = asyncio.ensure_future(asyncio.gather(
                         *[
-                            _exec_tool(tc, name, args, valid, err)
-                            for tc, name, args, valid, err in parsed_tools
+                            _exec_tool(tc, name, args, decision, valid, err)
+                            for tc, name, args, decision, valid, err in parsed_tools
                         ]
                     ))
                     cancel_task = asyncio.ensure_future(session._cancelled.wait())
@@ -1159,7 +1354,7 @@ class Handlers:
                         except asyncio.CancelledError:
                             pass
                         # Notify frontend that in-flight tools were cancelled
-                        for tc, name, _args, valid, _ in parsed_tools:
+                        for tc, name, _args, _decision, valid, _ in parsed_tools:
                             if valid:
                                 await session.send_event(Event(
                                     event_type="tool_state_change",
@@ -1197,7 +1392,8 @@ class Handlers:
                 if approval_required_tools:
                     # Prepare batch approval data
                     tools_data = []
-                    for tc, tool_name, tool_args in approval_required_tools:
+                    blocked_payloads = []
+                    for tc, tool_name, tool_args, decision in approval_required_tools:
                         # Resolve sandbox file paths for hf_jobs scripts so the
                         # frontend can display & edit the actual file content.
                         if tool_name == "hf_jobs" and isinstance(tool_args.get("script"), str):
@@ -1207,20 +1403,42 @@ class Handlers:
                             if resolved:
                                 tool_args = {**tool_args, "script": resolved}
 
-                        tools_data.append({
+                        tool_payload = {
                             "tool": tool_name,
                             "arguments": tool_args,
                             "tool_call_id": tc.id,
-                        })
+                        }
+                        if decision.auto_approval_blocked:
+                            tool_payload.update(
+                                {
+                                    "auto_approval_blocked": True,
+                                    "block_reason": decision.block_reason,
+                                    "estimated_cost_usd": decision.estimated_cost_usd,
+                                    "remaining_cap_usd": decision.remaining_cap_usd,
+                                }
+                            )
+                            blocked_payloads.append(tool_payload)
+                        tools_data.append(tool_payload)
 
+                    event_data = {"tools": tools_data, "count": len(tools_data)}
+                    if blocked_payloads:
+                        first = blocked_payloads[0]
+                        event_data.update(
+                            {
+                                "auto_approval_blocked": True,
+                                "block_reason": first.get("block_reason"),
+                                "estimated_cost_usd": first.get("estimated_cost_usd"),
+                                "remaining_cap_usd": first.get("remaining_cap_usd"),
+                            }
+                        )
                     await session.send_event(Event(
                         event_type="approval_required",
-                        data={"tools": tools_data, "count": len(tools_data)},
+                        data=event_data,
                     ))
 
                     # Store all approval-requiring tools (ToolCall objects for execution)
                     session.pending_approval = {
-                        "tool_calls": [tc for tc, _, _ in approval_required_tools],
+                        "tool_calls": [tc for tc, _, _, _ in approval_required_tools],
                     }
 
                     # Return early - wait for EXEC_APPROVAL operation
@@ -1412,6 +1630,8 @@ class Handlers:
                     },
                 )
             )
+
+            await _record_manual_approved_spend_if_needed(session, tool_name, tool_args)
 
             output, success = await session.tool_router.call_tool(
                 tool_name, tool_args, session=session, tool_call_id=tc.id

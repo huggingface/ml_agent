@@ -27,6 +27,23 @@ class FakeRuntimeSession:
         self.turn_count = 0
         self.config = SimpleNamespace(model_name=model)
         self.notification_destinations = []
+        self.auto_approval_enabled = False
+        self.auto_approval_cost_cap_usd = None
+        self.auto_approval_estimated_spend_usd = 0.0
+
+    def auto_approval_policy_summary(self):
+        cap = self.auto_approval_cost_cap_usd
+        remaining = None if cap is None else max(0, cap - self.auto_approval_estimated_spend_usd)
+        return {
+            "enabled": self.auto_approval_enabled,
+            "cost_cap_usd": cap,
+            "estimated_spend_usd": self.auto_approval_estimated_spend_usd,
+            "remaining_usd": remaining,
+        }
+
+    def set_auto_approval_policy(self, *, enabled, cost_cap_usd):
+        self.auto_approval_enabled = enabled
+        self.auto_approval_cost_cap_usd = cost_cap_usd
 
 
 class RestoreStore(NoopSessionStore):
@@ -83,6 +100,24 @@ def _runtime_agent_session(
         user_id=user_id,
         hf_token=hf_token,
     )
+
+
+@pytest.mark.asyncio
+async def test_update_session_auto_approval_defaults_to_five_dollars():
+    manager = _manager_with_store(NoopSessionStore())
+    existing = _runtime_agent_session("s1", user_id="owner")
+    manager.sessions["s1"] = existing
+
+    summary = await manager.update_session_auto_approval(
+        "s1",
+        enabled=True,
+        cost_cap_usd=None,
+        cap_provided=False,
+    )
+
+    assert summary["enabled"] is True
+    assert summary["cost_cap_usd"] == 5.0
+    assert summary["remaining_usd"] == 5.0
 
 
 def _install_fake_runtime(manager: SessionManager) -> asyncio.Event:
@@ -151,6 +186,12 @@ async def test_concurrent_lazy_restore_starts_only_one_agent_task():
     store = RestoreStore(delay=0.01)
     manager = _manager_with_store(store)
     stop = _install_fake_runtime(manager)
+    scheduled: list[str] = []
+
+    def fake_start_cpu_sandbox_preload(agent_session: AgentSession) -> None:
+        scheduled.append(agent_session.session_id)
+
+    manager._start_cpu_sandbox_preload = fake_start_cpu_sandbox_preload  # type: ignore[method-assign]
 
     try:
         first, second = await asyncio.gather(
@@ -162,7 +203,51 @@ async def test_concurrent_lazy_restore_starts_only_one_agent_task():
         assert first is second
         assert list(manager.sessions) == ["persisted-session"]
         assert manager.run_calls == 1  # type: ignore[attr-defined]
+        assert scheduled == ["persisted-session"]
         assert not stop.is_set()
+    finally:
+        stop.set()
+        await _cancel_runtime_tasks(manager)
+
+
+@pytest.mark.asyncio
+async def test_create_session_schedules_cpu_sandbox_preload():
+    manager = _manager_with_store(NoopSessionStore())
+    stop = _install_fake_runtime(manager)
+    scheduled: list[str] = []
+
+    def fake_start_cpu_sandbox_preload(agent_session: AgentSession) -> None:
+        scheduled.append(agent_session.session_id)
+
+    manager._start_cpu_sandbox_preload = fake_start_cpu_sandbox_preload  # type: ignore[method-assign]
+
+    try:
+        session_id = await manager.create_session(user_id="owner", hf_token="token")
+
+        assert scheduled == [session_id]
+        assert session_id in manager.sessions
+    finally:
+        stop.set()
+        await _cancel_runtime_tasks(manager)
+
+
+@pytest.mark.asyncio
+async def test_lazy_restore_schedules_cpu_sandbox_preload():
+    manager = _manager_with_store(RestoreStore())
+    stop = _install_fake_runtime(manager)
+    scheduled: list[str] = []
+
+    def fake_start_cpu_sandbox_preload(agent_session: AgentSession) -> None:
+        scheduled.append(agent_session.session_id)
+
+    manager._start_cpu_sandbox_preload = fake_start_cpu_sandbox_preload  # type: ignore[method-assign]
+
+    try:
+        restored = await manager.ensure_session_loaded("persisted-session", user_id="owner")
+
+        assert restored is not None
+        assert scheduled == ["persisted-session"]
+        assert "persisted-session" in manager.sessions
     finally:
         stop.set()
         await _cancel_runtime_tasks(manager)
@@ -205,6 +290,34 @@ async def test_lazy_restore_preserves_pending_approval_tool_calls():
 
 
 @pytest.mark.asyncio
+async def test_lazy_restore_preserves_auto_approval_policy():
+    store = RestoreStore(
+        metadata={
+            "session_id": "yolo-session",
+            "user_id": "owner",
+            "model": "test-model",
+            "auto_approval_enabled": True,
+            "auto_approval_cost_cap_usd": 5.0,
+            "auto_approval_estimated_spend_usd": 1.25,
+        }
+    )
+    manager = _manager_with_store(store)
+    stop = _install_fake_runtime(manager)
+
+    try:
+        restored = await manager.ensure_session_loaded("yolo-session", user_id="owner")
+
+        assert restored is not None
+        assert restored.session.auto_approval_enabled is True
+        assert restored.session.auto_approval_cost_cap_usd == 5.0
+        assert restored.session.auto_approval_estimated_spend_usd == 1.25
+        assert restored.session.auto_approval_policy_summary()["remaining_usd"] == 3.75
+    finally:
+        stop.set()
+        await _cancel_runtime_tasks(manager)
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_dev_uses_store_dev_visibility():
     class ListStore(NoopSessionStore):
         enabled = True
@@ -221,6 +334,9 @@ async def test_list_sessions_dev_uses_store_dev_visibility():
                         "user_id": "alice",
                         "model": "m",
                         "created_at": datetime.now(UTC),
+                        "auto_approval_enabled": True,
+                        "auto_approval_cost_cap_usd": 5.0,
+                        "auto_approval_estimated_spend_usd": 2.0,
                     },
                     {
                         "session_id": "s2",
@@ -238,3 +354,10 @@ async def test_list_sessions_dev_uses_store_dev_visibility():
 
     assert store.seen_user_id == "dev"
     assert {session["session_id"] for session in sessions} == {"s1", "s2"}
+    yolo = next(session for session in sessions if session["session_id"] == "s1")
+    assert yolo["auto_approval"] == {
+        "enabled": True,
+        "cost_cap_usd": 5.0,
+        "estimated_spend_usd": 2.0,
+        "remaining_usd": 3.0,
+    }

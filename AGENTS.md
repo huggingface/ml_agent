@@ -18,3 +18,20 @@ Notes:
 ## GitHub CLI
 
 - For multiline PR descriptions, prefer `gh pr edit <number> --body-file <file>` over inline `--body` so shell quoting, `$` env-var names, backticks, and newlines are preserved correctly.
+
+## Hugging Face Space Deploys
+
+- The Space remote is `space` and points to `https://huggingface.co/spaces/smolagents/ml-intern`.
+- Deploy GitHub `main` to the Space from the local `space-main` branch by merging `origin/main` into `space-main` with a single merge commit, then pushing `space-main:main` to the `space` remote.
+- Keep the Space-only README frontmatter on `space-main`; `.gitattributes` should contain `README.md merge=ours` and the local repo config should include `merge.ours.driver=true`.
+- Recommended deploy flow:
+
+```bash
+git pull --ff-only origin main
+git switch space-main
+git config merge.ours.driver true
+git merge --no-ff origin/main -m "Deploy $(date +%Y-%m-%d)" \
+  -m "Co-authored-by: OpenAI Codex <codex@openai.com>"
+git push space space-main:main
+git switch main
+```

@@ -29,6 +29,7 @@ from models import (
     SessionInfo,
     SessionNotificationsRequest,
     SessionResponse,
+    SessionYoloRequest,
     SubmitRequest,
     TruncateRequest,
 )
@@ -50,8 +51,10 @@ from agent.core.llm_params import _resolve_llm_params
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["agent"])
+_background_teardown_tasks: set[asyncio.Task] = set()
 
 DEFAULT_CLAUDE_MODEL_ID = "bedrock/us.anthropic.claude-opus-4-6-v1"
+DEFAULT_FREE_MODEL_ID = "moonshotai/Kimi-K2.6"
 GATED_MODEL_IDS = {
     DEFAULT_CLAUDE_MODEL_ID,
     "openai/gpt-5.5",
@@ -121,6 +124,20 @@ def _is_gated_model(model_id: str) -> bool:
     return model_id in GATED_MODEL_IDS
 
 
+def _premium_model_restricted_error() -> HTTPException:
+    return HTTPException(
+        status_code=403,
+        detail={
+            "error": "premium_model_restricted",
+            "message": (
+                "Premium models are gated to HF staff. Pick a free model — "
+                "Kimi K2.6, MiniMax M2.7, GLM 5.1, or DeepSeek V4 Pro — "
+                "instead."
+            ),
+        },
+    )
+
+
 async def _require_hf_for_gated_model(request: Request, model_id: str) -> None:
     """403 if a non-``huggingface``-org user tries to select a gated model.
 
@@ -131,17 +148,35 @@ async def _require_hf_for_gated_model(request: Request, model_id: str) -> None:
     if not _is_gated_model(model_id):
         return
     if not await require_huggingface_org_member(request):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "premium_model_restricted",
-                "message": (
-                    "Premium models are gated to HF staff. Pick a free model — "
-                    "Kimi K2.6, MiniMax M2.7, GLM 5.1, or DeepSeek V4 Pro — "
-                    "instead."
-                ),
-            },
-        )
+        raise _premium_model_restricted_error()
+
+
+async def _model_override_for_new_session(
+    request: Request,
+    requested_model: str | None,
+) -> str | None:
+    """Return the model override to use when creating a new session.
+
+    Explicit gated-model requests keep the hard membership gate. Implicit
+    default sessions are more forgiving: when the configured default is gated
+    and the user lacks access, start them on the first free model instead of
+    blocking session creation.
+    """
+    resolved_model = requested_model or session_manager.config.model_name
+    if not _is_gated_model(resolved_model):
+        return requested_model
+    if await require_huggingface_org_member(request):
+        return requested_model
+    if requested_model:
+        raise _premium_model_restricted_error()
+
+    logger.info(
+        "Default gated model %s is unavailable to this user; "
+        "creating session with free fallback %s",
+        resolved_model,
+        DEFAULT_FREE_MODEL_ID,
+    )
+    return DEFAULT_FREE_MODEL_ID
 
 
 async def _enforce_gated_model_quota(
@@ -373,9 +408,9 @@ async def create_session(
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
-    # Deployed paid models are gated to HF staff; free and local-dev models pass through.
-    resolved_model = model or session_manager.config.model_name
-    await _require_hf_for_gated_model(request, resolved_model)
+    # Explicit premium selections remain gated. If the implicit configured
+    # default is unavailable, start the session on a free model instead.
+    model = await _model_override_for_new_session(request, model)
 
     try:
         session_id = await session_manager.create_session(
@@ -388,7 +423,11 @@ async def create_session(
     except SessionCapacityError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    return SessionResponse(session_id=session_id, ready=True)
+    return SessionResponse(
+        session_id=session_id,
+        ready=True,
+        model=model or session_manager.config.model_name,
+    )
 
 
 @router.post("/session/restore-summary", response_model=SessionResponse)
@@ -414,8 +453,7 @@ async def restore_session_summary(
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
-    resolved_model = model or session_manager.config.model_name
-    await _require_hf_for_gated_model(request, resolved_model)
+    model = await _model_override_for_new_session(request, model)
 
     try:
         session_id = await session_manager.create_session(
@@ -440,7 +478,11 @@ async def restore_session_summary(
         f"Seeded session {session_id} for {user.get('username', 'unknown')} "
         f"(summary of {summarized} messages)"
     )
-    return SessionResponse(session_id=session_id, ready=True)
+    return SessionResponse(
+        session_id=session_id,
+        ready=True,
+        model=model or session_manager.config.model_name,
+    )
 
 
 @router.get("/session/{session_id}", response_model=SessionInfo)
@@ -508,6 +550,26 @@ async def set_session_notifications(
     }
 
 
+@router.patch("/session/{session_id}/yolo")
+async def set_session_yolo(
+    session_id: str,
+    body: SessionYoloRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Update the session-scoped auto-approval policy."""
+    await _check_session_access(session_id, user)
+    try:
+        summary = await session_manager.update_session_auto_approval(
+            session_id,
+            enabled=body.enabled,
+            cost_cap_usd=body.cost_cap_usd,
+            cap_provided="cost_cap_usd" in body.model_fields_set,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"session_id": session_id, **summary}
+
+
 @router.get("/user/quota")
 async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
     """Return the user's plan tier and today's premium-model quota state."""
@@ -546,6 +608,18 @@ async def list_sessions(user: dict = Depends(get_current_user)) -> list[SessionI
     """List sessions belonging to the authenticated user."""
     sessions = await session_manager.list_sessions(user_id=user["user_id"])
     return [SessionInfo(**s) for s in sessions]
+
+
+@router.post("/session/{session_id}/sandbox/teardown")
+async def teardown_session_sandbox(
+    session_id: str, user: dict = Depends(get_current_user)
+) -> dict:
+    """Best-effort sandbox teardown that preserves durable chat history."""
+    await _check_session_access(session_id, user)
+    task = asyncio.create_task(session_manager.teardown_sandbox(session_id))
+    _background_teardown_tasks.add(task)
+    task.add_done_callback(_background_teardown_tasks.discard)
+    return {"status": "teardown_requested", "session_id": session_id}
 
 
 @router.delete("/session/{session_id}")

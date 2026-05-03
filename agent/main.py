@@ -29,6 +29,7 @@ from agent.core.attachments import (
     create_context_manifest,
     import_dataset_batch,
 )
+from agent.core.approval_policy import is_scheduled_operation
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
 from agent.core.hf_tokens import resolve_hf_token
@@ -96,6 +97,20 @@ def _compose_display_text(text: str, manifests: list[dict[str, Any]]) -> str:
     if not placeholders:
         return text
     return f"{text.rstrip()}\n\n{placeholders}"
+
+
+def _is_scheduled_hf_job_tool(tool_info: dict[str, Any]) -> bool:
+    if tool_info.get("tool") != "hf_jobs":
+        return False
+    arguments = tool_info.get("arguments") or {}
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(arguments, dict):
+        return False
+    return is_scheduled_operation(arguments.get("operation"))
 
 
 def _configure_runtime_logging() -> None:
@@ -418,8 +433,11 @@ async def event_listener(
                 tools_data = event.data.get("tools", []) if event.data else []
                 count = event.data.get("count", 0) if event.data else 0
 
-                # If yolo mode is active, auto-approve everything
-                if config and config.yolo_mode:
+                # If yolo mode is active, auto-approve everything except
+                # scheduled HF jobs, whose recurring cost stays manual.
+                if config and config.yolo_mode and not any(
+                    _is_scheduled_hf_job_tool(t) for t in tools_data
+                ):
                     approvals = [
                         {
                             "tool_call_id": t.get("tool_call_id", ""),
@@ -1447,14 +1465,18 @@ async def headless_main(
             else:
                 print_tool_log(tool, log)
         elif event.event_type == "approval_required":
-            # Auto-approve everything in headless mode (safety net if yolo_mode
-            # didn't prevent the approval event for some reason)
+            # Auto-approve in headless mode, except scheduled HF jobs. Those
+            # are rejected because their recurring cost needs manual approval.
             tools_data = event.data.get("tools", []) if event.data else []
             approvals = [
                 {
                     "tool_call_id": t.get("tool_call_id", ""),
-                    "approved": True,
-                    "feedback": None,
+                    "approved": not _is_scheduled_hf_job_tool(t),
+                    "feedback": (
+                        "Scheduled HF jobs require manual approval."
+                        if _is_scheduled_hf_job_tool(t)
+                        else None
+                    ),
                 }
                 for t in tools_data
             ]

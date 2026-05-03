@@ -11,6 +11,7 @@ import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
 import JobsUpgradeDialog from '@/components/JobsUpgradeDialog';
 import { useAgentStore } from '@/store/agentStore';
+import { useSessionStore } from '@/store/sessionStore';
 import {
   CLAUDE_MODEL_PATH,
   FIRST_FREE_MODEL_PATH,
@@ -82,11 +83,16 @@ const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
 ];
 
 const findModelByPath = (path: string, options: ModelOption[]): ModelOption | undefined => {
+  if (isClaudePath(path)) {
+    const claude = options.find(isClaudeModel);
+    if (claude) return claude;
+  }
   return options.find(m => m.modelPath === path || path?.includes(m.id));
 };
 
 interface ChatInputProps {
   sessionId?: string;
+  initialModelPath?: string | null;
   onSend: (text: string, uploads?: unknown[]) => void;
   onStop?: () => void;
   isProcessing?: boolean;
@@ -104,14 +110,16 @@ const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
 const isPremiumModel = (m: ModelOption) => isPremiumPath(m.modelPath);
 const firstFreeModel = (options: ModelOption[]) => options.find(m => !isPremiumModel(m)) ?? options[0];
 
-export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
+export default function ChatInput({ sessionId, initialModelPath, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
   const modelOptionsRef = useRef<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
   const sessionIdRef = useRef<string | undefined>(sessionId);
-  const [selectedModelId, setSelectedModelId] = useState<string>(DEFAULT_MODEL_OPTIONS[0].id);
+  const [selectedModelId, setSelectedModelId] = useState<string>(
+    () => findModelByPath(initialModelPath ?? '', DEFAULT_MODEL_OPTIONS)?.id ?? DEFAULT_MODEL_OPTIONS[0].id,
+  );
   const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
   const [selectedFiles, setSelectedFiles] = useState<Array<{ id: string; file: File }>>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -127,6 +135,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
   const jobsUpgradeRequired = useAgentStore((s) => s.jobsUpgradeRequired);
   const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
+  const updateSessionModel = useSessionStore((s) => s.updateSessionModel);
   const [awaitingTopUp, setAwaitingTopUp] = useState(false);
   const lastSentRef = useRef<PendingRetry | null>(null);
 
@@ -177,11 +186,12 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         if (data?.model) {
           const model = findModelByPath(data.model, modelOptionsRef.current);
           if (model) setSelectedModelId(model.id);
+          updateSessionModel(sessionId, data.model);
         }
       })
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
-  }, [sessionId]);
+  }, [sessionId, updateSessionModel]);
 
   const selectedModel = modelOptions.find(m => m.id === selectedModelId) || modelOptions[0];
 
@@ -282,7 +292,10 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         method: 'POST',
         body: JSON.stringify({ model: model.modelPath }),
       });
-      if (res.ok) setSelectedModelId(model.id);
+      if (res.ok) {
+        setSelectedModelId(model.id);
+        updateSessionModel(sessionId, model.modelPath);
+      }
     } catch { /* ignore */ }
   };
 
@@ -305,6 +318,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
       });
       if (res.ok) {
         setSelectedModelId(free.id);
+        updateSessionModel(sessionId, free.modelPath);
         const retry = lastSentRef.current;
         if (retry) {
           onSend(retry.displayText, retry.uploads);
@@ -313,7 +327,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         }
       }
     } catch { /* ignore */ }
-  }, [sessionId, onSend, setClaudeQuotaExhausted, modelOptions]);
+  }, [sessionId, onSend, setClaudeQuotaExhausted, modelOptions, updateSessionModel]);
 
   const handlePremiumUpgradeClick = useCallback(async () => {
     if (!sessionId) return;
