@@ -423,13 +423,24 @@ class ContextManager:
                 "Truncating %s message: %d -> %d tokens for compaction",
                 msg.role, n, len(placeholder) // 4,
             )
-            out.append(Message(
-                role=msg.role,
-                content=placeholder,
-                tool_call_id=getattr(msg, "tool_call_id", None),
-                tool_calls=getattr(msg, "tool_calls", None),
-                name=getattr(msg, "name", None),
-            ))
+            # Preserve all known assistant-side fields (tool_calls, thinking_blocks,
+            # reasoning_content, provider_specific_fields) even when content is
+            # replaced. Anthropic extended-thinking models reject the next request
+            # with "Invalid signature in thinking block" if thinking_blocks is
+            # dropped from a prior assistant message.
+            kept = {
+                k: getattr(msg, k, None)
+                for k in (
+                    "tool_call_id",
+                    "tool_calls",
+                    "name",
+                    "thinking_blocks",
+                    "reasoning_content",
+                    "provider_specific_fields",
+                )
+                if getattr(msg, k, None) is not None
+            }
+            out.append(Message(role=msg.role, content=placeholder, **kept))
         return out
 
     def _recompute_usage(self, model_name: str) -> None:

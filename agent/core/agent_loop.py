@@ -1072,8 +1072,15 @@ class Handlers:
             if session.is_cancelled:
                 break
 
-            # Compact before calling the LLM if context is near the limit
+            # Compact before calling the LLM if context is near the limit.
+            # When _compact_and_notify catches CompactionFailedError it sets
+            # session.is_running = False; we MUST exit the loop here, otherwise
+            # the LLM call below fires with an over-threshold context, hits
+            # ContextWindowExceededError, and we end up looping again on the
+            # except path — exactly the bug this PR is supposed to fix.
             await _compact_and_notify(session)
+            if not session.is_running:
+                break
 
             # Doom-loop detection: break out of repeated tool call patterns
             doom_prompt = check_for_doom_loop(session.context_manager.items)
@@ -1458,7 +1465,7 @@ class Handlers:
                 iteration += 1
 
             except ContextWindowExceededError:
-                # Force compact and retry this iteration
+                # Force compact and retry this iteration.
                 cm = session.context_manager
                 logger.warning(
                     "ContextWindowExceededError at iteration %d — forcing compaction "
@@ -1467,6 +1474,12 @@ class Handlers:
                 )
                 cm.running_context_usage = cm.model_max_tokens + 1
                 await _compact_and_notify(session)
+                # Same guard as the top of the loop: if compaction couldn't
+                # bring us under threshold, _compact_and_notify has already
+                # emitted session_terminated and set is_running=False. Continue
+                # would just re-call the LLM with the same too-big context.
+                if not session.is_running:
+                    break
                 continue
 
             except Exception as e:
