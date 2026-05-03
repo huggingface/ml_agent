@@ -79,6 +79,23 @@ _COMPACT_PROMPT = (
     "will be have to be filled in."
 )
 
+# Per-message ceiling. If a single message in the "untouched" tail is larger
+# than this, compaction can't recover even after summarizing the middle —
+# producing the infinite compaction loop seen 2026-05-03 in pod logs (200k
+# context shrinks to 200k+ because one tool output is 80k tokens). We replace
+# such messages with a placeholder before compaction runs.
+_MAX_TOKENS_PER_MESSAGE = 50_000
+
+
+class CompactionFailedError(Exception):
+    """Raised when compaction can't reduce context below the threshold.
+
+    Typically means an individual preserved message (system, first user, or
+    untouched tail) exceeds what truncation can fix in one pass. The caller
+    must terminate the session — retrying produces an infinite loop that
+    burns Bedrock budget for free (~$3 per re-attempt on Opus).
+    """
+
 # Used when seeding a brand-new session from prior browser-cached messages.
 # Here we're writing a note to *ourselves* — so preserve the tool-call trail,
 # files produced, and planned next steps in first person. Optimized for
@@ -374,6 +391,63 @@ class ContextManager:
     def needs_compaction(self) -> bool:
         return self.running_context_usage > self.compaction_threshold and bool(self.items)
 
+    def _truncate_oversized(
+        self, messages: list[Message], model_name: str
+    ) -> list[Message]:
+        """Replace any message > _MAX_TOKENS_PER_MESSAGE with a placeholder.
+
+        These are typically tool outputs (CSV dumps, file contents) sitting in
+        the untouched tail or first-user position that compaction can't shrink
+        — they pass through verbatim, keeping context above threshold and
+        triggering an infinite compaction retry loop.
+        """
+        from litellm import token_counter
+
+        out: list[Message] = []
+        for msg in messages:
+            try:
+                n = token_counter(model=model_name, messages=[msg.model_dump()])
+            except Exception:
+                # token_counter occasionally fails on edge-case content;
+                # don't drop the message, just keep it as-is.
+                out.append(msg)
+                continue
+            if n <= _MAX_TOKENS_PER_MESSAGE:
+                out.append(msg)
+                continue
+            placeholder = (
+                f"[truncated for compaction — original was {n} tokens, "
+                f"removed to keep context under {self.compaction_threshold} tokens]"
+            )
+            logger.warning(
+                "Truncating %s message: %d -> %d tokens for compaction",
+                msg.role, n, len(placeholder) // 4,
+            )
+            out.append(Message(
+                role=msg.role,
+                content=placeholder,
+                tool_call_id=getattr(msg, "tool_call_id", None),
+                tool_calls=getattr(msg, "tool_calls", None),
+                name=getattr(msg, "name", None),
+            ))
+        return out
+
+    def _recompute_usage(self, model_name: str) -> None:
+        """Refresh ``running_context_usage`` from current items via real tokenizer."""
+        from litellm import token_counter
+
+        try:
+            self.running_context_usage = token_counter(
+                model=model_name,
+                messages=[m.model_dump() for m in self.items],
+            )
+        except Exception as e:
+            logger.warning("token_counter failed (%s); rough estimate", e)
+            # Rough fallback: 4 chars per token.
+            self.running_context_usage = sum(
+                len(getattr(m, "content", "") or "") for m in self.items
+            ) // 4
+
     async def compact(
         self,
         model_name: str,
@@ -386,6 +460,13 @@ class ContextManager:
         ``session`` is optional — if passed, the underlying summarization
         LLM call is recorded via ``telemetry.record_llm_call(kind=
         "compaction")`` so its cost shows up in ``total_cost_usd``.
+
+        Raises ``CompactionFailedError`` if the post-compact context is still
+        over the threshold. This happens when a preserved message (typically
+        a giant tool output stuck in the untouched tail) is too large for
+        truncation to fix. The caller must terminate the session — retrying
+        is what caused the 2026-05-03 infinite-compaction-loop pattern that
+        burned Bedrock budget invisibly.
         """
         if not self.needs_compaction:
             return
@@ -413,8 +494,32 @@ class ContextManager:
         recent_messages = self.items[idx:]
         messages_to_summarize = self.items[first_user_idx + 1:idx]
 
-        # improbable, messages would have to very long
+        # Truncate any message that's larger than _MAX_TOKENS_PER_MESSAGE in
+        # the parts we PRESERVE through compaction (first_user + recent_tail).
+        # These are the only places where individual messages can defeat
+        # compaction by being intrinsically too large. Messages in
+        # ``messages_to_summarize`` are folded into the summary, so their size
+        # doesn't matter on its own.
+        if first_user_msg is not None:
+            truncated = self._truncate_oversized([first_user_msg], model_name)
+            first_user_msg = truncated[0]
+        recent_messages = self._truncate_oversized(recent_messages, model_name)
+
+        # If there's nothing to summarize but the preserved messages are now
+        # truncated and small, just rebuild and recompute. This is rare but
+        # avoids returning silently with the old (over-threshold) state.
         if not messages_to_summarize:
+            head = [system_msg] if system_msg else []
+            if first_user_msg:
+                head.append(first_user_msg)
+            self.items = head + recent_messages
+            self._recompute_usage(model_name)
+            if self.running_context_usage > self.compaction_threshold:
+                raise CompactionFailedError(
+                    f"Nothing to summarize but context ({self.running_context_usage}) "
+                    f"still over threshold ({self.compaction_threshold}) after truncation. "
+                    f"System prompt or first user message likely exceeds the budget."
+                )
             return
 
         summary, completion_tokens = await summarize_messages(
@@ -439,16 +544,19 @@ class ContextManager:
             head.append(first_user_msg)
         self.items = head + [summarized_message] + recent_messages
 
-        # Count the actual post-compact context — system prompt + first user
-        # turn + summary + the preserved tail all contribute, not just the
-        # summary. litellm.token_counter uses the model's real tokenizer.
-        from litellm import token_counter
+        self._recompute_usage(model_name)
 
-        try:
-            self.running_context_usage = token_counter(
-                model=model_name,
-                messages=[m.model_dump() for m in self.items],
+        # Hard verify: if compaction didn't bring us below the threshold even
+        # after truncating oversized preserved messages, retrying just burns
+        # Bedrock budget on the same useless compaction call. Raise so the
+        # caller can terminate the session cleanly. Pre-2026-05-04, the
+        # caller looped indefinitely (~$3/Opus retry) until the pod was
+        # killed — invisible to the dataset because the session never
+        # finished cleanly.
+        if self.running_context_usage > self.compaction_threshold:
+            raise CompactionFailedError(
+                f"Compaction ineffective: {self.running_context_usage} tokens "
+                f"still over threshold {self.compaction_threshold} after summarize "
+                f"and truncation. Likely the system prompt + first user + summary "
+                f"+ truncated tail still exceeds budget."
             )
-        except Exception as e:
-            logger.warning("token_counter failed post-compact (%s); falling back to rough estimate", e)
-            self.running_context_usage = len(self.system_prompt) // 4 + completion_tokens
