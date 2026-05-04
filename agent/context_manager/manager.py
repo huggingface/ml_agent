@@ -257,8 +257,6 @@ class ContextManager:
         """Add a message to the history"""
         if token_count:
             self.running_context_usage = token_count
-        if not getattr(message, "timestamp", None):
-            message.timestamp = datetime.now().isoformat()
         self.items.append(message)
         if self.on_message_added:
             self.on_message_added(message)
@@ -331,7 +329,6 @@ class ContextManager:
                             content="Tool was not executed (interrupted or error).",
                             tool_call_id=tc.id,
                             name=tc.function.name,
-                            timestamp=datetime.now().isoformat(),
                         )
                     )
 
@@ -562,7 +559,6 @@ class ContextManager:
         summarized_message = Message(
             role="assistant",
             content=summary,
-            timestamp=datetime.now().isoformat(),
         )
 
         # Reconstruct: system + first user msg + summary + recent messages
