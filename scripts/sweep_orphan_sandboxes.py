@@ -49,17 +49,12 @@ something up to kill it.
 - Logs every action to stdout in JSON Lines for downstream auditing.
 
 ================================================================================
- Cron suggestion
+ Manual usage
 ================================================================================
 
-GitHub Actions, daily at 04:00 UTC:
+Run manually with an admin token when a backstop cleanup is needed:
 
-    schedule:
-      - cron: "0 4 * * *"
-    env:
-      HF_ADMIN_TOKEN: ${{ secrets.HF_ADMIN_TOKEN }}
-    steps:
-      - run: python scripts/sweep_orphan_sandboxes.py --apply --max-age-days 7
+    HF_ADMIN_TOKEN=... python scripts/sweep_orphan_sandboxes.py --apply --max-age-days 7
 """
 
 import argparse
