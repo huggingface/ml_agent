@@ -348,6 +348,35 @@ async def test_existing_session_does_not_retry_preload_when_disabled():
 
 
 @pytest.mark.asyncio
+async def test_existing_session_does_not_restart_preload_after_teardown():
+    manager = _manager_with_store(NoopSessionStore())
+    existing = _runtime_agent_session("s1", user_id="owner", hf_token="token")
+    done_task = asyncio.get_running_loop().create_future()
+    done_task.set_result(None)
+    existing.session.sandbox = None
+    existing.session.sandbox_preload_task = done_task
+    existing.session.sandbox_preload_error = None
+    manager.sessions["s1"] = existing
+    started: list[str] = []
+
+    def fake_start_cpu_sandbox_preload(agent_session):
+        started.append(agent_session.session_id)
+
+    manager._start_cpu_sandbox_preload = fake_start_cpu_sandbox_preload  # type: ignore[method-assign]
+
+    result = await manager.ensure_session_loaded(
+        "s1",
+        user_id="owner",
+        hf_token="token",
+    )
+
+    assert result is existing
+    assert existing.session.sandbox_preload_task is done_task
+    assert existing.session.sandbox_preload_error is None
+    assert started == []
+
+
+@pytest.mark.asyncio
 async def test_concurrent_lazy_restore_starts_only_one_agent_task():
     store = RestoreStore(delay=0.01)
     manager = _manager_with_store(store)

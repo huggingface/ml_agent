@@ -216,7 +216,7 @@ async def _enforce_gated_model_quota(
 def _user_hf_token(user: dict[str, Any] | None) -> str | None:
     if not isinstance(user, dict):
         return None
-    return user.get(INTERNAL_HF_TOKEN_KEY) or user.get("hf_token")
+    return user.get(INTERNAL_HF_TOKEN_KEY)
 
 
 async def _check_session_access(

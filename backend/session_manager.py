@@ -402,8 +402,7 @@ class SessionManager:
         if not (agent_session.hf_token or getattr(session, "hf_token", None)):
             return
 
-        preload_error = getattr(session, "sandbox_preload_error", None)
-        if preload_error and not self._preload_failed_for_missing_hf_token(agent_session):
+        if not self._preload_failed_for_missing_hf_token(agent_session):
             return
 
         session.sandbox_preload_error = None
