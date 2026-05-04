@@ -272,6 +272,18 @@ The agent emits the following events via `event_queue`:
 
 ## Development
 
+### Pre-commit Checks
+
+Run Ruff before every commit:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+```
+
+If the format check fails, run `uv run ruff format .` and re-run the checks
+before committing.
+
 ### Adding Built-in Tools
 
 Edit `agent/core/tools.py`:

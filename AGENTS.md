@@ -15,6 +15,11 @@ Notes:
 - Prefer `npm ci` over `npm install` for setup, since `npm install` may rewrite `frontend/package-lock.json` metadata depending on npm version.
 - Production defaults to the Bedrock Claude model. For local development with a personal Anthropic key, set `ANTHROPIC_API_KEY` and `ML_INTERN_CLAUDE_MODEL_ID=anthropic/claude-opus-4-6` before starting the backend. Other models are selected through the app's model switcher.
 
+## Development Checks
+
+- Before every commit, run `uv run ruff check .` and `uv run ruff format --check .`.
+- If formatting fails, run `uv run ruff format .`, then re-run the Ruff checks before committing.
+
 ## GitHub CLI
 
 - For multiline PR descriptions, prefer `gh pr edit <number> --body-file <file>` over inline `--body` so shell quoting, `$` env-var names, backticks, and newlines are preserved correctly.
