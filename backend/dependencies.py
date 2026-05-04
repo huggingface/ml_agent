@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, Request, status
 
-from agent.core.hf_tokens import bearer_token_from_header
+from agent.core.hf_tokens import bearer_token_from_header, clean_hf_token
 
 from agent.core.hf_access import fetch_whoami_v2
 
@@ -35,6 +35,8 @@ DEV_USER: dict[str, Any] = {
     "authenticated": True,
     "plan": "org",  # Dev runs at the Pro/Org quota tier so local testing isn't capped.
 }
+
+INTERNAL_HF_TOKEN_KEY = "_hf_token"
 
 # Plan field discovery — log the whoami-v2 shape once at DEBUG so we can
 # confirm the actual key in production without hammering the HF API.
@@ -135,6 +137,7 @@ async def _extract_user_from_token(token: str) -> dict[str, Any] | None:
         return None
     user = _user_from_info(user_info)
     user["plan"] = await _fetch_user_plan(token)
+    user[INTERNAL_HF_TOKEN_KEY] = clean_hf_token(token)
     return user
 
 
@@ -145,13 +148,13 @@ async def _dev_user_from_env() -> dict[str, Any]:
     real HF namespace. Deriving the dev user from HF_TOKEN keeps local uploads
     pointed at the token owner's dataset instead of dev/ml-intern-sessions.
     """
-    token = os.environ.get("HF_TOKEN", "")
+    token = clean_hf_token(os.environ.get("HF_TOKEN", ""))
     if not token:
-        return DEV_USER
+        return dict(DEV_USER)
 
     whoami = await fetch_whoami_v2(token)
     if not isinstance(whoami, dict):
-        return DEV_USER
+        return dict(DEV_USER)
 
     username = None
     for key in ("name", "user", "preferred_username"):
@@ -160,13 +163,14 @@ async def _dev_user_from_env() -> dict[str, Any]:
             username = value
             break
     if not username:
-        return DEV_USER
+        return dict(DEV_USER)
 
     return {
         "user_id": username,
         "username": username,
         "authenticated": True,
         "plan": await _fetch_user_plan(token),
+        INTERNAL_HF_TOKEN_KEY: token,
     }
 
 

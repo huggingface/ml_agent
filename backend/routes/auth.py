@@ -167,6 +167,5 @@ async def get_me(user: dict = Depends(get_current_user)) -> dict:
 
     Uses the shared auth dependency which handles cookie + Bearer token.
     """
-    return user
-
+    return {key: value for key, value in user.items() if not key.startswith("_")}
 
