@@ -14,7 +14,6 @@ import yaml
 from jinja2 import Template
 from litellm import Message, acompletion
 
-from agent.core.llm_messages import to_provider_messages
 from agent.core.prompt_caching import with_prompt_caching
 
 logger = logging.getLogger(__name__)
@@ -127,7 +126,6 @@ async def summarize_messages(
 
     prompt_messages = list(messages) + [Message(role="user", content=prompt)]
     llm_params = _resolve_llm_params(model_name, hf_token, reasoning_effort="high")
-    prompt_messages = to_provider_messages(prompt_messages)
     prompt_messages, tool_specs = with_prompt_caching(
         prompt_messages, tool_specs, llm_params.get("model")
     )
@@ -242,8 +240,6 @@ class ContextManager:
         """Add a message to the history"""
         if token_count:
             self.running_context_usage = token_count
-        if not getattr(message, "timestamp", None):
-            message.timestamp = datetime.now().isoformat()
         self.items.append(message)
         if self.on_message_added:
             self.on_message_added(message)
@@ -316,7 +312,6 @@ class ContextManager:
                             content="Tool was not executed (interrupted or error).",
                             tool_call_id=tc.id,
                             name=tc.function.name,
-                            timestamp=datetime.now().isoformat(),
                         )
                     )
 
@@ -432,7 +427,6 @@ class ContextManager:
         summarized_message = Message(
             role="assistant",
             content=summary,
-            timestamp=datetime.now().isoformat(),
         )
 
         # Reconstruct: system + first user msg + summary + recent messages

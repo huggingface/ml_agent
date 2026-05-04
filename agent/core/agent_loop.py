@@ -27,7 +27,6 @@ from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
 from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
-from agent.core.llm_messages import to_provider_messages
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
@@ -731,7 +730,6 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     response = None
     _healed_effort = False  # one-shot safety net per call
     _healed_thinking_signature = False
-    messages = to_provider_messages(messages)
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
     for _llm_attempt in range(_MAX_LLM_RETRIES):
@@ -866,7 +864,6 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     response = None
     _healed_effort = False
     _healed_thinking_signature = False
-    messages = to_provider_messages(messages)
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
     for _llm_attempt in range(_MAX_LLM_RETRIES):

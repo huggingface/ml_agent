@@ -67,13 +67,13 @@ def test_no_orphan_means_no_stub():
     assert tool_msgs[0].content == "ok"
 
 
-def test_add_message_records_message_timestamp():
+def test_add_message_does_not_attach_timestamp_metadata():
     cm = _make_cm()
     msg = Message(role="user", content="hello")
 
     cm.add_message(msg)
 
-    assert getattr(cm.items[-1], "timestamp", None)
+    assert not getattr(cm.items[-1], "timestamp", None)
 
 
 def test_multiple_dangling_tool_calls_in_one_assistant_message_are_all_patched():
