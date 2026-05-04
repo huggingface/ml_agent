@@ -46,6 +46,7 @@ DEFAULT_MAX_OUTPUT_TOKENS = 12000
 DEFAULT_RESOLUTION_REF = "main"
 DEFAULT_RESOLUTION_LOG_COMMITS = 500
 DEFAULT_GITHUB_ISSUE_BODY_CHARS = 60000
+DEFAULT_GITHUB_REPORT_LABEL = "backlog-prioritization-report"
 
 logger = logging.getLogger("prioritize_backlog")
 
@@ -158,6 +159,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         default=[],
         help="Label to add to the created issue. Repeat or pass comma-separated labels.",
+    )
+    ap.add_argument(
+        "--github-report-label",
+        default=DEFAULT_GITHUB_REPORT_LABEL,
+        help=(
+            "Label applied to generated report issues and excluded from future "
+            "GitHub collection. Pass an empty string to disable."
+        ),
     )
     ap.add_argument(
         "--github-issue-body-chars",
@@ -296,6 +305,17 @@ def _labels(raw_labels: list[Any]) -> list[str]:
         if name:
             labels.append(str(name))
     return labels
+
+
+def _has_excluded_label(
+    raw_labels: list[Any], exclude_labels: list[str] | None = None
+) -> bool:
+    excluded = {
+        label.casefold() for label in _github_issue_labels(exclude_labels or [])
+    }
+    if not excluded:
+        return False
+    return any(label.casefold() in excluded for label in _labels(raw_labels))
 
 
 def _user_login(raw: dict[str, Any] | None) -> str | None:
@@ -449,9 +469,11 @@ def collect_github_sources(
     max_review_comments: int = DEFAULT_MAX_REVIEW_COMMENTS,
     max_body_chars: int = DEFAULT_MAX_BODY_CHARS,
     max_comment_chars: int = DEFAULT_MAX_COMMENT_CHARS,
+    exclude_labels: list[str] | None = None,
     client: Any | None = None,
 ) -> list[dict[str, Any]]:
     headers = _github_headers(token)
+    excluded_labels = _github_issue_labels(exclude_labels or [])
     close_client = client is None
     if client is None:
         client = httpx.Client(timeout=30.0, follow_redirects=True)
@@ -473,6 +495,12 @@ def collect_github_sources(
 
         records: list[dict[str, Any]] = []
         for item in raw_items:
+            if _has_excluded_label(item.get("labels") or [], excluded_labels):
+                logger.debug(
+                    "Skipping GitHub item #%s with excluded label",
+                    item.get("number"),
+                )
+                continue
             try:
                 issue_comments = _fetch_github_comments(
                     client,
@@ -666,6 +694,7 @@ def collect_sources(
     max_review_comments: int = DEFAULT_MAX_REVIEW_COMMENTS,
     max_body_chars: int = DEFAULT_MAX_BODY_CHARS,
     max_comment_chars: int = DEFAULT_MAX_COMMENT_CHARS,
+    github_exclude_labels: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     github_records = collect_github_sources(
         github_repo,
@@ -674,6 +703,7 @@ def collect_sources(
         max_review_comments=max_review_comments,
         max_body_chars=max_body_chars,
         max_comment_chars=max_comment_chars,
+        exclude_labels=github_exclude_labels,
     )
     hf_records = collect_hf_discussions(
         hf_space,
@@ -1791,6 +1821,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     output_dir = resolve_output_dir(args.output_dir)
     github_token = args.github_token or os.environ.get("GITHUB_TOKEN")
     hf_token = resolve_hf_token(args.hf_token)
+    github_report_labels = _github_issue_labels([args.github_report_label])
     if args.create_github_issue and not github_token:
         logger.error("--create-github-issue requires --github-token or GITHUB_TOKEN.")
         return 1
@@ -1805,6 +1836,7 @@ async def async_main(argv: list[str] | None = None) -> int:
         max_review_comments=args.max_review_comments,
         max_body_chars=args.max_body_chars,
         max_comment_chars=args.max_comment_chars,
+        github_exclude_labels=github_report_labels,
     )
     logger.info("Collected %d backlog items", len(sources))
     if not args.skip_resolution_check:
@@ -1859,7 +1891,7 @@ async def async_main(argv: list[str] | None = None) -> int:
             title=title,
             report=report,
             token=github_token,
-            labels=args.github_issue_label,
+            labels=[*args.github_issue_label, *github_report_labels],
             max_body_chars=args.github_issue_body_chars,
         )
         ranking["github_issue"] = issue

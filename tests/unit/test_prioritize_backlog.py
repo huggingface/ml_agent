@@ -182,6 +182,56 @@ def test_github_pagination_and_issue_pr_splitting():
     assert records[1]["metadata"]["base"] == "main"
 
 
+def test_collect_github_sources_excludes_generated_report_label():
+    mod = _load()
+
+    class ReportIssueClient:
+        def close(self):
+            return None
+
+        def get(self, url, headers=None, params=None):
+            if url == "https://api.github.com/repos/owner/repo/issues":
+                return FakeResponse(
+                    [
+                        {
+                            "number": 1,
+                            "html_url": "https://github.com/owner/repo/issues/1",
+                            "title": "Generated report",
+                            "body": "report",
+                            "labels": [
+                                {"name": mod.DEFAULT_GITHUB_REPORT_LABEL.upper()}
+                            ],
+                            "user": {"login": "bot"},
+                            "state": "open",
+                            "comments": 0,
+                            "comments_url": "https://api.github.test/issues/1/comments",
+                        },
+                        {
+                            "number": 2,
+                            "html_url": "https://github.com/owner/repo/issues/2",
+                            "title": "Real issue",
+                            "body": "broken",
+                            "labels": [{"name": "bug"}],
+                            "user": {"login": "alice"},
+                            "state": "open",
+                            "comments": 0,
+                            "comments_url": "https://api.github.test/issues/2/comments",
+                        },
+                    ]
+                )
+            if url == "https://api.github.test/issues/2/comments":
+                return FakeResponse([])
+            raise AssertionError(f"unexpected URL: {url}")
+
+    records = mod.collect_github_sources(
+        "owner/repo",
+        exclude_labels=[mod.DEFAULT_GITHUB_REPORT_LABEL],
+        client=ReportIssueClient(),
+    )
+
+    assert [record["id"] for record in records] == ["github_issue#2"]
+
+
 def test_collect_github_sources_returns_partial_results_on_rate_limit(caplog):
     mod = _load()
 
@@ -665,6 +715,7 @@ def test_cli_defaults_without_live_network_or_llm():
     assert args.resolution_ref == "main"
     assert args.create_github_issue is False
     assert args.github_issue_label == []
+    assert args.github_report_label == mod.DEFAULT_GITHUB_REPORT_LABEL
     assert args.output_dir is None
     assert out.name == "20260504T123000Z"
     assert "scratch/backlog-prioritization" in str(out)
