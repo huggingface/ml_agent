@@ -120,12 +120,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-review-comments", type=int, default=DEFAULT_MAX_REVIEW_COMMENTS
     )
     ap.add_argument("--max-body-chars", type=int, default=DEFAULT_MAX_BODY_CHARS)
-    ap.add_argument(
-        "--max-comment-chars", type=int, default=DEFAULT_MAX_COMMENT_CHARS
-    )
-    ap.add_argument(
-        "--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS
-    )
+    ap.add_argument("--max-comment-chars", type=int, default=DEFAULT_MAX_COMMENT_CHARS)
+    ap.add_argument("--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)
     ap.add_argument(
         "--resolution-ref",
         default=DEFAULT_RESOLUTION_REF,
@@ -233,6 +229,26 @@ def _github_headers(token: str | None) -> dict[str, str]:
 def _raise_for_status(response: Any) -> None:
     if hasattr(response, "raise_for_status"):
         response.raise_for_status()
+
+
+def _is_github_rate_limit_error(exc: httpx.HTTPStatusError) -> bool:
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) in {403, 429}
+
+
+def _log_github_rate_limit(exc: httpx.HTTPStatusError, context: str) -> None:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", "unknown")
+    reset = None
+    if response is not None:
+        reset = response.headers.get("x-ratelimit-reset")
+    reset_msg = f"; reset={reset}" if reset else ""
+    logger.warning(
+        "GitHub rate limit while %s (status=%s%s); using partial results.",
+        context,
+        status,
+        reset_msg,
+    )
 
 
 def _get_json(client: Any, url: str, headers: dict[str, str]) -> Any:
@@ -393,7 +409,9 @@ def _normalize_github_pr(
         "number": number,
         "url": pr_details.get("html_url") or item.get("html_url"),
         "title": pr_details.get("title") or item.get("title") or "",
-        "body": _truncate_text(pr_details.get("body") or item.get("body"), max_body_chars),
+        "body": _truncate_text(
+            pr_details.get("body") or item.get("body"), max_body_chars
+        ),
         "labels": _labels(item.get("labels") or []),
         "author": _user_login(pr_details.get("user") or item.get("user")),
         "state": pr_details.get("state") or item.get("state"),
@@ -440,65 +458,80 @@ def collect_github_sources(
 
     try:
         issues_url = f"{GITHUB_API}/repos/{repo}/issues"
-        raw_items = _paginated_json(
-            client,
-            issues_url,
-            headers,
-            params={"state": "open", "sort": "updated", "direction": "desc"},
-        )
+        try:
+            raw_items = _paginated_json(
+                client,
+                issues_url,
+                headers,
+                params={"state": "open", "sort": "updated", "direction": "desc"},
+            )
+        except httpx.HTTPStatusError as exc:
+            if _is_github_rate_limit_error(exc):
+                _log_github_rate_limit(exc, "listing open GitHub issues and PRs")
+                return []
+            raise
 
         records: list[dict[str, Any]] = []
         for item in raw_items:
-            issue_comments = _fetch_github_comments(
-                client,
-                item.get("comments_url"),
-                headers,
-                max_comments=max_comments,
-                max_comment_chars=max_comment_chars,
-            )
+            try:
+                issue_comments = _fetch_github_comments(
+                    client,
+                    item.get("comments_url"),
+                    headers,
+                    max_comments=max_comments,
+                    max_comment_chars=max_comment_chars,
+                )
 
-            if "pull_request" not in item:
+                if "pull_request" not in item:
+                    records.append(
+                        _normalize_github_issue(
+                            item, issue_comments, max_body_chars=max_body_chars
+                        )
+                    )
+                    continue
+
+                number = item["number"]
+                pr_url = f"{GITHUB_API}/repos/{repo}/pulls/{number}"
+                pr_details = _get_json(client, pr_url, headers)
+                review_comments = _fetch_github_comments(
+                    client,
+                    f"{pr_url}/comments",
+                    headers,
+                    max_comments=max_review_comments,
+                    max_comment_chars=max_comment_chars,
+                    kind="review_comment",
+                )
+                raw_reviews = _paginated_json(
+                    client,
+                    f"{pr_url}/reviews",
+                    headers,
+                    limit=max_review_comments,
+                )
+                reviews = [
+                    _normalize_github_comment(
+                        review, max_comment_chars=max_comment_chars, kind="review"
+                    )
+                    for review in raw_reviews
+                    if review.get("body")
+                ]
                 records.append(
-                    _normalize_github_issue(
-                        item, issue_comments, max_body_chars=max_body_chars
+                    _normalize_github_pr(
+                        item,
+                        pr_details,
+                        issue_comments,
+                        review_comments,
+                        reviews,
+                        max_body_chars=max_body_chars,
                     )
                 )
-                continue
-
-            number = item["number"]
-            pr_url = f"{GITHUB_API}/repos/{repo}/pulls/{number}"
-            pr_details = _get_json(client, pr_url, headers)
-            review_comments = _fetch_github_comments(
-                client,
-                f"{pr_url}/comments",
-                headers,
-                max_comments=max_review_comments,
-                max_comment_chars=max_comment_chars,
-                kind="review_comment",
-            )
-            raw_reviews = _paginated_json(
-                client,
-                f"{pr_url}/reviews",
-                headers,
-                limit=max_review_comments,
-            )
-            reviews = [
-                _normalize_github_comment(
-                    review, max_comment_chars=max_comment_chars, kind="review"
-                )
-                for review in raw_reviews
-                if review.get("body")
-            ]
-            records.append(
-                _normalize_github_pr(
-                    item,
-                    pr_details,
-                    issue_comments,
-                    review_comments,
-                    reviews,
-                    max_body_chars=max_body_chars,
-                )
-            )
+            except httpx.HTTPStatusError as exc:
+                if _is_github_rate_limit_error(exc):
+                    _log_github_rate_limit(
+                        exc,
+                        f"collecting GitHub details for item #{item.get('number')}",
+                    )
+                    break
+                raise
         return records
     finally:
         if close_client and hasattr(client, "close"):
@@ -751,7 +784,7 @@ def _record_text_for_refs(record: dict[str, Any]) -> str:
 
 
 def _repo_regex(repo: str) -> str:
-    return re.escape(repo).replace("/", r"[/]")
+    return re.escape(repo)
 
 
 def _commit_text(commit: dict[str, str]) -> str:
@@ -824,10 +857,11 @@ def _commit_closes_record(
 
 def _linked_pr_numbers(text: str, *, github_repo: str) -> set[int]:
     repo = _repo_regex(github_repo)
+    verb = r"(?:fix(?:e[sd])?|resolve[sd]?|close[sd]?|address(?:es|ed)?|implement(?:s|ed)?)"
     patterns = [
-        rf"github\.com[:/]{repo}/pull/(\d+)\b",
-        r"\bPR\s*#(\d+)\b",
-        r"\bpull\s+request\s*#(\d+)\b",
+        rf"\b{verb}\s+(?:by|in|via|with)?\s*github\.com[:/]{repo}/pull/(\d+)\b",
+        rf"\b{verb}\s+(?:by|in|via|with)?\s*PR\s*#(\d+)\b",
+        rf"\b{verb}\s+(?:by|in|via|with)?\s*pull\s+request\s*#(\d+)\b",
     ]
     numbers: set[int] = set()
     for pattern in patterns:
@@ -886,11 +920,15 @@ def apply_resolution_checks(
             if record.get("source") == "github_pr" and isinstance(number, int):
                 if _commit_mentions_pr(text, number, github_repo=github_repo):
                     resolved_prs.setdefault(number, []).append(
-                        _commit_evidence(commit, f"main history references PR #{number}")
+                        _commit_evidence(
+                            commit, f"main history references PR #{number}"
+                        )
                     )
             elif _commit_closes_record(text, record, github_repo=github_repo):
                 direct_closures.setdefault(source_id, []).append(
-                    _commit_evidence(commit, "main history contains a closing reference")
+                    _commit_evidence(
+                        commit, "main history contains a closing reference"
+                    )
                 )
 
     for pr_number, evidence in pr_patch_matches.items():
@@ -923,7 +961,9 @@ def apply_resolution_checks(
             )
         else:
             linked = sorted(
-                _linked_pr_numbers(_record_text_for_refs(record), github_repo=github_repo)
+                _linked_pr_numbers(
+                    _record_text_for_refs(record), github_repo=github_repo
+                )
                 & set(resolved_prs)
             )
             if linked:
@@ -981,6 +1021,15 @@ def _fetch_pr_patch_matches(
                 response = client.get(patch_url, headers=headers)
                 _raise_for_status(response)
                 patch_id = _patch_id_for_text(response.text)
+            except httpx.HTTPStatusError as exc:
+                if _is_github_rate_limit_error(exc):
+                    _log_github_rate_limit(
+                        exc,
+                        f"fetching PR patch for #{number}",
+                    )
+                    break
+                logger.debug("patch-id check failed for PR #%s: %s", number, exc)
+                continue
             except Exception as exc:
                 logger.debug("patch-id check failed for PR #%s: %s", number, exc)
                 continue
@@ -1408,7 +1457,9 @@ def _source_lookup(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {str(record.get("id")): record for record in records if record.get("id")}
 
 
-def _source_links(item: dict[str, Any], records_by_id: dict[str, dict[str, Any]]) -> str:
+def _source_links(
+    item: dict[str, Any], records_by_id: dict[str, dict[str, Any]]
+) -> str:
     ids = item.get("source_ids") or item.get("related_source_ids") or []
     links: list[str] = []
     known_urls = {record.get("url") for record in records_by_id.values()}
@@ -1487,7 +1538,9 @@ def merge_can_be_closed(
         for item in existing
     }
     for item in _local_can_be_closed(records):
-        key = tuple(sorted(str(source_id) for source_id in item.get("source_ids") or []))
+        key = tuple(
+            sorted(str(source_id) for source_id in item.get("source_ids") or [])
+        )
         if key in seen:
             continue
         existing.append(item)
@@ -1592,7 +1645,9 @@ def render_markdown_report(
     )
     lines.append("")
     lines.extend(
-        _render_recommendations("Features", ranking.get("features") or [], records_by_id)
+        _render_recommendations(
+            "Features", ranking.get("features") or [], records_by_id
+        )
     )
     lines.append("")
     lines.extend(
@@ -1654,10 +1709,7 @@ def _github_issue_labels(raw_labels: list[str]) -> list[str]:
 
 
 def _github_issue_body(report: str, *, max_chars: int) -> str:
-    footer = (
-        "\n\n---\n"
-        "_Generated by `uv run python scripts/prioritize_backlog.py`._\n"
-    )
+    footer = "\n\n---\n_Generated by `uv run python scripts/prioritize_backlog.py`._\n"
     body = report.rstrip() + footer
     if max_chars <= 0 or len(body) <= max_chars:
         return body
@@ -1739,6 +1791,9 @@ async def async_main(argv: list[str] | None = None) -> int:
     output_dir = resolve_output_dir(args.output_dir)
     github_token = args.github_token or os.environ.get("GITHUB_TOKEN")
     hf_token = resolve_hf_token(args.hf_token)
+    if args.create_github_issue and not github_token:
+        logger.error("--create-github-issue requires --github-token or GITHUB_TOKEN.")
+        return 1
 
     logger.info("Collecting GitHub and Hugging Face backlog sources")
     sources = collect_sources(

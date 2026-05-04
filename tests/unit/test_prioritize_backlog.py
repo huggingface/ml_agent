@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 
@@ -27,6 +28,23 @@ class FakeResponse:
 
     def raise_for_status(self):
         return None
+
+
+class RateLimitResponse(FakeResponse):
+    def __init__(self, status_code=403):
+        super().__init__({})
+        self.status_code = status_code
+        self.request = httpx.Request("GET", "https://api.github.test/rate")
+        self.response = httpx.Response(
+            status_code,
+            headers={"x-ratelimit-reset": "123"},
+            request=self.request,
+        )
+
+    def raise_for_status(self):
+        raise httpx.HTTPStatusError(
+            "rate limited", request=self.request, response=self.response
+        )
 
 
 class FakeIssueClient:
@@ -164,6 +182,54 @@ def test_github_pagination_and_issue_pr_splitting():
     assert records[1]["metadata"]["base"] == "main"
 
 
+def test_collect_github_sources_returns_partial_results_on_rate_limit(caplog):
+    mod = _load()
+
+    class RateLimitedClient:
+        def close(self):
+            return None
+
+        def get(self, url, headers=None, params=None):
+            if url == "https://api.github.com/repos/owner/repo/issues":
+                return FakeResponse(
+                    [
+                        {
+                            "number": 1,
+                            "html_url": "https://github.com/owner/repo/issues/1",
+                            "title": "Issue one",
+                            "body": "broken",
+                            "labels": [],
+                            "user": {"login": "alice"},
+                            "state": "open",
+                            "comments": 0,
+                            "comments_url": "https://api.github.test/issues/1/comments",
+                        },
+                        {
+                            "number": 2,
+                            "html_url": "https://github.com/owner/repo/issues/2",
+                            "title": "Issue two",
+                            "body": "rate limited",
+                            "labels": [],
+                            "user": {"login": "bob"},
+                            "state": "open",
+                            "comments": 0,
+                            "comments_url": "https://api.github.test/issues/2/comments",
+                        },
+                    ]
+                )
+            if url == "https://api.github.test/issues/1/comments":
+                return FakeResponse([])
+            if url == "https://api.github.test/issues/2/comments":
+                return RateLimitResponse()
+            raise AssertionError(f"unexpected URL: {url}")
+
+    with caplog.at_level("WARNING"):
+        records = mod.collect_github_sources("owner/repo", client=RateLimitedClient())
+
+    assert [record["id"] for record in records] == ["github_issue#1"]
+    assert "GitHub rate limit" in caplog.text
+
+
 def test_github_comment_cap_and_truncation():
     mod = _load()
 
@@ -175,7 +241,9 @@ def test_github_comment_cap_and_truncation():
                     {"body": "abcdef", "user": {"login": "one"}},
                     {"body": "second", "user": {"login": "two"}},
                 ],
-                headers={"link": '<https://api.github.test/comments?page=2>; rel="next"'},
+                headers={
+                    "link": '<https://api.github.test/comments?page=2>; rel="next"'
+                },
             )
 
     comments = mod._fetch_github_comments(
@@ -298,6 +366,19 @@ def test_resolution_check_marks_pr_and_linked_issue_as_closable():
     assert by_id["github_issue#3"]["resolution"]["can_close"] is True
 
 
+def test_linked_pr_numbers_require_resolution_language():
+    mod = _load()
+
+    assert (
+        mod._linked_pr_numbers(
+            "Related to PR #12, but that PR does not address this.",
+            github_repo="owner/repo",
+        )
+        == set()
+    )
+    assert mod._linked_pr_numbers("Fixed by PR #12.", github_repo="owner/repo") == {12}
+
+
 def test_merge_can_be_closed_adds_local_resolution_candidates():
     mod = _load()
     records = [
@@ -357,6 +438,47 @@ def test_fetch_pr_patch_matches_uses_patch_id(monkeypatch):
     assert matches[2]["commit"] == "abcdef123456"
 
 
+def test_fetch_pr_patch_matches_stops_on_rate_limit(caplog, monkeypatch):
+    mod = _load()
+    records = [
+        {
+            "id": "github_pr#2",
+            "source": "github_pr",
+            "number": 2,
+            "metadata": {"patch_url": "https://api.github.test/pr/2.patch"},
+        },
+        {
+            "id": "github_pr#3",
+            "source": "github_pr",
+            "number": 3,
+            "metadata": {"patch_url": "https://api.github.test/pr/3.patch"},
+        },
+    ]
+    calls = []
+
+    class RateLimitedPatchClient:
+        def close(self):
+            return None
+
+        def get(self, url, headers=None):
+            calls.append(url)
+            return RateLimitResponse(status_code=429)
+
+    monkeypatch.setattr(mod, "_patch_id_for_text", lambda _text: "patch-id")
+
+    with caplog.at_level("WARNING"):
+        matches = mod._fetch_pr_patch_matches(
+            records,
+            github_token=None,
+            main_patch_ids={"patch-id": "abcdef1234567890"},
+            client=RateLimitedPatchClient(),
+        )
+
+    assert matches == {}
+    assert calls == ["https://api.github.test/pr/2.patch"]
+    assert "GitHub rate limit" in caplog.text
+
+
 def test_create_github_report_issue_posts_markdown_report():
     mod = _load()
     client = FakeIssueClient()
@@ -412,6 +534,21 @@ def test_append_published_issue_section_adds_local_link():
 
     assert "## Published GitHub Issue" in report
     assert "[#42](https://github.com/owner/repo/issues/42)" in report
+
+
+@pytest.mark.asyncio
+async def test_async_main_fails_early_when_issue_publish_token_missing(monkeypatch):
+    mod = _load()
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    def fail_collect(*_args, **_kwargs):
+        raise AssertionError("collection should not run without a GitHub token")
+
+    monkeypatch.setattr(mod, "collect_sources", fail_collect)
+
+    result = await mod.async_main(["--create-github-issue"])
+
+    assert result == 1
 
 
 @pytest.mark.asyncio
