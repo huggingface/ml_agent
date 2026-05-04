@@ -98,6 +98,9 @@ class NoopSessionStore:
     async def refund_quota(self, *_: Any, **__: Any) -> None:
         return None
 
+    async def mark_pro_seen(self, *_: Any, **__: Any) -> dict[str, Any] | None:
+        return None
+
 
 class MongoSessionStore(NoopSessionStore):
     """MongoDB-backed session store."""
@@ -152,6 +155,7 @@ class MongoSessionStore(NoopSessionStore):
             [("session_id", 1), ("seq", 1)], unique=True
         )
         await self.db.session_trace_messages.create_index([("created_at", -1)])
+        await self.db.pro_users.create_index([("first_seen_pro_at", -1)])
 
     def _ready(self) -> bool:
         return bool(self.enabled and self.db is not None)
@@ -172,6 +176,9 @@ class MongoSessionStore(NoopSessionStore):
         pending_approval: list[dict[str, Any]] | None = None,
         claude_counted: bool = False,
         notification_destinations: list[str] | None = None,
+        auto_approval_enabled: bool = False,
+        auto_approval_cost_cap_usd: float | None = None,
+        auto_approval_estimated_spend_usd: float = 0.0,
     ) -> None:
         if not self._ready():
             return
@@ -200,6 +207,9 @@ class MongoSessionStore(NoopSessionStore):
                     "pending_approval": pending_approval or [],
                     "claude_counted": claude_counted,
                     "notification_destinations": notification_destinations or [],
+                    "auto_approval_enabled": auto_approval_enabled,
+                    "auto_approval_cost_cap_usd": auto_approval_cost_cap_usd,
+                    "auto_approval_estimated_spend_usd": auto_approval_estimated_spend_usd,
                 },
             },
             upsert=True,
@@ -220,6 +230,9 @@ class MongoSessionStore(NoopSessionStore):
         claude_counted: bool = False,
         created_at: datetime | None = None,
         notification_destinations: list[str] | None = None,
+        auto_approval_enabled: bool = False,
+        auto_approval_cost_cap_usd: float | None = None,
+        auto_approval_estimated_spend_usd: float = 0.0,
     ) -> None:
         if not self._ready():
             return
@@ -237,6 +250,9 @@ class MongoSessionStore(NoopSessionStore):
             pending_approval=pending_approval,
             claude_counted=claude_counted,
             notification_destinations=notification_destinations,
+            auto_approval_enabled=auto_approval_enabled,
+            auto_approval_cost_cap_usd=auto_approval_cost_cap_usd,
+            auto_approval_estimated_spend_usd=auto_approval_estimated_spend_usd,
         )
         ops: list[Any] = []
         for idx, raw in enumerate(messages):
@@ -409,6 +425,63 @@ class MongoSessionStore(NoopSessionStore):
             {"_id": f"{user_id}:{day}", "count": {"$gt": 0}},
             {"$inc": {"count": -1}, "$set": {"updated_at": _now()}},
         )
+
+    async def mark_pro_seen(
+        self, user_id: str, *, is_pro: bool
+    ) -> dict[str, Any] | None:
+        """Track per-user Pro state and detect free→Pro conversions.
+
+        Returns ``{"converted": True, "first_seen_at": ..."}`` exactly once
+        per user — the first time we see them as Pro after having recorded
+        them as non-Pro at least once. Otherwise returns ``None``.
+
+        Storing ``ever_non_pro`` lets us distinguish "user joined as Pro"
+        (no conversion) from "user upgraded" (conversion). The atomic
+        ``find_one_and_update`` on a guarded filter makes the conversion
+        emit at-most-once even under concurrent requests.
+        """
+        if not self._ready() or not user_id:
+            return None
+        now = _now()
+        set_fields: dict[str, Any] = {"last_seen_at": now, "is_pro": bool(is_pro)}
+        if not is_pro:
+            set_fields["ever_non_pro"] = True
+        try:
+            await self.db.pro_users.update_one(
+                {"_id": user_id},
+                {
+                    "$setOnInsert": {"_id": user_id, "first_seen_at": now},
+                    "$set": set_fields,
+                },
+                upsert=True,
+            )
+        except PyMongoError as e:
+            logger.debug("mark_pro_seen upsert failed for %s: %s", user_id, e)
+            return None
+
+        if not is_pro:
+            return None
+
+        try:
+            doc = await self.db.pro_users.find_one_and_update(
+                {
+                    "_id": user_id,
+                    "ever_non_pro": True,
+                    "first_seen_pro_at": {"$exists": False},
+                },
+                {"$set": {"first_seen_pro_at": now}},
+                return_document=ReturnDocument.AFTER,
+            )
+        except PyMongoError as e:
+            logger.debug("mark_pro_seen conversion check failed for %s: %s", user_id, e)
+            return None
+
+        if not doc:
+            return None
+        return {
+            "converted": True,
+            "first_seen_at": (doc.get("first_seen_at") or now).isoformat(),
+        }
 
 
 _store: NoopSessionStore | MongoSessionStore | None = None

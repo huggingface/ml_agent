@@ -87,6 +87,7 @@ class AgentSession:
     tool_router: ToolRouter
     submission_queue: asyncio.Queue
     user_id: str = "dev"  # Owner of this session
+    hf_username: str | None = None  # HF namespace used for personal trace uploads
     hf_token: str | None = None  # User's HF OAuth token for tool execution
     task: asyncio.Task | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -115,6 +116,7 @@ class SessionCapacityError(Exception):
 # and per-request overhead.
 MAX_SESSIONS: int = 200
 MAX_SESSIONS_PER_USER: int = 10
+DEFAULT_YOLO_COST_CAP_USD: float = 5.0
 
 
 class SessionManager:
@@ -157,6 +159,7 @@ class SessionManager:
         *,
         session_id: str,
         user_id: str,
+        hf_username: str | None,
         hf_token: str | None,
         model: str | None,
         event_queue: asyncio.Queue,
@@ -178,6 +181,7 @@ class SessionManager:
             tool_router=tool_router,
             hf_token=hf_token,
             user_id=user_id,
+            hf_username=hf_username,
             notification_gateway=self.messaging_gateway,
             notification_destinations=notification_destinations or [],
             session_id=session_id,
@@ -294,6 +298,20 @@ class SessionManager:
             return "ended"
         return "idle"
 
+    @staticmethod
+    def _auto_approval_summary(session: Session) -> dict[str, Any]:
+        if hasattr(session, "auto_approval_policy_summary"):
+            return session.auto_approval_policy_summary()
+        cap = getattr(session, "auto_approval_cost_cap_usd", None)
+        estimated = float(getattr(session, "auto_approval_estimated_spend_usd", 0.0) or 0.0)
+        remaining = None if cap is None else round(max(0.0, float(cap) - estimated), 4)
+        return {
+            "enabled": bool(getattr(session, "auto_approval_enabled", False)),
+            "cost_cap_usd": cap,
+            "estimated_spend_usd": round(estimated, 4),
+            "remaining_usd": remaining,
+        }
+
     async def _start_agent_session(
         self,
         *,
@@ -319,6 +337,20 @@ class SessionManager:
         return agent_session
 
     @staticmethod
+    def _start_cpu_sandbox_preload(agent_session: AgentSession) -> None:
+        """Kick off a best-effort cpu-basic sandbox for the session."""
+        try:
+            from agent.tools.sandbox_tool import start_cpu_sandbox_preload
+
+            start_cpu_sandbox_preload(agent_session.session)
+        except Exception as e:
+            logger.warning(
+                "Failed to start CPU sandbox preload for %s: %s",
+                agent_session.session_id,
+                e,
+            )
+
+    @staticmethod
     def _can_access_session(agent_session: AgentSession, user_id: str) -> bool:
         return (
             user_id == "dev"
@@ -327,11 +359,18 @@ class SessionManager:
         )
 
     @staticmethod
-    def _update_hf_token(agent_session: AgentSession, hf_token: str | None) -> None:
-        if not hf_token:
-            return
-        agent_session.hf_token = hf_token
-        agent_session.session.hf_token = hf_token
+    def _update_hf_identity(
+        agent_session: AgentSession,
+        *,
+        hf_token: str | None,
+        hf_username: str | None,
+    ) -> None:
+        if hf_token:
+            agent_session.hf_token = hf_token
+            agent_session.session.hf_token = hf_token
+        if hf_username:
+            agent_session.hf_username = hf_username
+            agent_session.session.hf_username = hf_username
 
     async def persist_session_snapshot(
         self,
@@ -360,6 +399,20 @@ class SessionManager:
                 notification_destinations=list(
                     agent_session.session.notification_destinations
                 ),
+                auto_approval_enabled=bool(
+                    getattr(agent_session.session, "auto_approval_enabled", False)
+                ),
+                auto_approval_cost_cap_usd=getattr(
+                    agent_session.session, "auto_approval_cost_cap_usd", None
+                ),
+                auto_approval_estimated_spend_usd=float(
+                    getattr(
+                        agent_session.session,
+                        "auto_approval_estimated_spend_usd",
+                        0.0,
+                    )
+                    or 0.0
+                ),
             )
         except Exception as e:
             logger.warning(
@@ -373,13 +426,18 @@ class SessionManager:
         session_id: str,
         user_id: str,
         hf_token: str | None = None,
+        hf_username: str | None = None,
     ) -> AgentSession | None:
         """Return a live runtime session, lazily restoring it from Mongo."""
         async with self._lock:
             existing = self.sessions.get(session_id)
         if existing:
             if self._can_access_session(existing, user_id):
-                self._update_hf_token(existing, hf_token)
+                self._update_hf_identity(
+                    existing,
+                    hf_token=hf_token,
+                    hf_username=hf_username,
+                )
                 return existing
             return None
 
@@ -392,7 +450,11 @@ class SessionManager:
             existing = self.sessions.get(session_id)
         if existing:
             if self._can_access_session(existing, user_id):
-                self._update_hf_token(existing, hf_token)
+                self._update_hf_identity(
+                    existing,
+                    hf_token=hf_token,
+                    hf_username=hf_username,
+                )
                 return existing
             return None
 
@@ -410,6 +472,7 @@ class SessionManager:
             self._create_session_sync,
             session_id=session_id,
             user_id=owner or user_id,
+            hf_username=hf_username,
             hf_token=hf_token,
             model=model,
             event_queue=event_queue,
@@ -431,6 +494,14 @@ class SessionManager:
 
         self._restore_pending_approval(session, meta.get("pending_approval") or [])
         session.turn_count = int(meta.get("turn_count") or 0)
+        session.auto_approval_enabled = bool(meta.get("auto_approval_enabled", False))
+        raw_cap = meta.get("auto_approval_cost_cap_usd")
+        session.auto_approval_cost_cap_usd = (
+            float(raw_cap) if isinstance(raw_cap, int | float) else None
+        )
+        session.auto_approval_estimated_spend_usd = float(
+            meta.get("auto_approval_estimated_spend_usd") or 0.0
+        )
 
         created_at = meta.get("created_at")
         if not isinstance(created_at, datetime):
@@ -442,6 +513,7 @@ class SessionManager:
             tool_router=tool_router,
             submission_queue=submission_queue,
             user_id=owner or user_id,
+            hf_username=hf_username,
             hf_token=hf_token,
             created_at=created_at,
             is_active=True,
@@ -455,16 +527,23 @@ class SessionManager:
             tool_router=tool_router,
         )
         if started is not agent_session:
-            self._update_hf_token(started, hf_token)
+            self._update_hf_identity(
+                started,
+                hf_token=hf_token,
+                hf_username=hf_username,
+            )
             return started
+        self._start_cpu_sandbox_preload(agent_session)
         logger.info("Restored session %s for user %s", session_id, owner or user_id)
         return agent_session
 
     async def create_session(
         self,
         user_id: str = "dev",
+        hf_username: str | None = None,
         hf_token: str | None = None,
         model: str | None = None,
+        is_pro: bool | None = None,
     ) -> str:
         """Create a new agent session and return its ID.
 
@@ -474,6 +553,7 @@ class SessionManager:
 
         Args:
             user_id: The ID of the user who owns this session.
+            hf_username: The HF username/namespace used for personal trace uploads.
             hf_token: The user's HF OAuth token, stored for tool execution.
             model: Optional model override. When set, replaces ``model_name``
                 on the per-session config clone. None falls back to the
@@ -512,6 +592,7 @@ class SessionManager:
             self._create_session_sync,
             session_id=session_id,
             user_id=user_id,
+            hf_username=hf_username,
             hf_token=hf_token,
             model=model,
             event_queue=event_queue,
@@ -524,6 +605,7 @@ class SessionManager:
             tool_router=tool_router,
             submission_queue=submission_queue,
             user_id=user_id,
+            hf_username=hf_username,
             hf_token=hf_token,
         )
 
@@ -532,10 +614,38 @@ class SessionManager:
             event_queue=event_queue,
             tool_router=tool_router,
         )
+        self._start_cpu_sandbox_preload(agent_session)
         await self.persist_session_snapshot(agent_session, runtime_state="idle")
+
+        if is_pro is not None and user_id and user_id != "dev":
+            await self._track_pro_status(agent_session, is_pro=is_pro)
 
         logger.info(f"Created session {session_id} for user {user_id}")
         return session_id
+
+    async def _track_pro_status(self, agent_session: AgentSession, *, is_pro: bool) -> None:
+        """Update Mongo per-user Pro state and emit a one-shot conversion
+        event if the store reports a free→Pro transition. Best-effort: any
+        Mongo failure is swallowed so we never fail session creation on
+        telemetry."""
+        store = self._store()
+        if not getattr(store, "enabled", False):
+            return
+        try:
+            result = await store.mark_pro_seen(agent_session.user_id, is_pro=is_pro)
+        except Exception as e:
+            logger.debug("mark_pro_seen failed: %s", e)
+            return
+        if not result or not result.get("converted"):
+            return
+        try:
+            from agent.core import telemetry
+            await telemetry.record_pro_conversion(
+                agent_session.session,
+                first_seen_at=result.get("first_seen_at"),
+            )
+        except Exception as e:
+            logger.debug("record_pro_conversion failed: %s", e)
 
     async def seed_from_summary(self, session_id: str, messages: list[dict]) -> int:
         """Rehydrate a session from cached prior messages via summarization.
@@ -584,6 +694,8 @@ class SessionManager:
                 max_tokens=4000,
                 prompt=_RESTORE_PROMPT,
                 tool_specs=tool_specs,
+                session=session,
+                kind="restore",
             )
         except Exception as e:
             logger.error("Summary call failed during seed: %s", e)
@@ -609,27 +721,9 @@ class SessionManager:
         with exponential backoff. A single missed delete = a permanently
         orphaned Space, so the cost of an extra retry beats the alternative.
         """
-        sandbox = getattr(session, "sandbox", None)
-        if not (sandbox and getattr(sandbox, "_owns_space", False)):
-            return
+        from agent.tools.sandbox_tool import teardown_session_sandbox
 
-        space_id = getattr(sandbox, "space_id", None)
-        last_err: Exception | None = None
-        for attempt in range(3):
-            try:
-                logger.info(f"Deleting sandbox {space_id} (attempt {attempt + 1}/3)...")
-                await asyncio.to_thread(sandbox.delete)
-                from agent.core import telemetry
-                await telemetry.record_sandbox_destroy(session, sandbox)
-                return
-            except Exception as e:
-                last_err = e
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
-        logger.error(
-            f"Failed to delete sandbox {space_id} after 3 attempts: {last_err}. "
-            f"Orphan — sweep script will pick it up."
-        )
+        await teardown_session_sandbox(session)
 
     async def _run_session(
         self,
@@ -809,6 +903,18 @@ class SessionManager:
 
         return True
 
+    async def teardown_sandbox(self, session_id: str) -> bool:
+        """Delete only this session's sandbox runtime, preserving chat state."""
+        async with self._lock:
+            agent_session = self.sessions.get(session_id)
+
+        if not agent_session or not agent_session.is_active:
+            return False
+
+        await self._cleanup_sandbox(agent_session.session)
+        await self.persist_session_snapshot(agent_session, runtime_state="idle")
+        return True
+
     async def update_session_title(self, session_id: str, title: str | None) -> None:
         """Persist a user-visible title for sidebar rehydration."""
         agent_session = self.sessions.get(session_id)
@@ -823,6 +929,43 @@ class SessionManager:
         agent_session.session.update_model(model_id)
         await self.persist_session_snapshot(agent_session, runtime_state="idle")
         return True
+
+    async def update_session_auto_approval(
+        self,
+        session_id: str,
+        *,
+        enabled: bool,
+        cost_cap_usd: float | None,
+        cap_provided: bool = False,
+    ) -> dict[str, Any]:
+        agent_session = self.sessions.get(session_id)
+        if not agent_session or not agent_session.is_active:
+            raise ValueError("Session not found or inactive")
+
+        session = agent_session.session
+        if enabled:
+            if not cap_provided and cost_cap_usd is None:
+                cost_cap_usd = getattr(
+                    session, "auto_approval_cost_cap_usd", None
+                )
+                if cost_cap_usd is None:
+                    cost_cap_usd = DEFAULT_YOLO_COST_CAP_USD
+            elif cost_cap_usd is None:
+                cost_cap_usd = DEFAULT_YOLO_COST_CAP_USD
+        else:
+            if not cap_provided:
+                cost_cap_usd = getattr(session, "auto_approval_cost_cap_usd", None)
+
+        if hasattr(session, "set_auto_approval_policy"):
+            session.set_auto_approval_policy(
+                enabled=enabled,
+                cost_cap_usd=cost_cap_usd,
+            )
+        else:
+            session.auto_approval_enabled = bool(enabled)
+            session.auto_approval_cost_cap_usd = cost_cap_usd
+        await self.persist_session_snapshot(agent_session)
+        return self._auto_approval_summary(session)
 
     def get_session_owner(self, session_id: str) -> str | None:
         """Get the user_id that owns a session, or None if session doesn't exist."""
@@ -866,6 +1009,7 @@ class SessionManager:
             "notification_destinations": list(
                 agent_session.session.notification_destinations
             ),
+            "auto_approval": self._auto_approval_summary(agent_session.session),
         }
 
     def set_notification_destinations(
@@ -932,6 +1076,25 @@ class SessionManager:
                         "model": row.get("model"),
                         "title": row.get("title"),
                         "notification_destinations": row.get("notification_destinations") or [],
+                        "auto_approval": {
+                            "enabled": bool(row.get("auto_approval_enabled", False)),
+                            "cost_cap_usd": row.get("auto_approval_cost_cap_usd"),
+                            "estimated_spend_usd": float(
+                                row.get("auto_approval_estimated_spend_usd") or 0.0
+                            ),
+                            "remaining_usd": (
+                                None
+                                if row.get("auto_approval_cost_cap_usd") is None
+                                else round(
+                                    max(
+                                        0.0,
+                                        float(row.get("auto_approval_cost_cap_usd") or 0.0)
+                                        - float(row.get("auto_approval_estimated_spend_usd") or 0.0),
+                                    ),
+                                    4,
+                                )
+                            ),
+                        },
                     }
                 )
             return results

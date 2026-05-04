@@ -4,6 +4,7 @@ Context management for conversation history
 
 import logging
 import os
+import time
 import zoneinfo
 from datetime import datetime
 from pathlib import Path
@@ -102,6 +103,8 @@ async def summarize_messages(
     max_tokens: int = 2000,
     tool_specs: list[dict] | None = None,
     prompt: str = _COMPACT_PROMPT,
+    session: Any = None,
+    kind: str = "compaction",
 ) -> tuple[str, int]:
     """Run a summarization prompt against a list of messages.
 
@@ -109,6 +112,13 @@ async def summarize_messages(
     Callers seeding a new session after a restart should pass ``_RESTORE_PROMPT``
     instead — it preserves the tool-call trail so the agent can answer
     follow-up questions about what it did.
+
+    ``session`` is optional; when provided, the call is recorded via
+    ``telemetry.record_llm_call`` so its cost lands in the session's
+    ``total_cost_usd``. Without it, the call still happens but is
+    invisible in telemetry — which used to be the case for every
+    compaction call until 2026-04-29 (~30-50% of Bedrock spend was
+    attributed to this single source of dark cost).
 
     Returns ``(summary_text, completion_tokens)``.
     """
@@ -119,12 +129,23 @@ async def summarize_messages(
     prompt_messages, tool_specs = with_prompt_caching(
         prompt_messages, tool_specs, llm_params.get("model")
     )
+    _t0 = time.monotonic()
     response = await acompletion(
         messages=prompt_messages,
         max_completion_tokens=max_tokens,
         tools=tool_specs,
         **llm_params,
     )
+    if session is not None:
+        from agent.core import telemetry
+        await telemetry.record_llm_call(
+            session,
+            model=model_name,
+            response=response,
+            latency_ms=int((time.monotonic() - _t0) * 1000),
+            finish_reason=response.choices[0].finish_reason if response.choices else None,
+            kind=kind,
+        )
     summary = response.choices[0].message.content or ""
     completion_tokens = response.usage.completion_tokens if response.usage else 0
     return summary, completion_tokens
@@ -219,6 +240,8 @@ class ContextManager:
         """Add a message to the history"""
         if token_count:
             self.running_context_usage = token_count
+        if not getattr(message, "timestamp", None):
+            message.timestamp = datetime.now().isoformat()
         self.items.append(message)
         if self.on_message_added:
             self.on_message_added(message)
@@ -291,6 +314,7 @@ class ContextManager:
                             content="Tool was not executed (interrupted or error).",
                             tool_call_id=tc.id,
                             name=tc.function.name,
+                            timestamp=datetime.now().isoformat(),
                         )
                     )
 
@@ -355,8 +379,14 @@ class ContextManager:
         model_name: str,
         tool_specs: list[dict] | None = None,
         hf_token: str | None = None,
+        session: Any = None,
     ) -> None:
-        """Remove old messages to keep history under target size"""
+        """Remove old messages to keep history under target size.
+
+        ``session`` is optional — if passed, the underlying summarization
+        LLM call is recorded via ``telemetry.record_llm_call(kind=
+        "compaction")`` so its cost shows up in ``total_cost_usd``.
+        """
         if not self.needs_compaction:
             return
 
@@ -394,8 +424,14 @@ class ContextManager:
             max_tokens=self.compact_size,
             tool_specs=tool_specs,
             prompt=_COMPACT_PROMPT,
+            session=session,
+            kind="compaction",
         )
-        summarized_message = Message(role="assistant", content=summary)
+        summarized_message = Message(
+            role="assistant",
+            content=summary,
+            timestamp=datetime.now().isoformat(),
+        )
 
         # Reconstruct: system + first user msg + summary + recent messages
         head = [system_msg] if system_msg else []

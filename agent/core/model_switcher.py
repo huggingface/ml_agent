@@ -32,6 +32,7 @@ SUGGESTED_MODELS = [
     {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
     {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6"},
     {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
+    {"id": "deepseek-ai/DeepSeek-V4-Pro:deepinfra", "label": "DeepSeek V4 Pro"},
 ]
 
 
@@ -187,7 +188,7 @@ async def probe_and_switch_model(
 
     console.print(f"[dim]checking {model_id} (effort: {preference})...[/dim]")
     try:
-        outcome = await probe_effort(model_id, preference, hf_token)
+        outcome = await probe_effort(model_id, preference, hf_token, session=session)
     except ProbeInconclusive as e:
         _commit_switch(model_id, config, session, effective=None, cache=False)
         console.print(

@@ -59,6 +59,41 @@ ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
 
+## Sharing Traces
+
+Every session is auto-uploaded to your **own private Hugging Face dataset**
+in [Claude Code JSONL format](https://huggingface.co/changelog/agent-trace-viewer),
+which the HF Agent Trace Viewer auto-detects so you can browse turns, tool
+calls, and model responses directly on the Hub.
+
+By default the dataset is named `{your-hf-username}/ml-intern-sessions` and is
+**created private**. You can flip it to public from inside the CLI:
+
+```bash
+/share-traces            # show current visibility + dataset URL
+/share-traces public     # publish (anyone can view)
+/share-traces private    # lock it back down
+```
+
+You can also flip visibility from the dataset page on huggingface.co — the
+agent honours whatever you set there for subsequent uploads.
+
+To opt out entirely, set in your CLI config (e.g. `configs/cli_agent_config.json`
+or `~/.config/ml-intern/cli_agent_config.json`):
+
+```json
+{ "share_traces": false }
+```
+
+To override the destination repo, set:
+
+```json
+{ "personal_trace_repo_template": "{hf_user}/my-custom-traces" }
+```
+
+The shared `smolagents/ml-intern-sessions` dataset is unrelated and only
+receives anonymized telemetry rows used by the backend KPI scheduler.
+
 ## Supported Gateways
 
 ML Intern currently supports one-way notification gateways from CLI sessions.
