@@ -613,7 +613,7 @@ class Sandbox:
         *,
         name: str | None = None,
         template: str = TEMPLATE_SPACE,
-        hardware: str = "cpu-basic",
+        hardware: str = CPU_BASIC_HARDWARE,
         private: bool = True,
         sleep_time: int | None = None,
         token: str | None = None,
@@ -682,7 +682,9 @@ class Sandbox:
         # ``duplicate_space`` already receives the target hardware. The extra
         # /hardware call is useful for paid tiers, but hosted OAuth tokens can
         # 401 on that endpoint for a fresh private Space even after duplication
-        # succeeds. Avoid the redundant call for default CPU sandboxes.
+        # succeeds. Avoid the redundant call for default CPU sandboxes when no
+        # auto-sleep timer is requested; with sleep_time set, the hardware
+        # endpoint is still needed to configure auto-sleep.
         if hardware == CPU_BASIC_HARDWARE and sleep_time is None:
             _log(f"Using duplicated Space hardware: {hardware}")
         else:
