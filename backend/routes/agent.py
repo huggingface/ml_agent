@@ -10,7 +10,11 @@ import logging
 import os
 from typing import Any
 
-from dependencies import get_current_user, require_huggingface_org_member
+from dependencies import (
+    INTERNAL_HF_TOKEN_KEY,
+    get_current_user,
+    require_huggingface_org_member,
+)
 from fastapi import (
     APIRouter,
     Depends,
@@ -209,6 +213,12 @@ async def _enforce_gated_model_quota(
     await session_manager.persist_session_snapshot(agent_session)
 
 
+def _user_hf_token(user: dict[str, Any] | None) -> str | None:
+    if not isinstance(user, dict):
+        return None
+    return user.get(INTERNAL_HF_TOKEN_KEY) or user.get("hf_token")
+
+
 async def _check_session_access(
     session_id: str,
     user: dict[str, Any],
@@ -216,7 +226,7 @@ async def _check_session_access(
     preload_sandbox: bool = True,
 ) -> AgentSession:
     """Verify and lazily load the user's session. Raises 403 or 404."""
-    hf_token = resolve_hf_request_token(request) if request is not None else user.get("hf_token")
+    hf_token = resolve_hf_request_token(request) if request is not None else _user_hf_token(user)
     agent_session = await session_manager.ensure_session_loaded(
         session_id,
         user["user_id"],
@@ -318,9 +328,7 @@ async def generate_title(
     reasoning model — reasoning_effort=low keeps the reasoning budget small
     so the 60-token output budget isn't consumed before the title is written.
     """
-    api_key = resolve_hf_router_token(
-        user.get("hf_token") if isinstance(user, dict) else None
-    )
+    api_key = resolve_hf_router_token(_user_hf_token(user))
     try:
         response = await acompletion(
             # Double openai/ prefix: LiteLLM strips the first as its provider

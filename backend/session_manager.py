@@ -376,6 +376,41 @@ class SessionManager:
             agent_session.hf_username = hf_username
             agent_session.session.hf_username = hf_username
 
+    @staticmethod
+    def _has_active_sandbox_preload(agent_session: AgentSession) -> bool:
+        task = getattr(agent_session.session, "sandbox_preload_task", None)
+        return bool(task and not task.done())
+
+    @staticmethod
+    def _preload_failed_for_missing_hf_token(agent_session: AgentSession) -> bool:
+        error = getattr(agent_session.session, "sandbox_preload_error", None)
+        return isinstance(error, str) and error.startswith("No HF token available")
+
+    def _restart_cpu_preload_if_token_recovered(
+        self,
+        agent_session: AgentSession,
+        *,
+        preload_sandbox: bool,
+    ) -> None:
+        if not preload_sandbox:
+            return
+        session = agent_session.session
+        if getattr(session, "sandbox", None):
+            return
+        if self._has_active_sandbox_preload(agent_session):
+            return
+        if not (agent_session.hf_token or getattr(session, "hf_token", None)):
+            return
+
+        preload_error = getattr(session, "sandbox_preload_error", None)
+        if preload_error and not self._preload_failed_for_missing_hf_token(agent_session):
+            return
+
+        session.sandbox_preload_error = None
+        session.sandbox_preload_task = None
+        session.sandbox_preload_cancel_event = None
+        self._start_cpu_sandbox_preload(agent_session)
+
     async def _clear_persisted_sandbox_metadata(self, session_id: str) -> None:
         try:
             await self._store().update_session_fields(
@@ -526,6 +561,10 @@ class SessionManager:
                     hf_token=hf_token,
                     hf_username=hf_username,
                 )
+                self._restart_cpu_preload_if_token_recovered(
+                    existing,
+                    preload_sandbox=preload_sandbox,
+                )
                 return existing
             return None
 
@@ -542,6 +581,10 @@ class SessionManager:
                     existing,
                     hf_token=hf_token,
                     hf_username=hf_username,
+                )
+                self._restart_cpu_preload_if_token_recovered(
+                    existing,
+                    preload_sandbox=preload_sandbox,
                 )
                 return existing
             return None

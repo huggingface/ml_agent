@@ -282,6 +282,72 @@ async def test_existing_session_updates_token_after_access_check():
 
 
 @pytest.mark.asyncio
+async def test_existing_session_retries_preload_after_token_recovered():
+    manager = _manager_with_store(NoopSessionStore())
+    existing = _runtime_agent_session("s1", user_id="owner", hf_token=None)
+    done_task = asyncio.get_running_loop().create_future()
+    done_task.set_result(None)
+    existing.session.sandbox_preload_task = done_task
+    existing.session.sandbox_preload_error = (
+        "No HF token available. Cannot create sandbox."
+    )
+    manager.sessions["s1"] = existing
+    started: list[str] = []
+
+    def fake_start_cpu_sandbox_preload(agent_session):
+        started.append(agent_session.session_id)
+
+    manager._start_cpu_sandbox_preload = fake_start_cpu_sandbox_preload  # type: ignore[method-assign]
+
+    result = await manager.ensure_session_loaded(
+        "s1",
+        user_id="owner",
+        hf_token="new-token",
+    )
+
+    assert result is existing
+    assert existing.hf_token == "new-token"
+    assert existing.session.hf_token == "new-token"
+    assert existing.session.sandbox_preload_error is None
+    assert existing.session.sandbox_preload_task is None
+    assert started == ["s1"]
+
+
+@pytest.mark.asyncio
+async def test_existing_session_does_not_retry_preload_when_disabled():
+    manager = _manager_with_store(NoopSessionStore())
+    existing = _runtime_agent_session("s1", user_id="owner", hf_token=None)
+    done_task = asyncio.get_running_loop().create_future()
+    done_task.set_result(None)
+    existing.session.sandbox_preload_task = done_task
+    existing.session.sandbox_preload_error = (
+        "No HF token available. Cannot create sandbox."
+    )
+    manager.sessions["s1"] = existing
+    started: list[str] = []
+
+    def fake_start_cpu_sandbox_preload(agent_session):
+        started.append(agent_session.session_id)
+
+    manager._start_cpu_sandbox_preload = fake_start_cpu_sandbox_preload  # type: ignore[method-assign]
+
+    result = await manager.ensure_session_loaded(
+        "s1",
+        user_id="owner",
+        hf_token="new-token",
+        preload_sandbox=False,
+    )
+
+    assert result is existing
+    assert existing.hf_token == "new-token"
+    assert existing.session.hf_token == "new-token"
+    assert existing.session.sandbox_preload_error == (
+        "No HF token available. Cannot create sandbox."
+    )
+    assert started == []
+
+
+@pytest.mark.asyncio
 async def test_concurrent_lazy_restore_starts_only_one_agent_task():
     store = RestoreStore(delay=0.01)
     manager = _manager_with_store(store)
