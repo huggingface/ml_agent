@@ -245,6 +245,7 @@ def test_orphan_sweep_preserves_spaces_without_last_modified():
 
 def test_ensure_sandbox_overrides_private_argument(monkeypatch):
     captured_kwargs = {}
+    persisted: list[dict] = []
 
     class FakeApi:
         def __init__(self, token=None):
@@ -255,13 +256,22 @@ def test_ensure_sandbox_overrides_private_argument(monkeypatch):
 
     class FakeSession:
         def __init__(self):
+            self.session_id = "s1"
             self.hf_token = "hf-token"
             self.sandbox = None
             self.event_queue = SimpleNamespace(put_nowait=lambda event: None)
             self._cancelled = asyncio.Event()
+            self.persistence_store = SimpleNamespace(
+                update_session_fields=lambda session_id, **fields: _record_metadata(
+                    session_id, fields
+                )
+            )
 
         async def send_event(self, event):
             pass
+
+    async def _record_metadata(session_id, fields):
+        persisted.append({"session_id": session_id, **fields})
 
     def fake_create(**kwargs):
         captured_kwargs.update(kwargs)
@@ -289,6 +299,11 @@ def test_ensure_sandbox_overrides_private_argument(monkeypatch):
     assert error is None
     assert sb is not None
     assert captured_kwargs["private"] is True
+    assert persisted[-1]["session_id"] == "s1"
+    assert persisted[-1]["sandbox_space_id"] == "alice/sandbox-12345678"
+    assert persisted[-1]["sandbox_hardware"] == "cpu-basic"
+    assert persisted[-1]["sandbox_owner"] == "alice"
+    assert persisted[-1]["sandbox_status"] == "active"
 
 
 def test_sandbox_creation_is_serialized_per_owner(monkeypatch):
@@ -453,6 +468,7 @@ def test_sandbox_create_replaces_auto_cpu_sandbox(monkeypatch):
 
 def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
     deleted: list[str] = []
+    persisted: list[dict] = []
 
     async def fake_record_sandbox_destroy(*args, **kwargs):
         pass
@@ -466,6 +482,7 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
             await asyncio.sleep(0)
 
         session = SimpleNamespace(
+            session_id="s1",
             sandbox=SimpleNamespace(
                 space_id="alice/sandbox-12345678",
                 _owns_space=True,
@@ -474,10 +491,18 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
             sandbox_hardware="cpu-basic",
             sandbox_preload_task=asyncio.create_task(preload()),
             sandbox_preload_cancel_event=cancel_event,
+            persistence_store=SimpleNamespace(
+                update_session_fields=lambda session_id, **fields: _record_metadata(
+                    session_id, fields
+                )
+            ),
         )
 
         await sandbox_tool.teardown_session_sandbox(session)
         return session, cancel_event
+
+    async def _record_metadata(session_id, fields):
+        persisted.append({"session_id": session_id, **fields})
 
     session, cancel_event = asyncio.run(run())
 
@@ -485,6 +510,9 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
     assert deleted == ["alice/sandbox-12345678"]
     assert session.sandbox is None
     assert session.sandbox_hardware is None
+    assert persisted[-1]["session_id"] == "s1"
+    assert persisted[-1]["sandbox_space_id"] is None
+    assert persisted[-1]["sandbox_status"] == "destroyed"
 
 
 def test_cancel_sandbox_preload_cancels_task_after_timeout(monkeypatch):

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -117,6 +118,8 @@ class SessionCapacityError(Exception):
 MAX_SESSIONS: int = 200
 MAX_SESSIONS_PER_USER: int = 10
 DEFAULT_YOLO_COST_CAP_USD: float = 5.0
+SANDBOX_SHUTDOWN_CLEANUP_CONCURRENCY: int = 10
+SANDBOX_SHUTDOWN_CLEANUP_TIMEOUT_S: float = 60.0
 
 
 class SessionManager:
@@ -137,6 +140,7 @@ class SessionManager:
 
     async def close(self) -> None:
         """Flush and close shared background resources."""
+        await self._cleanup_all_sandboxes_on_close()
         await self.messaging_gateway.close()
         if self.persistence_store is not None:
             await self.persistence_store.close()
@@ -372,6 +376,89 @@ class SessionManager:
             agent_session.hf_username = hf_username
             agent_session.session.hf_username = hf_username
 
+    async def _clear_persisted_sandbox_metadata(self, session_id: str) -> None:
+        try:
+            await self._store().update_session_fields(
+                session_id,
+                sandbox_space_id=None,
+                sandbox_hardware=None,
+                sandbox_owner=None,
+                sandbox_created_at=None,
+                sandbox_status="destroyed",
+            )
+        except Exception as e:
+            logger.warning("Failed to clear sandbox metadata for %s: %s", session_id, e)
+
+    async def _cleanup_persisted_sandbox(
+        self,
+        session_id: str,
+        metadata: dict[str, Any],
+        *,
+        hf_token: str | None,
+    ) -> None:
+        """Delete a sandbox recorded by a previous backend process, if any."""
+        space_id = metadata.get("sandbox_space_id")
+        if not isinstance(space_id, str) or not space_id:
+            return
+        if metadata.get("sandbox_status") == "destroyed":
+            return
+
+        tokens: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for label, token in (
+            ("user", hf_token),
+            ("admin", os.environ.get("HF_ADMIN_TOKEN")),
+        ):
+            if token and token not in seen:
+                tokens.append((label, token))
+                seen.add(token)
+
+        if not tokens:
+            logger.warning(
+                "Cannot clean persisted sandbox %s for session %s: no HF token available",
+                space_id,
+                session_id,
+            )
+            return
+
+        last_err: Exception | None = None
+        for label, token in tokens:
+            try:
+                from huggingface_hub import HfApi
+
+                api = HfApi(token=token)
+                await asyncio.to_thread(
+                    api.delete_repo,
+                    repo_id=space_id,
+                    repo_type="space",
+                )
+                logger.info(
+                    "Deleted persisted sandbox %s for session %s with %s token",
+                    space_id,
+                    session_id,
+                    label,
+                )
+                await self._clear_persisted_sandbox_metadata(session_id)
+                return
+            except Exception as e:
+                status_code = getattr(getattr(e, "response", None), "status_code", None)
+                if status_code == 404:
+                    logger.info(
+                        "Persisted sandbox %s for session %s is already gone",
+                        space_id,
+                        session_id,
+                    )
+                    await self._clear_persisted_sandbox_metadata(session_id)
+                    return
+                last_err = e
+
+        logger.warning(
+            "Failed to delete persisted sandbox %s for session %s: %s",
+            space_id,
+            session_id,
+            last_err,
+        )
+
     async def persist_session_snapshot(
         self,
         agent_session: AgentSession,
@@ -427,6 +514,7 @@ class SessionManager:
         user_id: str,
         hf_token: str | None = None,
         hf_username: str | None = None,
+        preload_sandbox: bool = True,
     ) -> AgentSession | None:
         """Return a live runtime session, lazily restoring it from Mongo."""
         async with self._lock:
@@ -462,6 +550,12 @@ class SessionManager:
         owner = str(meta.get("user_id") or "")
         if user_id != "dev" and owner != "dev" and owner != user_id:
             return None
+
+        await self._cleanup_persisted_sandbox(
+            session_id,
+            meta,
+            hf_token=hf_token,
+        )
 
         from litellm import Message
 
@@ -533,7 +627,8 @@ class SessionManager:
                 hf_username=hf_username,
             )
             return started
-        self._start_cpu_sandbox_preload(agent_session)
+        if preload_sandbox:
+            self._start_cpu_sandbox_preload(agent_session)
         logger.info("Restored session %s for user %s", session_id, owner or user_id)
         return agent_session
 
@@ -614,8 +709,8 @@ class SessionManager:
             event_queue=event_queue,
             tool_router=tool_router,
         )
-        self._start_cpu_sandbox_preload(agent_session)
         await self.persist_session_snapshot(agent_session, runtime_state="idle")
+        self._start_cpu_sandbox_preload(agent_session)
 
         if is_pro is not None and user_id and user_id != "dev":
             await self._track_pro_status(agent_session, is_pro=is_pro)
@@ -724,6 +819,42 @@ class SessionManager:
         from agent.tools.sandbox_tool import teardown_session_sandbox
 
         await teardown_session_sandbox(session)
+
+    async def _cleanup_all_sandboxes_on_close(self) -> None:
+        """Best-effort sandbox cleanup for graceful backend shutdown."""
+        async with self._lock:
+            agent_sessions = list(self.sessions.values())
+        if not agent_sessions:
+            return
+
+        semaphore = asyncio.Semaphore(SANDBOX_SHUTDOWN_CLEANUP_CONCURRENCY)
+
+        async def _cleanup_one(agent_session: AgentSession) -> None:
+            async with semaphore:
+                try:
+                    await self._cleanup_sandbox(agent_session.session)
+                except Exception as e:
+                    logger.warning(
+                        "Shutdown sandbox cleanup failed for %s: %s",
+                        agent_session.session_id,
+                        e,
+                    )
+
+        tasks = [
+            asyncio.create_task(_cleanup_one(agent_session))
+            for agent_session in agent_sessions
+        ]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=SANDBOX_SHUTDOWN_CLEANUP_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Timed out after %.0fs cleaning up sandboxes on shutdown; "
+                "orphan sweeper will handle any stragglers",
+                SANDBOX_SHUTDOWN_CLEANUP_TIMEOUT_S,
+            )
 
     async def _run_session(
         self,

@@ -213,6 +213,7 @@ async def _check_session_access(
     session_id: str,
     user: dict[str, Any],
     request: Request | None = None,
+    preload_sandbox: bool = True,
 ) -> AgentSession:
     """Verify and lazily load the user's session. Raises 403 or 404."""
     hf_token = resolve_hf_request_token(request) if request is not None else user.get("hf_token")
@@ -221,6 +222,7 @@ async def _check_session_access(
         user["user_id"],
         hf_token=hf_token,
         hf_username=user.get("username"),
+        preload_sandbox=preload_sandbox,
     )
     if not agent_session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -605,7 +607,7 @@ async def teardown_session_sandbox(
     session_id: str, user: dict = Depends(get_current_user)
 ) -> dict:
     """Best-effort sandbox teardown that preserves durable chat history."""
-    await _check_session_access(session_id, user)
+    await _check_session_access(session_id, user, preload_sandbox=False)
     task = asyncio.create_task(session_manager.teardown_sandbox(session_id))
     _background_teardown_tasks.add(task)
     task.add_done_callback(_background_teardown_tasks.discard)
@@ -617,7 +619,7 @@ async def delete_session(
     session_id: str, user: dict = Depends(get_current_user)
 ) -> dict:
     """Delete a session. Only accessible by the session owner."""
-    await _check_session_access(session_id, user)
+    await _check_session_access(session_id, user, preload_sandbox=False)
     success = await session_manager.delete_session(session_id)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")

@@ -120,6 +120,49 @@ async def _seed_trackio_dashboard_safe(session: Any, space_id: str) -> None:
         _log(f"trackio dashboard seed failed: {e}")
 
 
+async def _update_persisted_sandbox_fields(session: Any, **fields: Any) -> None:
+    """Best-effort update of sandbox metadata on the durable session record."""
+    store = getattr(session, "persistence_store", None)
+    session_id = getattr(session, "session_id", None)
+    if not (store and session_id and hasattr(store, "update_session_fields")):
+        return
+    try:
+        await store.update_session_fields(session_id, **fields)
+    except Exception as e:
+        logger.warning("Failed to persist sandbox metadata for %s: %s", session_id, e)
+
+
+async def _persist_active_sandbox(
+    session: Any,
+    sandbox: Sandbox,
+    *,
+    hardware: str,
+) -> None:
+    space_id = getattr(sandbox, "space_id", None)
+    if not space_id:
+        return
+    owner = space_id.split("/", 1)[0] if "/" in space_id else None
+    await _update_persisted_sandbox_fields(
+        session,
+        sandbox_space_id=space_id,
+        sandbox_hardware=hardware,
+        sandbox_owner=owner,
+        sandbox_created_at=datetime.now(timezone.utc),
+        sandbox_status="active",
+    )
+
+
+async def _clear_persisted_sandbox(session: Any) -> None:
+    await _update_persisted_sandbox_fields(
+        session,
+        sandbox_space_id=None,
+        sandbox_hardware=None,
+        sandbox_owner=None,
+        sandbox_created_at=None,
+        sandbox_status="destroyed",
+    )
+
+
 # ── Tool name mapping (short agent names → Sandbox client names) ──────
 
 
@@ -313,6 +356,7 @@ async def _create_sandbox_locked(
     session.sandbox = sb
     session.sandbox_hardware = hardware
     session.sandbox_preload_error = None
+    await _persist_active_sandbox(session, sb, hardware=hardware)
 
     # Telemetry: sandbox creation (infra consumption signal)
     from agent.core import telemetry
@@ -448,28 +492,38 @@ async def teardown_session_sandbox(session: Any) -> None:
     session.sandbox = None
     session.sandbox_hardware = None
 
-    if not (sandbox and getattr(sandbox, "_owns_space", False)):
+    if not sandbox:
         return
 
-    space_id = getattr(sandbox, "space_id", None)
-    last_err: Exception | None = None
-    for attempt in range(3):
-        try:
-            logger.info("Deleting sandbox %s (attempt %s/3)...", space_id, attempt + 1)
-            await asyncio.to_thread(sandbox.delete)
-            from agent.core import telemetry
-            await telemetry.record_sandbox_destroy(session, sandbox)
+    try:
+        if not getattr(sandbox, "_owns_space", False):
             return
-        except Exception as e:
-            last_err = e
-            if attempt < 2:
-                await asyncio.sleep(2 ** attempt)
-    logger.error(
-        "Failed to delete sandbox %s after 3 attempts: %s. "
-        "Orphan — sweep script will pick it up.",
-        space_id,
-        last_err,
-    )
+
+        space_id = getattr(sandbox, "space_id", None)
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                logger.info(
+                    "Deleting sandbox %s (attempt %s/3)...",
+                    space_id,
+                    attempt + 1,
+                )
+                await asyncio.to_thread(sandbox.delete)
+                from agent.core import telemetry
+                await telemetry.record_sandbox_destroy(session, sandbox)
+                return
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+        logger.error(
+            "Failed to delete sandbox %s after 3 attempts: %s. "
+            "Orphan — sweep script will pick it up.",
+            space_id,
+            last_err,
+        )
+    finally:
+        await _clear_persisted_sandbox(session)
 
 
 # ── sandbox_create tool ──────────────────────────────────────────────
