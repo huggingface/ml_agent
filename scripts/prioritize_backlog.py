@@ -41,7 +41,7 @@ DEFAULT_MAX_COMMENTS = 8
 DEFAULT_MAX_REVIEW_COMMENTS = 8
 DEFAULT_MAX_BODY_CHARS = 6000
 DEFAULT_MAX_COMMENT_CHARS = 1500
-DEFAULT_MAX_OUTPUT_TOKENS = 4096
+DEFAULT_MAX_OUTPUT_TOKENS = 12000
 
 logger = logging.getLogger("prioritize_backlog")
 
@@ -700,7 +700,12 @@ def _synthesis_messages(
                 "implementation plan. Cluster duplicates and related requests. "
                 "Keep features and fixes separate. If an open PR addresses a "
                 "high-impact item, recommend review/merge/fix-forward instead "
-                "of reimplementation. Return JSON matching this schema:\n"
+                "of reimplementation. Keep the output concise: at most 8 "
+                "highest_impact_next items, 12 features, 12 fixes, 6 other "
+                "items, and 12 clusters. Keep strings short enough for a PM "
+                "scan. If the output budget is tight, omit lower-priority "
+                "entries but return a complete JSON object. Return JSON "
+                "matching this schema:\n"
                 f"{json.dumps(schema, indent=2)}\n\n"
                 "Source index:\n"
                 f"{json.dumps(source_index, ensure_ascii=False, indent=2)}\n\n"
@@ -744,6 +749,13 @@ def _response_content(response: Any) -> str:
     return choice.message.content or ""
 
 
+def _temperature_for_params(llm_params: dict[str, Any]) -> float:
+    # Anthropic requires temperature=1 when adaptive/extended thinking is active.
+    if llm_params.get("thinking") or llm_params.get("output_config"):
+        return 1.0
+    return 0.2
+
+
 async def _call_json_llm(
     messages: list[dict[str, str]],
     llm_params: dict[str, Any],
@@ -763,7 +775,7 @@ async def _call_json_llm(
         response = await completion_func(
             messages=attempt_messages,
             max_completion_tokens=max_completion_tokens,
-            temperature=0.2,
+            temperature=_temperature_for_params(llm_params),
             **llm_params,
         )
         content = _response_content(response)
@@ -894,7 +906,7 @@ async def synthesize_ranking(
         llm_params,
         completion_func=completion_func,
         max_completion_tokens=max_completion_tokens,
-        retries=1,
+        retries=2,
     )
     ranking = _normalize_ranking(payload)
     ranking["classifications"] = classifications

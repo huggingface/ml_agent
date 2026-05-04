@@ -244,6 +244,26 @@ async def test_call_json_llm_retries_after_invalid_json():
     assert "previous response was not valid JSON" in calls[1]["messages"][-1]["content"]
 
 
+@pytest.mark.asyncio
+async def test_call_json_llm_uses_temperature_one_for_thinking_params():
+    mod = _load()
+    calls = []
+
+    async def fake_completion(**kwargs):
+        calls.append(kwargs)
+        return {"choices": [{"message": {"content": '{"ok": true}'}}]}
+
+    result = await mod._call_json_llm(
+        [{"role": "user", "content": "return json"}],
+        {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}},
+        completion_func=fake_completion,
+        retries=0,
+    )
+
+    assert result == {"ok": True}
+    assert calls[0]["temperature"] == 1.0
+
+
 def test_render_markdown_report_from_sample_ranking():
     mod = _load()
     records = [
