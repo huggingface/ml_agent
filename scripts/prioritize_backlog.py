@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,8 @@ DEFAULT_MAX_REVIEW_COMMENTS = 8
 DEFAULT_MAX_BODY_CHARS = 6000
 DEFAULT_MAX_COMMENT_CHARS = 1500
 DEFAULT_MAX_OUTPUT_TOKENS = 12000
+DEFAULT_RESOLUTION_REF = "main"
+DEFAULT_RESOLUTION_LOG_COMMITS = 500
 
 logger = logging.getLogger("prioritize_backlog")
 
@@ -53,11 +56,14 @@ priority list. Optimize for:
 - evidence of repeated demand or engagement
 - recency and severity
 - PR readiness and whether an open PR should be reviewed/merged/fixed forward
+- resolved-in-main signals from the local codebase check
 - implementation effort, risk, and strategic fit for ML Intern
 
 Separate user-facing features from bug fixes. Treat open PRs as possible
 ready-made implementations rather than duplicate feature requests. Every
 recommendation must cite source ids and/or source URLs from the input.
+If an item has a high-confidence resolved-in-main signal, recommend closure
+instead of implementation.
 
 Return valid JSON only. Do not use Markdown fences.
 """
@@ -118,6 +124,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS
+    )
+    ap.add_argument(
+        "--resolution-ref",
+        default=DEFAULT_RESOLUTION_REF,
+        help="Git ref used to check whether open items are already resolved.",
+    )
+    ap.add_argument(
+        "--resolution-log-commits",
+        type=int,
+        default=DEFAULT_RESOLUTION_LOG_COMMITS,
+        help="Number of commits on --resolution-ref to scan for closure signals.",
+    )
+    ap.add_argument(
+        "--skip-resolution-check",
+        action="store_true",
+        help="Skip local resolved-in-main checks before the LLM pass.",
+    )
+    ap.add_argument(
+        "--skip-pr-patch-check",
+        action="store_true",
+        help="Skip PR patch-id comparison against --resolution-ref history.",
     )
     ap.add_argument(
         "--reasoning-effort",
@@ -359,7 +386,11 @@ def _normalize_github_pr(
             "draft": pr_details.get("draft"),
             "mergeable_state": pr_details.get("mergeable_state"),
             "base": base.get("ref"),
+            "base_sha": base.get("sha"),
             "head": head.get("ref"),
+            "head_sha": head.get("sha"),
+            "patch_url": pr_details.get("patch_url"),
+            "diff_url": pr_details.get("diff_url"),
             "commits": pr_details.get("commits"),
             "additions": pr_details.get("additions"),
             "deletions": pr_details.get("deletions"),
@@ -597,6 +628,380 @@ def collect_sources(
     return [*github_records, *hf_records]
 
 
+def _git(
+    args: list[str],
+    *,
+    repo_root: Path = PROJECT_ROOT,
+    input_text: str | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        input=input_text,
+        text=True,
+        capture_output=True,
+        check=check,
+    )
+
+
+def _git_ref_sha(ref: str, *, repo_root: Path = PROJECT_ROOT) -> str:
+    return _git(["rev-parse", "--verify", ref], repo_root=repo_root).stdout.strip()
+
+
+def _git_log_entries(
+    ref: str,
+    *,
+    repo_root: Path = PROJECT_ROOT,
+    max_commits: int = DEFAULT_RESOLUTION_LOG_COMMITS,
+) -> list[dict[str, str]]:
+    fmt = "%H%x1f%s%x1f%b%x1e"
+    output = _git(
+        ["log", f"--max-count={max_commits}", f"--format={fmt}", ref],
+        repo_root=repo_root,
+    ).stdout
+    entries: list[dict[str, str]] = []
+    for raw in output.strip("\x1e\n").split("\x1e"):
+        if not raw.strip():
+            continue
+        parts = raw.strip("\n").split("\x1f", 2)
+        if len(parts) != 3:
+            continue
+        commit, subject, body = parts
+        entries.append({"commit": commit.strip(), "subject": subject, "body": body})
+    return entries
+
+
+def _git_patch_ids_for_ref(
+    ref: str,
+    *,
+    repo_root: Path = PROJECT_ROOT,
+    max_commits: int = DEFAULT_RESOLUTION_LOG_COMMITS,
+) -> dict[str, str]:
+    log = _git(
+        ["log", "--patch", f"--max-count={max_commits}", "--format=medium", ref],
+        repo_root=repo_root,
+    )
+    patch_ids = _git(
+        ["patch-id", "--stable"],
+        repo_root=repo_root,
+        input_text=log.stdout,
+        check=False,
+    )
+    out: dict[str, str] = {}
+    for line in patch_ids.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            out[parts[0]] = parts[1]
+    return out
+
+
+def _patch_id_for_text(
+    patch_text: str,
+    *,
+    repo_root: Path = PROJECT_ROOT,
+) -> str | None:
+    result = _git(
+        ["patch-id", "--stable"],
+        repo_root=repo_root,
+        input_text=patch_text,
+        check=False,
+    )
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if parts:
+            return parts[0]
+    return None
+
+
+def _record_text_for_refs(record: dict[str, Any]) -> str:
+    pieces = [
+        str(record.get("id") or ""),
+        str(record.get("url") or ""),
+        str(record.get("title") or ""),
+        str(record.get("body") or ""),
+    ]
+    for comment in record.get("comments") or []:
+        pieces.append(str(comment.get("url") or ""))
+        pieces.append(str(comment.get("body") or ""))
+    return "\n".join(pieces)
+
+
+def _repo_regex(repo: str) -> str:
+    return re.escape(repo).replace("/", r"[/]")
+
+
+def _commit_text(commit: dict[str, str]) -> str:
+    return f"{commit.get('subject', '')}\n{commit.get('body', '')}"
+
+
+def _commit_evidence(
+    commit: dict[str, str],
+    detail: str,
+) -> dict[str, str]:
+    return {
+        "kind": "commit",
+        "commit": commit.get("commit", "")[:12],
+        "subject": commit.get("subject", ""),
+        "detail": detail,
+    }
+
+
+def _record_evidence(record: dict[str, Any], detail: str) -> dict[str, str]:
+    return {
+        "kind": "source_link",
+        "source_id": str(record.get("id") or ""),
+        "title": str(record.get("title") or ""),
+        "detail": detail,
+    }
+
+
+def _commit_mentions_pr(
+    text: str,
+    pr_number: int,
+    *,
+    github_repo: str,
+) -> bool:
+    repo = _repo_regex(github_repo)
+    patterns = [
+        rf"\(#{pr_number}\)",
+        rf"\bPR\s*#{pr_number}\b",
+        rf"\bpull\s+request\s*#{pr_number}\b",
+        rf"\bpull\s*/\s*{pr_number}\b",
+        rf"github\.com[:/]{repo}/pull/{pr_number}\b",
+    ]
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _commit_closes_record(
+    text: str,
+    record: dict[str, Any],
+    *,
+    github_repo: str,
+) -> bool:
+    source = record.get("source")
+    number = record.get("number")
+    if not isinstance(number, int):
+        return False
+    close = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+    repo = _repo_regex(github_repo)
+    if source == "github_issue":
+        patterns = [
+            rf"\b{close}\s+(?:{repo})?#\s*{number}\b",
+            rf"\b{close}\s+https://github\.com[:/]{repo}/issues/{number}\b",
+        ]
+        return any(
+            re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns
+        )
+    if source == "hf_discussion":
+        url = re.escape(str(record.get("url") or ""))
+        return bool(url and re.search(rf"\b{close}\b.*{url}", text, re.IGNORECASE))
+    return False
+
+
+def _linked_pr_numbers(text: str, *, github_repo: str) -> set[int]:
+    repo = _repo_regex(github_repo)
+    patterns = [
+        rf"github\.com[:/]{repo}/pull/(\d+)\b",
+        r"\bPR\s*#(\d+)\b",
+        r"\bpull\s+request\s*#(\d+)\b",
+    ]
+    numbers: set[int] = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            numbers.add(int(match.group(1)))
+    return numbers
+
+
+def _new_resolution(checked_ref: str, checked_sha: str) -> dict[str, Any]:
+    return {
+        "checked_ref": checked_ref,
+        "checked_sha": checked_sha,
+        "status": "unresolved",
+        "can_close": False,
+        "confidence": 0.0,
+        "reasons": [],
+        "evidence": [],
+    }
+
+
+def _mark_resolution(
+    resolution: dict[str, Any],
+    *,
+    status: str,
+    confidence: float,
+    reason: str,
+    evidence: list[dict[str, Any]],
+) -> None:
+    if confidence < float(resolution.get("confidence") or 0):
+        return
+    resolution["status"] = status
+    resolution["can_close"] = status in {"resolved", "likely_resolved"}
+    resolution["confidence"] = confidence
+    resolution["reasons"] = [reason]
+    resolution["evidence"] = evidence
+
+
+def apply_resolution_checks(
+    records: list[dict[str, Any]],
+    *,
+    checked_ref: str,
+    checked_sha: str,
+    commits: list[dict[str, str]],
+    github_repo: str,
+    pr_patch_matches: dict[int, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    pr_patch_matches = pr_patch_matches or {}
+    resolved_prs: dict[int, list[dict[str, Any]]] = {}
+    direct_closures: dict[str, list[dict[str, Any]]] = {}
+
+    for commit in commits:
+        text = _commit_text(commit)
+        for record in records:
+            source_id = str(record.get("id") or "")
+            number = record.get("number")
+            if record.get("source") == "github_pr" and isinstance(number, int):
+                if _commit_mentions_pr(text, number, github_repo=github_repo):
+                    resolved_prs.setdefault(number, []).append(
+                        _commit_evidence(commit, f"main history references PR #{number}")
+                    )
+            elif _commit_closes_record(text, record, github_repo=github_repo):
+                direct_closures.setdefault(source_id, []).append(
+                    _commit_evidence(commit, "main history contains a closing reference")
+                )
+
+    for pr_number, evidence in pr_patch_matches.items():
+        resolved_prs.setdefault(pr_number, []).append(evidence)
+
+    checked: list[dict[str, Any]] = []
+    for record in records:
+        out = dict(record)
+        resolution = _new_resolution(checked_ref, checked_sha)
+        source_id = str(record.get("id") or "")
+        number = record.get("number")
+
+        if record.get("source") == "github_pr" and isinstance(number, int):
+            if evidences := resolved_prs.get(number):
+                has_patch = any(ev.get("kind") == "patch_id" for ev in evidences)
+                _mark_resolution(
+                    resolution,
+                    status="resolved",
+                    confidence=0.98 if has_patch else 0.95,
+                    reason=f"PR #{number} appears to already be present on {checked_ref}.",
+                    evidence=evidences,
+                )
+        elif evidences := direct_closures.get(source_id):
+            _mark_resolution(
+                resolution,
+                status="likely_resolved",
+                confidence=0.9,
+                reason=f"{source_id} has a closing reference in {checked_ref} history.",
+                evidence=evidences,
+            )
+        else:
+            linked = sorted(
+                _linked_pr_numbers(_record_text_for_refs(record), github_repo=github_repo)
+                & set(resolved_prs)
+            )
+            if linked:
+                evidences = [
+                    _record_evidence(
+                        record,
+                        "source text links to PR(s) already present on main: "
+                        + ", ".join(f"#{num}" for num in linked),
+                    )
+                ]
+                for pr_number in linked:
+                    evidences.extend(resolved_prs[pr_number])
+                _mark_resolution(
+                    resolution,
+                    status="likely_resolved",
+                    confidence=0.85,
+                    reason=(
+                        f"{source_id} links to PR(s) already present on {checked_ref}: "
+                        + ", ".join(f"#{num}" for num in linked)
+                    ),
+                    evidence=evidences,
+                )
+
+        out["resolution"] = resolution
+        checked.append(out)
+    return checked
+
+
+def _fetch_pr_patch_matches(
+    records: list[dict[str, Any]],
+    *,
+    github_token: str | None,
+    main_patch_ids: dict[str, str],
+    client: Any | None = None,
+) -> dict[int, dict[str, Any]]:
+    if not main_patch_ids:
+        return {}
+
+    headers = _github_headers(github_token)
+    headers["Accept"] = "application/vnd.github.patch"
+    close_client = client is None
+    if client is None:
+        client = httpx.Client(timeout=30.0, follow_redirects=True)
+
+    matches: dict[int, dict[str, Any]] = {}
+    try:
+        for record in records:
+            if record.get("source") != "github_pr":
+                continue
+            number = record.get("number")
+            patch_url = (record.get("metadata") or {}).get("patch_url")
+            if not isinstance(number, int) or not patch_url:
+                continue
+            try:
+                response = client.get(patch_url, headers=headers)
+                _raise_for_status(response)
+                patch_id = _patch_id_for_text(response.text)
+            except Exception as exc:
+                logger.debug("patch-id check failed for PR #%s: %s", number, exc)
+                continue
+            if patch_id and patch_id in main_patch_ids:
+                matches[number] = {
+                    "kind": "patch_id",
+                    "patch_id": patch_id,
+                    "commit": main_patch_ids[patch_id][:12],
+                    "detail": "PR patch-id matches a commit already in main history",
+                }
+    finally:
+        if close_client and hasattr(client, "close"):
+            client.close()
+    return matches
+
+
+def add_resolution_checks(
+    records: list[dict[str, Any]],
+    *,
+    checked_ref: str = DEFAULT_RESOLUTION_REF,
+    github_repo: str = DEFAULT_GITHUB_REPO,
+    github_token: str | None = None,
+    max_commits: int = DEFAULT_RESOLUTION_LOG_COMMITS,
+    include_patch_check: bool = True,
+) -> list[dict[str, Any]]:
+    checked_sha = _git_ref_sha(checked_ref)
+    commits = _git_log_entries(checked_ref, max_commits=max_commits)
+    pr_patch_matches: dict[int, dict[str, Any]] = {}
+    if include_patch_check:
+        main_patch_ids = _git_patch_ids_for_ref(checked_ref, max_commits=max_commits)
+        pr_patch_matches = _fetch_pr_patch_matches(
+            records,
+            github_token=github_token,
+            main_patch_ids=main_patch_ids,
+        )
+    return apply_resolution_checks(
+        records,
+        checked_ref=checked_ref,
+        checked_sha=checked_sha,
+        commits=commits,
+        github_repo=github_repo,
+        pr_patch_matches=pr_patch_matches,
+    )
+
+
 def _record_for_llm(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": record.get("id"),
@@ -612,6 +1017,7 @@ def _record_for_llm(record: dict[str, Any]) -> dict[str, Any]:
         "updated_at": record.get("updated_at"),
         "engagement": record.get("engagement") or {},
         "metadata": record.get("metadata") or {},
+        "resolution": record.get("resolution") or {},
         "comments": record.get("comments") or [],
     }
 
@@ -627,6 +1033,8 @@ def _classification_messages(batch: list[dict[str, Any]]) -> list[dict[str, str]
                 "confidence": "number 0-1",
                 "user_problem": "one sentence",
                 "recommended_action": "one sentence",
+                "resolved_in_main": "yes | no | uncertain",
+                "close_recommendation": "if resolved, why it can be closed",
                 "evidence": ["short evidence strings tied to source content"],
                 "related_source_ids": ["optional related source ids"],
             }
@@ -638,6 +1046,8 @@ def _classification_messages(batch: list[dict[str, Any]]) -> list[dict[str, str]
             "role": "user",
             "content": (
                 "Classify each backlog item. Use only the provided evidence. "
+                "Pay special attention to each item's resolution field, which "
+                "contains deterministic checks against the local main commit. "
                 "Return JSON matching this schema:\n"
                 f"{json.dumps(schema, indent=2)}\n\n"
                 "Backlog items:\n"
@@ -659,6 +1069,7 @@ def _synthesis_messages(
             "title": record.get("title"),
             "labels": record.get("labels") or [],
             "metadata": record.get("metadata") or {},
+            "resolution": record.get("resolution") or {},
         }
         for record in records
     ]
@@ -681,6 +1092,16 @@ def _synthesis_messages(
         ],
         "features": [],
         "fixes": [],
+        "can_be_closed": [
+            {
+                "title": "item title",
+                "source_ids": ["source ids"],
+                "source_urls": ["source URLs"],
+                "reason": "why main already resolves it",
+                "confidence": "number 0-1",
+                "close_action": "specific closure action",
+            }
+        ],
         "other": [],
         "clusters": [
             {
@@ -700,12 +1121,15 @@ def _synthesis_messages(
                 "implementation plan. Cluster duplicates and related requests. "
                 "Keep features and fixes separate. If an open PR addresses a "
                 "high-impact item, recommend review/merge/fix-forward instead "
-                "of reimplementation. Keep the output concise: at most 8 "
-                "highest_impact_next items, 12 features, 12 fixes, 6 other "
-                "items, and 12 clusters. Keep strings short enough for a PM "
-                "scan. If the output budget is tight, omit lower-priority "
-                "entries but return a complete JSON object. Return JSON "
-                "matching this schema:\n"
+                "of reimplementation unless its resolution field says it is "
+                "already present on main. Create can_be_closed entries only "
+                "for items with strong resolved-in-main evidence. "
+                "Keep the output concise: at most 8 highest_impact_next "
+                "items, 12 features, 12 fixes, 12 can_be_closed items, "
+                "6 other items, and 12 clusters. Keep strings short enough "
+                "for a PM scan. If the output budget is tight, omit "
+                "lower-priority entries but return a complete JSON object. "
+                "Return JSON matching this schema:\n"
                 f"{json.dumps(schema, indent=2)}\n\n"
                 "Source index:\n"
                 f"{json.dumps(source_index, ensure_ascii=False, indent=2)}\n\n"
@@ -808,6 +1232,8 @@ def _default_classification(record: dict[str, Any]) -> dict[str, Any]:
         "confidence": 0,
         "user_problem": "No model classification returned.",
         "recommended_action": "Triage manually.",
+        "resolved_in_main": "uncertain",
+        "close_recommendation": "",
         "evidence": [],
         "related_source_ids": [],
     }
@@ -832,6 +1258,8 @@ def _normalize_classifications(
         item.setdefault("impact_score", 1)
         item.setdefault("effort_score", 3)
         item.setdefault("confidence", 0)
+        item.setdefault("resolved_in_main", "uncertain")
+        item.setdefault("close_recommendation", "")
         item.setdefault("evidence", [])
         item.setdefault("related_source_ids", [])
         item.setdefault("source_url", record.get("url"))
@@ -875,6 +1303,7 @@ def _empty_ranking() -> dict[str, Any]:
         "highest_impact_next": [],
         "features": [],
         "fixes": [],
+        "can_be_closed": [],
         "other": [],
         "clusters": [],
         "classifications": [],
@@ -884,7 +1313,14 @@ def _empty_ranking() -> dict[str, Any]:
 def _normalize_ranking(payload: Any) -> dict[str, Any]:
     ranking = dict(payload) if isinstance(payload, dict) else {}
     ranking.setdefault("summary", "")
-    for key in ("highest_impact_next", "features", "fixes", "other", "clusters"):
+    for key in (
+        "highest_impact_next",
+        "features",
+        "fixes",
+        "can_be_closed",
+        "other",
+        "clusters",
+    ):
         if not isinstance(ranking.get(key), list):
             ranking[key] = []
     return ranking
@@ -976,6 +1412,91 @@ def _score_text(item: dict[str, Any]) -> str:
     return ", ".join(bits)
 
 
+def _local_can_be_closed(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for record in records:
+        resolution = record.get("resolution") or {}
+        if not resolution.get("can_close"):
+            continue
+        source_id = record.get("id")
+        if not source_id:
+            continue
+        checked_ref = resolution.get("checked_ref") or DEFAULT_RESOLUTION_REF
+        checked_sha = str(resolution.get("checked_sha") or "")[:12]
+        source = str(record.get("source") or "item").replace("_", " ")
+        if record.get("source") == "github_pr":
+            action = (
+                f"Close the PR as already present on {checked_ref}"
+                + (f" ({checked_sha})" if checked_sha else "")
+                + " after maintainer confirmation."
+            )
+        else:
+            action = (
+                f"Close the {source} as resolved on {checked_ref}"
+                + (f" ({checked_sha})" if checked_sha else "")
+                + " after maintainer confirmation."
+            )
+        items.append(
+            {
+                "title": record.get("title") or str(source_id),
+                "source_ids": [source_id],
+                "source_urls": [record.get("url")] if record.get("url") else [],
+                "reason": "; ".join(resolution.get("reasons") or [])
+                or "Local main contains a high-confidence resolution signal.",
+                "confidence": resolution.get("confidence", 0),
+                "close_action": action,
+            }
+        )
+    return items
+
+
+def merge_can_be_closed(
+    ranking: dict[str, Any],
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    merged = dict(ranking)
+    existing = [
+        item for item in merged.get("can_be_closed") or [] if isinstance(item, dict)
+    ]
+    seen = {
+        tuple(sorted(str(source_id) for source_id in item.get("source_ids") or []))
+        for item in existing
+    }
+    for item in _local_can_be_closed(records):
+        key = tuple(sorted(str(source_id) for source_id in item.get("source_ids") or []))
+        if key in seen:
+            continue
+        existing.append(item)
+        seen.add(key)
+    existing.sort(key=lambda item: float(item.get("confidence") or 0), reverse=True)
+    merged["can_be_closed"] = existing
+    return merged
+
+
+def _render_can_be_closed(
+    items: list[dict[str, Any]],
+    records_by_id: dict[str, dict[str, Any]],
+) -> list[str]:
+    lines = ["## Can Be Closed"]
+    if not items:
+        lines.append("")
+        lines.append("No high-confidence resolved-in-main candidates found.")
+        return lines
+
+    for index, item in enumerate(items, start=1):
+        title = item.get("title") or "Untitled"
+        confidence = item.get("confidence")
+        suffix = f" (confidence {confidence})" if confidence is not None else ""
+        lines.append("")
+        lines.append(f"{index}. **{title}**{suffix}")
+        if item.get("reason"):
+            lines.append(f"   - Reason: {item['reason']}")
+        if item.get("close_action"):
+            lines.append(f"   - Close action: {item['close_action']}")
+        lines.append(f"   - Sources: {_source_links(item, records_by_id)}")
+    return lines
+
+
 def _render_recommendations(
     title: str,
     items: list[dict[str, Any]],
@@ -1031,6 +1552,11 @@ def render_markdown_report(
     lines.append("## Summary")
     lines.append("")
     lines.append(ranking.get("summary") or "No summary returned.")
+    lines.append("")
+
+    lines.extend(
+        _render_can_be_closed(ranking.get("can_be_closed") or [], records_by_id)
+    )
     lines.append("")
 
     lines.extend(
@@ -1109,6 +1635,23 @@ async def async_main(argv: list[str] | None = None) -> int:
         max_comment_chars=args.max_comment_chars,
     )
     logger.info("Collected %d backlog items", len(sources))
+    if not args.skip_resolution_check:
+        logger.info(
+            "Checking whether open items are already resolved on %s",
+            args.resolution_ref,
+        )
+        sources = add_resolution_checks(
+            sources,
+            checked_ref=args.resolution_ref,
+            github_repo=args.github_repo,
+            github_token=github_token,
+            max_commits=args.resolution_log_commits,
+            include_patch_check=not args.skip_pr_patch_check,
+        )
+        can_close = sum(
+            1 for record in sources if (record.get("resolution") or {}).get("can_close")
+        )
+        logger.info("Found %d resolved-in-main closure candidates", can_close)
 
     generated_at = utc_now().isoformat()
     ranking = await prioritize_records(
@@ -1118,6 +1661,7 @@ async def async_main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         max_completion_tokens=args.max_output_tokens,
     )
+    ranking = merge_can_be_closed(ranking, sources)
     ranking["generated_at"] = generated_at
     ranking["model"] = model
     ranking["source_counts"] = {

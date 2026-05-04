@@ -17,9 +17,10 @@ def _load():
 
 
 class FakeResponse:
-    def __init__(self, data, headers=None):
+    def __init__(self, data, headers=None, text=None):
         self._data = data
         self.headers = headers or {}
+        self.text = text if text is not None else ""
 
     def json(self):
         return self._data
@@ -222,6 +223,120 @@ def test_hf_discussion_event_normalization():
     assert record["engagement"]["comments_count"] == 2
 
 
+def test_resolution_check_marks_pr_and_linked_issue_as_closable():
+    mod = _load()
+    records = [
+        {
+            "id": "github_pr#2",
+            "source": "github_pr",
+            "number": 2,
+            "url": "https://github.com/owner/repo/pull/2",
+            "title": "Fix login",
+            "body": "Fixes the login flow.",
+            "comments": [],
+        },
+        {
+            "id": "github_issue#1",
+            "source": "github_issue",
+            "number": 1,
+            "url": "https://github.com/owner/repo/issues/1",
+            "title": "Login broken",
+            "body": "Fixed by PR #2.",
+            "comments": [],
+        },
+        {
+            "id": "github_issue#3",
+            "source": "github_issue",
+            "number": 3,
+            "url": "https://github.com/owner/repo/issues/3",
+            "title": "Direct issue",
+            "body": "",
+            "comments": [],
+        },
+    ]
+    commits = [
+        {
+            "commit": "abcdef1234567890",
+            "subject": "Fix login flow (#2)",
+            "body": "Also fixes #3",
+        }
+    ]
+
+    checked = mod.apply_resolution_checks(
+        records,
+        checked_ref="main",
+        checked_sha="abcdef1234567890",
+        commits=commits,
+        github_repo="owner/repo",
+    )
+
+    by_id = {record["id"]: record for record in checked}
+    assert by_id["github_pr#2"]["resolution"]["can_close"] is True
+    assert by_id["github_pr#2"]["resolution"]["status"] == "resolved"
+    assert by_id["github_issue#1"]["resolution"]["can_close"] is True
+    assert by_id["github_issue#1"]["resolution"]["status"] == "likely_resolved"
+    assert by_id["github_issue#3"]["resolution"]["can_close"] is True
+
+
+def test_merge_can_be_closed_adds_local_resolution_candidates():
+    mod = _load()
+    records = [
+        {
+            "id": "github_pr#2",
+            "source": "github_pr",
+            "url": "https://github.com/owner/repo/pull/2",
+            "title": "Fix login",
+            "resolution": {
+                "checked_ref": "main",
+                "checked_sha": "abcdef1234567890",
+                "status": "resolved",
+                "can_close": True,
+                "confidence": 0.95,
+                "reasons": ["PR #2 appears to already be present on main."],
+                "evidence": [],
+            },
+        }
+    ]
+
+    ranking = mod.merge_can_be_closed({"summary": "x"}, records)
+
+    assert ranking["can_be_closed"][0]["source_ids"] == ["github_pr#2"]
+    assert "already be present" in ranking["can_be_closed"][0]["reason"]
+
+
+def test_fetch_pr_patch_matches_uses_patch_id(monkeypatch):
+    mod = _load()
+    records = [
+        {
+            "id": "github_pr#2",
+            "source": "github_pr",
+            "number": 2,
+            "metadata": {"patch_url": "https://api.github.test/pr/2.patch"},
+        }
+    ]
+
+    class PatchClient:
+        def close(self):
+            return None
+
+        def get(self, url, headers=None):
+            assert url == "https://api.github.test/pr/2.patch"
+            assert headers["Accept"] == "application/vnd.github.patch"
+            return FakeResponse({}, text="diff --git a/a b/a")
+
+    monkeypatch.setattr(mod, "_patch_id_for_text", lambda _text: "patch-id")
+
+    matches = mod._fetch_pr_patch_matches(
+        records,
+        github_token=None,
+        main_patch_ids={"patch-id": "abcdef1234567890"},
+        client=PatchClient(),
+    )
+
+    assert matches[2]["kind"] == "patch_id"
+    assert matches[2]["commit"] == "abcdef123456"
+
+
 @pytest.mark.asyncio
 async def test_call_json_llm_retries_after_invalid_json():
     mod = _load()
@@ -282,6 +397,15 @@ def test_render_markdown_report_from_sample_ranking():
     ]
     ranking = {
         "summary": "Fix login first.",
+        "can_be_closed": [
+            {
+                "title": "Fix login",
+                "source_ids": ["github_pr#2"],
+                "reason": "PR already landed on main.",
+                "confidence": 0.95,
+                "close_action": "Close duplicate PR.",
+            }
+        ],
         "highest_impact_next": [
             {
                 "title": "Unblock login",
@@ -307,6 +431,8 @@ def test_render_markdown_report_from_sample_ranking():
     )
 
     assert "# ML Intern Backlog Prioritization" in report
+    assert "## Can Be Closed" in report
+    assert "PR already landed on main." in report
     assert "## Highest Impact Next" in report
     assert "[github_issue#1](https://github.com/owner/repo/issues/1)" in report
     assert "Review and merge the existing PR." in report
@@ -322,6 +448,7 @@ def test_cli_defaults_without_live_network_or_llm():
     assert args.github_repo == "huggingface/ml-intern"
     assert args.hf_space == "smolagents/ml-intern"
     assert args.config == "configs/cli_agent_config.json"
+    assert args.resolution_ref == "main"
     assert args.output_dir is None
     assert out.name == "20260504T123000Z"
     assert "scratch/backlog-prioritization" in str(out)
