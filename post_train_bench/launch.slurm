@@ -41,7 +41,7 @@ set -x
 cd "$REPO_ROOT"
 
 readarray -t ROW < <(
-    python - "$MATRIX_FILE" "$SLURM_ARRAY_TASK_ID" <<'PY'
+    python3 - "$MATRIX_FILE" "$SLURM_ARRAY_TASK_ID" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -77,7 +77,7 @@ NUM_HOURS="${ROW[2]}"
 EVAL_LIMIT="${ROW[3]}"
 
 PTB_SLURM_NAME="$(
-    python - "$ML_INTERN_AGENT_MODEL" "$MODEL_TO_TRAIN" "$BENCHMARK" <<'PY'
+    python3 - "$ML_INTERN_AGENT_MODEL" "$MODEL_TO_TRAIN" "$BENCHMARK" <<'PY'
 import os
 import re
 import sys

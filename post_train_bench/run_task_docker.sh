@@ -26,7 +26,23 @@ EVAL_DOCKER_IMAGE="${POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE:-registry.hpc-cluster-ho
 SEED_HF_CACHE="${POST_TRAIN_BENCH_SEED_HF_CACHE:-/fsx/lewis/post_train_bench/seed_hf_cache}"
 PROMPT_AGENT="${POST_TRAIN_BENCH_PROMPT_AGENT:-claude}"
 
-DURATION_MINUTES="$(python - "$NUM_HOURS" <<'PY'
+truthy_env() {
+    case "${1,,}" in
+        1|true|yes|on) echo 1 ;;
+        *) echo 0 ;;
+    esac
+}
+
+REPROMPT="$(truthy_env "${POST_TRAIN_BENCH_REPROMPT:-0}")"
+REPROMPT_MIN_MINUTES="${POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES:-30}"
+METHOD_SUFFIX=""
+if [ "$REPROMPT" = "1" ]; then
+    METHOD_SUFFIX="_reprompt"
+fi
+export POST_TRAIN_BENCH_REPROMPT="$REPROMPT"
+export POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES="$REPROMPT_MIN_MINUTES"
+
+DURATION_MINUTES="$(python3 - "$NUM_HOURS" <<'PY'
 import math
 import sys
 print(max(1, math.ceil(float(sys.argv[1]) * 60)))
@@ -36,7 +52,7 @@ DURATION_SECONDS="$((DURATION_MINUTES * 60))"
 SOLVE_TIMEOUT_SECONDS="${POST_TRAIN_BENCH_FORCE_SOLVE_TIMEOUT_SECONDS:-$DURATION_SECONDS}"
 
 safe_name() {
-    python - "$1" <<'PY'
+    python3 - "$1" <<'PY'
 import sys
 print(sys.argv[1].replace("/", "_").replace(":", "_").replace("[", "_").replace("]", "_"))
 PY
@@ -44,7 +60,7 @@ PY
 
 MODEL_SAFE="$(safe_name "$MODEL_TO_TRAIN")"
 AGENT_SAFE="$(safe_name "$ML_INTERN_AGENT_MODEL")"
-METHOD_DIR="ml_intern_${AGENT_SAFE}_${NUM_HOURS}h"
+METHOD_DIR="ml_intern_${AGENT_SAFE}_${NUM_HOURS}h${METHOD_SUFFIX}"
 EVAL_DIR="${RUN_ROOT}/results/${METHOD_DIR}/${BENCHMARK}_${MODEL_SAFE}_${TASK_RUN_ID}"
 TMP_BASE="${SLURM_TMPDIR:-/scratch/${USER:-user}}"
 TMP_SUBDIR="${TMP_BASE}/ml_intern_ptb_${BENCHMARK}_${MODEL_SAFE}_${TASK_RUN_ID}_$$"
@@ -124,6 +140,9 @@ echo "eval_limit=$EVAL_LIMIT"
 echo "solve_docker_image=$SOLVE_DOCKER_IMAGE"
 echo "eval_docker_image=$EVAL_DOCKER_IMAGE"
 echo "baseline_final_model=${POST_TRAIN_BENCH_BASELINE_FINAL_MODEL:-0}"
+echo "reprompt=$REPROMPT"
+echo "reprompt_min_minutes=$REPROMPT_MIN_MINUTES"
+echo "method_dir=$METHOD_DIR"
 echo "seed_hf_cache=$SEED_HF_CACHE"
 echo "solve_hf_cache=$SOLVE_HF_CACHE"
 echo "eval_hf_cache=$EVAL_HF_CACHE"
@@ -137,7 +156,7 @@ cp -r "$PTB_DIR/src/eval/templates" "$JOB_DIR/task/"
 if [ -d "$PTB_DIR/src/eval/tasks/${BENCHMARK}/task_context" ]; then
     cp -r "$PTB_DIR/src/eval/tasks/${BENCHMARK}/task_context/." "$JOB_DIR/task/"
 fi
-python "$TRUSTED_INTEGRITY" snapshot-protected-files \
+python3 "$TRUSTED_INTEGRITY" snapshot-protected-files \
     --task-dir "$JOB_DIR/task" \
     --output "$EVAL_DIR/protected_files_manifest.json"
 
@@ -145,7 +164,7 @@ BENCHMARK_NAME="$(cat "$PTB_DIR/src/eval/tasks/${BENCHMARK}/benchmark.txt")"
 PROMPT="$(
     cd "$PTB_DIR"
     POST_TRAIN_BENCH_PROMPT="${POST_TRAIN_BENCH_PROMPT:-prompt}" \
-        python src/eval/general/get_prompt.py \
+        python3 src/eval/general/get_prompt.py \
             --model-to-train "$MODEL_TO_TRAIN" \
             --benchmark-id "$BENCHMARK" \
             --num-hours "$NUM_HOURS" \
@@ -187,7 +206,7 @@ case "$ML_INTERN_AGENT_MODEL" in
     openai/*|gpt-*|o1*|o3*|o4*|o5*) SOLVE_PROVIDER_ENV=",OPENAI_API_KEY" ;;
     google/*|gemini*) SOLVE_PROVIDER_ENV=",GEMINI_API_KEY" ;;
 esac
-SOLVE_CONTAINER_ENV="POST_TRAIN_BENCH_SOLVE_HF_TOKEN,HUGGING_FACE_HUB_READ_TOKEN,POST_TRAIN_BENCH_TAMPER_EVALUATE${SOLVE_PROVIDER_ENV},ML_INTERN_AGENT_MODEL,PROMPT,TRACKIO_PROJECT,TRACKIO_SPACE_ID"
+SOLVE_CONTAINER_ENV="POST_TRAIN_BENCH_SOLVE_HF_TOKEN,HUGGING_FACE_HUB_READ_TOKEN,POST_TRAIN_BENCH_TAMPER_EVALUATE,POST_TRAIN_BENCH_REPROMPT,POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES${SOLVE_PROVIDER_ENV},ML_INTERN_AGENT_MODEL,PROMPT,TRACKIO_PROJECT,TRACKIO_SPACE_ID"
 JUDGE_CONTAINER_ENV="OPENAI_API_KEY,PTB_JUDGE_MODEL"
 EVAL_CONTAINER_ENV="HF_TOKEN,HUGGING_FACE_HUB_TOKEN,OPENAI_API_KEY,INFERENCE_TOKEN,HF_BILL_TO"
 
@@ -276,14 +295,14 @@ FINALIZED=0
 SECRET_SCAN_FAILED=0
 
 write_integrity_status() {
-    python "$TRUSTED_INTEGRITY" write-status \
+    python3 "$TRUSTED_INTEGRITY" write-status \
         --status "$1" \
         --reason "$2" \
         --output "$EVAL_DIR/integrity_status.json"
 }
 
 snapshot_evidence() {
-    python "$TRUSTED_INTEGRITY" snapshot-evidence \
+    python3 "$TRUSTED_INTEGRITY" snapshot-evidence \
         --task-dir "$JOB_DIR/task" \
         --eval-dir "$EVAL_DIR" \
         --output "$EVAL_DIR/evidence_snapshot.json"
@@ -305,7 +324,7 @@ finalize_run() {
     fi
     FINALIZED=1
     snapshot_evidence || true
-    if ! python "$TRUSTED_INTEGRITY" scan-secrets \
+    if ! python3 "$TRUSTED_INTEGRITY" scan-secrets \
         --path "$EVAL_DIR" \
         --output "$EVAL_DIR/secret_scan.json"; then
         SECRET_SCAN_FAILED=1
@@ -314,7 +333,7 @@ finalize_run() {
         fi
         echo "Secret scan found unredacted secrets; see $EVAL_DIR/secret_scan.json" >&2
     fi
-    python "$TRUSTED_COLLECT" \
+    python3 "$TRUSTED_COLLECT" \
         --run-root "$RUN_ROOT" \
         --eval-dir "$EVAL_DIR" \
         --benchmark "$BENCHMARK" \
@@ -407,7 +426,7 @@ fi
 cp "$SOLVE_OUT" "$EVAL_DIR/solve_out.txt"
 cp "$SOLVE_OUT" "$JOB_DIR/task/solve_out.txt"
 printf '%s\n' "$SOLVE_EXIT" > "$EVAL_DIR/solve_exit.txt"
-python - "$START_TS" "$END_TS" "$EVAL_DIR/time_taken.txt" <<'PY'
+python3 - "$START_TS" "$END_TS" "$EVAL_DIR/time_taken.txt" <<'PY'
 import datetime as dt
 import sys
 
@@ -422,7 +441,7 @@ echo "solve_exit=$SOLVE_EXIT"
 
 snapshot_evidence || true
 
-if ! python "$TRUSTED_INTEGRITY" verify-protected-files \
+if ! python3 "$TRUSTED_INTEGRITY" verify-protected-files \
     --task-dir "$JOB_DIR/task" \
     --manifest "$EVAL_DIR/protected_files_manifest.json" \
     --output "$EVAL_DIR/protected_files_check.json"; then
@@ -438,7 +457,7 @@ echo "========================================="
 
 JUDGE_PROMPT="$(
     cd "$PTB_DIR"
-    python src/disallowed_usage_judge/get_judge_prompt.py \
+    python3 src/disallowed_usage_judge/get_judge_prompt.py \
         --benchmark "$BENCHMARK_NAME" \
         --model "$MODEL_TO_TRAIN"
 )"
@@ -464,7 +483,7 @@ for required_judgement in contamination_judgement.txt disallowed_model_judgement
         fail_run 1
     fi
 done
-if ! python "$TRUSTED_INTEGRITY" judge-status \
+if ! python3 "$TRUSTED_INTEGRITY" judge-status \
     --eval-dir "$EVAL_DIR" \
     --output "$EVAL_DIR/integrity_status.json"; then
     fail_run 1 "Integrity judge did not return a clean verdict; see $EVAL_DIR/integrity_status.json"
@@ -478,7 +497,7 @@ validate_final_model() {
     echo "==== VALIDATING FINAL MODEL ===="
     echo "================================"
     set +e
-    python "$TRUSTED_INTEGRITY" precheck-final-model \
+    python3 "$TRUSTED_INTEGRITY" precheck-final-model \
         --model-path "$EVAL_DIR/final_model" \
         --base-model "$MODEL_TO_TRAIN" \
         --output "$EVAL_DIR/final_model_precheck.json"

@@ -232,6 +232,21 @@ def test_runner_does_not_mount_result_into_solve_or_trust_remote_code():
     assert "POST_TRAIN_BENCH_SOLVE_HF_TOKEN" in solve_env_line
 
 
+def test_runner_labels_reprompt_method_variant():
+    runner = (Path(__file__).parents[2] / "post_train_bench" / "run_task_docker.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'METHOD_SUFFIX="_reprompt"' in runner
+    assert 'METHOD_DIR="ml_intern_${AGENT_SAFE}_${NUM_HOURS}h${METHOD_SUFFIX}"' in runner
+    assert 'echo "reprompt=$REPROMPT"' in runner
+    solve_env_line = next(
+        line for line in runner.splitlines() if line.startswith("SOLVE_CONTAINER_ENV=")
+    )
+    assert "POST_TRAIN_BENCH_REPROMPT" in solve_env_line
+    assert "POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES" in solve_env_line
+
+
 def test_agent_config_disables_hub_write_tools():
     config = json.loads(
         (Path(__file__).parents[2] / "post_train_bench" / "ml_intern_config.json").read_text(
@@ -249,8 +264,47 @@ def test_submit_full_mode_requires_clean_provenance():
 
     assert "--allow-dirty" in submit
     assert "--allow-mutable-images" in submit
-    assert "Refusing full mode from a dirty worktree" in submit
+    assert "Refusing full mode from a tracked-dirty worktree" in submit
     assert "Refusing full mode with mutable solve image" in submit
     assert "image_provenance" in submit
     assert "sha256_file" in submit
     assert "POST_TRAIN_BENCH_BASELINE_FINAL_MODEL" in submit
+
+
+def test_submit_supports_validation_and_reprompt_metadata():
+    submit = (Path(__file__).parents[2] / "post_train_bench" / "submit_eval_set.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "validation)" in submit
+    assert '"benchmark": "humaneval"' in submit
+    assert '"benchmark": "bfcl"' in submit
+    assert '"model_to_train": "google/gemma-3-4b-pt"' in submit
+    assert "POST_TRAIN_BENCH_REPROMPT" in submit
+    assert "POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES" in submit
+    assert '"reprompt_enabled"' in submit
+    assert '"method_variant"' in submit
+    assert '"method_suffix"' in submit
+
+
+def test_headless_reprompt_is_explicit_opt_in():
+    main_py = (Path(__file__).parents[2] / "agent" / "main.py").read_text(encoding="utf-8")
+
+    assert 'POST_TRAIN_BENCH_REPROMPT", False' in main_py
+    assert "POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES" in main_py
+    assert "process_headless_turn" in main_py
+    assert "_post_train_bench_reprompt_text" in main_py
+
+
+def test_bash_guidance_does_not_default_to_nohup():
+    local_tools = (Path(__file__).parents[2] / "agent" / "tools" / "local_tools.py").read_text(
+        encoding="utf-8"
+    )
+    sandbox_client = (
+        Path(__file__).parents[2] / "agent" / "tools" / "sandbox_client.py"
+    ).read_text(encoding="utf-8")
+
+    assert "nohup <command>" not in local_tools
+    assert "nohup <command>" not in sandbox_client
+    assert "wait <PID>; echo $?" in local_tools
+    assert "wait <PID>; echo $?" in sandbox_client

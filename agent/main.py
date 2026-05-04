@@ -88,6 +88,38 @@ def _get_hf_user(token: str | None) -> str | None:
         return None
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        print(
+            f"WARNING: invalid {name}={value!r}; using {default}",
+            file=sys.stderr,
+        )
+        return default
+
+
+def _post_train_bench_reprompt_text() -> str:
+    return (
+        "Continue working on the benchmark task. Check the timer and use the "
+        "remaining time productively. Do not end while primary training or "
+        "evaluation is still running in the background; wait for the PID and "
+        "check the exit code. Before your final response, verify that "
+        "`final_model` exists, contains the best available trained checkpoint, "
+        "and can be loaded with Transformers."
+    )
+
+
 async def _prompt_and_save_hf_token(prompt_session: PromptSession) -> str:
     """Prompt user for HF token, validate it, save via huggingface_hub.login(). Loops until valid."""
     from prompt_toolkit.formatted_text import HTML
@@ -1051,6 +1083,8 @@ async def headless_main(
     max_iterations: int | None = None,
     stream: bool = True,
     config_path: str | Path = CLI_CONFIG_PATH,
+    reprompt_enabled: bool | None = None,
+    reprompt_min_minutes: float | None = None,
 ) -> None:
     """Run a single prompt headlessly and exit."""
     import logging
@@ -1077,8 +1111,20 @@ async def headless_main(
     if max_iterations is not None:
         config.max_iterations = max_iterations
 
+    if reprompt_enabled is None:
+        reprompt_enabled = _env_flag("POST_TRAIN_BENCH_REPROMPT", False)
+    if reprompt_min_minutes is None:
+        reprompt_min_minutes = _env_float("POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES", 30.0)
+    reprompt_interval_seconds = max(0.0, reprompt_min_minutes * 60.0)
+
     print(f"Model: {config.model_name}", file=sys.stderr)
     print(f"Max iterations: {config.max_iterations}", file=sys.stderr)
+    print(
+        "Reprompt: "
+        f"{'enabled' if reprompt_enabled else 'disabled'} "
+        f"(min_minutes={reprompt_min_minutes:g})",
+        file=sys.stderr,
+    )
     print(f"Prompt: {prompt}", file=sys.stderr)
     print("---", file=sys.stderr)
 
@@ -1116,127 +1162,151 @@ async def headless_main(
         if event.event_type == "ready":
             break
 
-    # Submit the prompt
-    submission = Submission(
-        id="sub_1",
-        operation=Operation(op_type=OpType.USER_INPUT, data={"text": prompt}),
-    )
-    await submission_queue.put(submission)
-
     # Process events until turn completes. Headless mode is for scripts /
     # log capture: no shimmer animation, no typewriter, no live-redrawing
     # research overlay. Output is plain, append-only text.
     console = _create_rich_console()
     stream_buf = _StreamBuffer(console)
     _hl_last_tool = [None]
-    _hl_sub_id = [1]
+    _hl_sub_id = [0]
     # Research sub-agent tool calls are buffered per agent_id and dumped as
     # a static block once each sub-agent finishes, instead of streaming via
     # the live redrawing SubAgentDisplayManager (which is TTY-only).
     _hl_research_buffers: dict[str, dict] = {}
 
-    while True:
-        event = await event_queue.get()
+    async def submit_headless_turn(text: str) -> float:
+        _hl_sub_id[0] += 1
+        await submission_queue.put(Submission(
+            id=f"sub_{_hl_sub_id[0]}",
+            operation=Operation(op_type=OpType.USER_INPUT, data={"text": text}),
+        ))
+        return time.monotonic()
 
-        if event.event_type == "assistant_chunk":
-            content = event.data.get("content", "") if event.data else ""
-            if content:
-                stream_buf.add_chunk(content)
-                await stream_buf.flush_ready(instant=True)
-        elif event.event_type == "assistant_stream_end":
-            await stream_buf.finish(instant=True)
-        elif event.event_type == "assistant_message":
-            content = event.data.get("content", "") if event.data else ""
-            if content:
-                await print_markdown(content, instant=True)
-        elif event.event_type == "tool_call":
-            stream_buf.discard()
-            tool_name = event.data.get("tool", "") if event.data else ""
-            arguments = event.data.get("arguments", {}) if event.data else {}
-            if tool_name:
-                _hl_last_tool[0] = tool_name
-                if tool_name != "research":
-                    args_str = json.dumps(arguments)[:80]
-                    print_tool_call(tool_name, args_str)
-        elif event.event_type == "tool_output":
-            output = event.data.get("output", "") if event.data else ""
-            success = event.data.get("success", False) if event.data else False
-            if _hl_last_tool[0] == "plan_tool" and output:
-                print_tool_output(output, success, truncate=False)
-        elif event.event_type == "tool_log":
-            tool = event.data.get("tool", "") if event.data else ""
-            log = event.data.get("log", "") if event.data else ""
-            if not log:
-                pass
-            elif tool == "research":
-                # Headless mode: buffer research sub-agent activity per-agent,
-                # then dump each as a static block on completion. The live
-                # SubAgentDisplayManager uses terminal cursor tricks that are
-                # unfit for non-TTY output, but parallel agents still need
-                # distinct output so we key buffers by agent_id.
-                agent_id = event.data.get("agent_id", "") if event.data else ""
-                label = event.data.get("label", "") if event.data else ""
-                aid = agent_id or "research"
-                if log == "Starting research sub-agent...":
-                    _hl_research_buffers[aid] = {
-                        "label": label or "research",
-                        "calls": [],
-                    }
-                elif log == "Research complete.":
-                    buf = _hl_research_buffers.pop(aid, None)
-                    if buf is not None:
-                        f = get_console().file
-                        f.write(f"  \033[38;2;255;200;80m▸ {buf['label']}\033[0m\n")
-                        for call in buf["calls"]:
-                            f.write(f"    \033[2m{call}\033[0m\n")
-                        f.flush()
-                elif log.startswith("tokens:") or log.startswith("tools:"):
-                    pass  # stats updates — only useful for the live display
-                elif aid in _hl_research_buffers:
-                    _hl_research_buffers[aid]["calls"].append(log)
+    async def process_headless_turn() -> str:
+        while True:
+            event = await event_queue.get()
+
+            if event.event_type == "assistant_chunk":
+                content = event.data.get("content", "") if event.data else ""
+                if content:
+                    stream_buf.add_chunk(content)
+                    await stream_buf.flush_ready(instant=True)
+            elif event.event_type == "assistant_stream_end":
+                await stream_buf.finish(instant=True)
+            elif event.event_type == "assistant_message":
+                content = event.data.get("content", "") if event.data else ""
+                if content:
+                    await print_markdown(content, instant=True)
+            elif event.event_type == "tool_call":
+                stream_buf.discard()
+                tool_name = event.data.get("tool", "") if event.data else ""
+                arguments = event.data.get("arguments", {}) if event.data else {}
+                if tool_name:
+                    _hl_last_tool[0] = tool_name
+                    if tool_name != "research":
+                        args_str = json.dumps(arguments)[:80]
+                        print_tool_call(tool_name, args_str)
+            elif event.event_type == "tool_output":
+                output = event.data.get("output", "") if event.data else ""
+                success = event.data.get("success", False) if event.data else False
+                if _hl_last_tool[0] == "plan_tool" and output:
+                    print_tool_output(output, success, truncate=False)
+            elif event.event_type == "tool_log":
+                tool = event.data.get("tool", "") if event.data else ""
+                log = event.data.get("log", "") if event.data else ""
+                if not log:
+                    pass
+                elif tool == "research":
+                    # Headless mode: buffer research sub-agent activity per-agent,
+                    # then dump each as a static block on completion. The live
+                    # SubAgentDisplayManager uses terminal cursor tricks that are
+                    # unfit for non-TTY output, but parallel agents still need
+                    # distinct output so we key buffers by agent_id.
+                    agent_id = event.data.get("agent_id", "") if event.data else ""
+                    label = event.data.get("label", "") if event.data else ""
+                    aid = agent_id or "research"
+                    if log == "Starting research sub-agent...":
+                        _hl_research_buffers[aid] = {
+                            "label": label or "research",
+                            "calls": [],
+                        }
+                    elif log == "Research complete.":
+                        buf = _hl_research_buffers.pop(aid, None)
+                        if buf is not None:
+                            f = get_console().file
+                            f.write(
+                                f"  \033[38;2;255;200;80m▸ {buf['label']}\033[0m\n"
+                            )
+                            for call in buf["calls"]:
+                                f.write(f"    \033[2m{call}\033[0m\n")
+                            f.flush()
+                    elif log.startswith("tokens:") or log.startswith("tools:"):
+                        pass  # stats updates — only useful for the live display
+                    elif aid in _hl_research_buffers:
+                        _hl_research_buffers[aid]["calls"].append(log)
+                    else:
+                        # Orphan event (Start was missed) — fall back to raw print
+                        print_tool_log(tool, log, agent_id=agent_id, label=label)
                 else:
-                    # Orphan event (Start was missed) — fall back to raw print
-                    print_tool_log(tool, log, agent_id=agent_id, label=label)
-            else:
-                print_tool_log(tool, log)
-        elif event.event_type == "approval_required":
-            # Auto-approve everything in headless mode (safety net if yolo_mode
-            # didn't prevent the approval event for some reason)
-            tools_data = event.data.get("tools", []) if event.data else []
-            approvals = [
-                {
-                    "tool_call_id": t.get("tool_call_id", ""),
-                    "approved": True,
-                    "feedback": None,
-                }
-                for t in tools_data
-            ]
-            _hl_sub_id[0] += 1
-            await submission_queue.put(Submission(
-                id=f"hl_approval_{_hl_sub_id[0]}",
-                operation=Operation(
-                    op_type=OpType.EXEC_APPROVAL,
-                    data={"approvals": approvals},
-                ),
-            ))
-        elif event.event_type == "compacted":
-            old_tokens = event.data.get("old_tokens", 0) if event.data else 0
-            new_tokens = event.data.get("new_tokens", 0) if event.data else 0
-            print_compacted(old_tokens, new_tokens)
-        elif event.event_type == "error":
-            stream_buf.discard()
-            error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
-            print_error(error)
+                    print_tool_log(tool, log)
+            elif event.event_type == "approval_required":
+                # Auto-approve everything in headless mode (safety net if yolo_mode
+                # didn't prevent the approval event for some reason)
+                tools_data = event.data.get("tools", []) if event.data else []
+                approvals = [
+                    {
+                        "tool_call_id": t.get("tool_call_id", ""),
+                        "approved": True,
+                        "feedback": None,
+                    }
+                    for t in tools_data
+                ]
+                _hl_sub_id[0] += 1
+                await submission_queue.put(Submission(
+                    id=f"hl_approval_{_hl_sub_id[0]}",
+                    operation=Operation(
+                        op_type=OpType.EXEC_APPROVAL,
+                        data={"approvals": approvals},
+                    ),
+                ))
+            elif event.event_type == "compacted":
+                old_tokens = event.data.get("old_tokens", 0) if event.data else 0
+                new_tokens = event.data.get("new_tokens", 0) if event.data else 0
+                print_compacted(old_tokens, new_tokens)
+            elif event.event_type == "error":
+                stream_buf.discard()
+                error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
+                print_error(error)
+                return event.event_type
+            elif event.event_type in ("turn_complete", "interrupted"):
+                stream_buf.discard()
+                history_size = event.data.get("history_size", "?") if event.data else "?"
+                print(
+                    f"\n--- Agent {event.event_type} (history_size={history_size}) ---",
+                    file=sys.stderr,
+                )
+                if event.event_type == "turn_complete":
+                    session = session_holder[0] if session_holder else None
+                    if session is not None:
+                        await session.send_deferred_turn_complete_notification(event)
+                return event.event_type
+
+    next_prompt = prompt
+    while True:
+        submitted_at = await submit_headless_turn(next_prompt)
+        event_type = await process_headless_turn()
+        if event_type != "turn_complete" or not reprompt_enabled:
             break
-        elif event.event_type in ("turn_complete", "interrupted"):
-            stream_buf.discard()
-            history_size = event.data.get("history_size", "?") if event.data else "?"
-            print(f"\n--- Agent {event.event_type} (history_size={history_size}) ---", file=sys.stderr)
-            if event.event_type == "turn_complete":
-                session = session_holder[0] if session_holder else None
-                if session is not None:
-                    await session.send_deferred_turn_complete_notification(event)
-            break
+
+        elapsed = time.monotonic() - submitted_at
+        sleep_seconds = max(0.0, reprompt_interval_seconds - elapsed)
+        if sleep_seconds > 0:
+            print(
+                f"\n--- Waiting {sleep_seconds / 60.0:.1f} minutes before reprompt ---",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(sleep_seconds)
+        next_prompt = _post_train_bench_reprompt_text()
 
     # Shutdown
     shutdown_submission = Submission(

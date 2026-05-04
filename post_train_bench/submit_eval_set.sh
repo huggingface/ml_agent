@@ -6,10 +6,14 @@ usage() {
 Usage:
   bash post_train_bench/submit_eval_set.sh smoke
 
+  bash post_train_bench/submit_eval_set.sh validation --dry-run
+
   bash post_train_bench/submit_eval_set.sh full --dry-run
 
 Modes:
   smoke  Submit one 10-minute validation job.
+  validation
+         Submit a 4-job artifact-validity matrix with 2-hour solve budgets.
   full   Submit the full 4-model x 7-benchmark matrix. This is documented for manual use.
 
 Options:
@@ -30,11 +34,17 @@ Environment:
   POST_TRAIN_BENCH_PROMPT_AGENT
                                Prompt rendering agent. Default: claude.
   POST_TRAIN_BENCH_SLURM_TIME  Slurm walltime. Default: 01:00:00 for smoke,
+                               03:00:00 for validation,
                                14:00:00 for full.
   POST_TRAIN_BENCH_RUN_ID      Optional explicit run id. Overrides the default
                                YYYY-MM-DD_HH-MM-SS_{slurm_job_id} format.
   POST_TRAIN_BENCH_BASELINE_FINAL_MODEL
-                               Smoke-only fallback. Default: 1 for smoke, 0 for full.
+                               Smoke-only fallback. Default: 1 for smoke,
+                               0 for validation/full.
+  POST_TRAIN_BENCH_REPROMPT    Explicit reprompt method variant. Default: 0.
+  POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES
+                               Minimum minutes between headless continuation prompts.
+                               Default: 30.
 EOF
 }
 
@@ -70,11 +80,18 @@ done
 
 export ML_INTERN_AGENT_MODEL="${ML_INTERN_AGENT_MODEL:-anthropic/claude-opus-4-6}"
 
+truthy_env() {
+    case "${1,,}" in
+        1|true|yes|on) echo 1 ;;
+        *) echo 0 ;;
+    esac
+}
+
 HOST_REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$HOST_REPO_ROOT"
 
-if [ "$MODE" = "full" ] && [ "$DRY_RUN" -ne 1 ] && [ "$ALLOW_DIRTY" -ne 1 ] && [ -n "$(git status --short)" ]; then
-    echo "Refusing full mode from a dirty worktree. Commit or stash changes, or pass --allow-dirty." >&2
+if [ "$MODE" = "full" ] && [ "$DRY_RUN" -ne 1 ] && [ "$ALLOW_DIRTY" -ne 1 ] && [ -n "$(git status --short --untracked-files=no)" ]; then
+    echo "Refusing full mode from a tracked-dirty worktree. Commit or stash changes, or pass --allow-dirty." >&2
     exit 2
 fi
 
@@ -93,6 +110,14 @@ EVAL_DOCKER_IMAGE="${POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE:-registry.hpc-cluster-ho
 SEED_HF_CACHE="${POST_TRAIN_BENCH_SEED_HF_CACHE:-/fsx/lewis/post_train_bench/seed_hf_cache}"
 PROMPT_AGENT="${POST_TRAIN_BENCH_PROMPT_AGENT:-claude}"
 BASELINE_FINAL_MODEL="${POST_TRAIN_BENCH_BASELINE_FINAL_MODEL:-0}"
+REPROMPT="$(truthy_env "${POST_TRAIN_BENCH_REPROMPT:-0}")"
+REPROMPT_MIN_MINUTES="${POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES:-30}"
+METHOD_SUFFIX=""
+if [ "$REPROMPT" = "1" ]; then
+    METHOD_SUFFIX="_reprompt"
+fi
+export POST_TRAIN_BENCH_REPROMPT="$REPROMPT"
+export POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES="$REPROMPT_MIN_MINUTES"
 PTB_SLURM_JOB_ID=""
 
 is_immutable_image() {
@@ -137,7 +162,7 @@ fi
 case "$MODE" in
     smoke)
         BASELINE_FINAL_MODEL="${POST_TRAIN_BENCH_BASELINE_FINAL_MODEL:-1}"
-        python - "$MATRIX_FILE" <<'PY'
+        python3 - "$MATRIX_FILE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -151,8 +176,43 @@ rows = [{
 Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 PY
         ;;
+    validation)
+        python3 - "$MATRIX_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+rows = [
+    {
+        "benchmark": "humaneval",
+        "model_to_train": "Qwen/Qwen3-1.7B-Base",
+        "num_hours": 2,
+        "eval_limit": 8,
+    },
+    {
+        "benchmark": "gsm8k",
+        "model_to_train": "Qwen/Qwen3-1.7B-Base",
+        "num_hours": 2,
+        "eval_limit": 8,
+    },
+    {
+        "benchmark": "bfcl",
+        "model_to_train": "Qwen/Qwen3-1.7B-Base",
+        "num_hours": 2,
+        "eval_limit": 8,
+    },
+    {
+        "benchmark": "gsm8k",
+        "model_to_train": "google/gemma-3-4b-pt",
+        "num_hours": 2,
+        "eval_limit": 8,
+    },
+]
+Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+PY
+        ;;
     full)
-        python - "$MATRIX_FILE" <<'PY'
+        python3 - "$MATRIX_FILE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -192,6 +252,9 @@ case "$MODE" in
     smoke)
         DEFAULT_SLURM_TIME="01:00:00"
         ;;
+    validation)
+        DEFAULT_SLURM_TIME="03:00:00"
+        ;;
     full)
         DEFAULT_SLURM_TIME="14:00:00"
         ;;
@@ -207,8 +270,8 @@ create_source_snapshot() {
 }
 
 write_metadata() {
-    export RUN_ID MODE DOCKER_IMAGE EVAL_DOCKER_IMAGE SEED_HF_CACHE PROMPT_AGENT PTB_DIR MATRIX_FILE MATRIX_COUNT RUN_STAMP PTB_SLURM_JOB_ID SOURCE_SNAPSHOT SLURM_TIME ALLOW_DIRTY ALLOW_MUTABLE_IMAGES BASELINE_FINAL_MODEL
-    python - "$RUN_ROOT/run_metadata.json" <<'PY'
+    export RUN_ID MODE DOCKER_IMAGE EVAL_DOCKER_IMAGE SEED_HF_CACHE PROMPT_AGENT PTB_DIR MATRIX_FILE MATRIX_COUNT RUN_STAMP PTB_SLURM_JOB_ID SOURCE_SNAPSHOT SLURM_TIME ALLOW_DIRTY ALLOW_MUTABLE_IMAGES BASELINE_FINAL_MODEL REPROMPT REPROMPT_MIN_MINUTES METHOD_SUFFIX
+    python3 - "$RUN_ROOT/run_metadata.json" <<'PY'
 import hashlib
 import json
 import os
@@ -239,7 +302,7 @@ def image_metadata(value: str) -> dict:
         payload["mutable"] = True
     return payload
 
-status = git("status", "--short")
+status = git("status", "--short", "--untracked-files=no")
 metadata = {
     "created_at": datetime.now(timezone.utc).isoformat(),
     "run_id": os.environ["RUN_ID"],
@@ -262,6 +325,10 @@ metadata = {
     "allow_dirty": os.environ["ALLOW_DIRTY"] == "1",
     "allow_mutable_images": os.environ["ALLOW_MUTABLE_IMAGES"] == "1",
     "baseline_final_model": os.environ["BASELINE_FINAL_MODEL"] == "1",
+    "reprompt_enabled": os.environ["REPROMPT"] == "1",
+    "reprompt_min_minutes": float(os.environ["REPROMPT_MIN_MINUTES"]),
+    "method_variant": "reprompt" if os.environ["REPROMPT"] == "1" else "standard",
+    "method_suffix": os.environ["METHOD_SUFFIX"],
     "seed_hf_cache": os.environ["SEED_HF_CACHE"],
     "prompt_agent": os.environ["PROMPT_AGENT"],
     "slurm_time": os.environ["SLURM_TIME"],
@@ -272,14 +339,18 @@ metadata = {
 }
 Path(sys.argv[1]).write_text(json.dumps(metadata, indent=2) + "\n")
 PY
-    uv run python - "$RUN_ROOT/env/submit_env.txt" <<'PY'
+    python3 - "$RUN_ROOT/env/submit_env.txt" <<'PY'
+import importlib.util
 import os
 import sys
 from pathlib import Path
 
-from agent.core.redact import scrub_string
+spec = importlib.util.spec_from_file_location("ml_intern_redact", Path("agent/core/redact.py"))
+assert spec is not None and spec.loader is not None
+redact = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(redact)
 
-lines = [scrub_string(f"{key}={value}") for key, value in sorted(os.environ.items())]
+lines = [redact.scrub_string(f"{key}={value}") for key, value in sorted(os.environ.items())]
 Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 }
@@ -292,7 +363,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
         --hold
         "--array=0-$((MATRIX_COUNT - 1))"
         "--time=${SLURM_TIME}"
-        "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE=${EVAL_DOCKER_IMAGE},POST_TRAIN_BENCH_SEED_HF_CACHE=${SEED_HF_CACHE},POST_TRAIN_BENCH_PROMPT_AGENT=${PROMPT_AGENT},POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=${BASELINE_FINAL_MODEL}"
+        "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE=${EVAL_DOCKER_IMAGE},POST_TRAIN_BENCH_SEED_HF_CACHE=${SEED_HF_CACHE},POST_TRAIN_BENCH_PROMPT_AGENT=${PROMPT_AGENT},POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=${BASELINE_FINAL_MODEL},POST_TRAIN_BENCH_REPROMPT=${REPROMPT},POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES=${REPROMPT_MIN_MINUTES}"
         post_train_bench/launch.slurm
     )
     write_metadata
@@ -312,7 +383,7 @@ if [ -n "$EXPLICIT_RUN_ID" ]; then
         --parsable
         "--array=0-$((MATRIX_COUNT - 1))"
         "--time=${SLURM_TIME}"
-        "--export=ALL,RUN_ROOT=${RUN_ROOT},MATRIX_FILE=${MATRIX_FILE},PTB_DIR=${PTB_DIR},REPO_ROOT=${SOURCE_SNAPSHOT},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE=${EVAL_DOCKER_IMAGE},POST_TRAIN_BENCH_SEED_HF_CACHE=${SEED_HF_CACHE},POST_TRAIN_BENCH_PROMPT_AGENT=${PROMPT_AGENT},POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=${BASELINE_FINAL_MODEL},RUN_ID=${RUN_ID}"
+        "--export=ALL,RUN_ROOT=${RUN_ROOT},MATRIX_FILE=${MATRIX_FILE},PTB_DIR=${PTB_DIR},REPO_ROOT=${SOURCE_SNAPSHOT},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE=${EVAL_DOCKER_IMAGE},POST_TRAIN_BENCH_SEED_HF_CACHE=${SEED_HF_CACHE},POST_TRAIN_BENCH_PROMPT_AGENT=${PROMPT_AGENT},POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=${BASELINE_FINAL_MODEL},POST_TRAIN_BENCH_REPROMPT=${REPROMPT},POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES=${REPROMPT_MIN_MINUTES},RUN_ID=${RUN_ID}"
         post_train_bench/launch.slurm
     )
     write_metadata
@@ -334,7 +405,7 @@ SBATCH_CMD=(
     --hold
     "--array=0-$((MATRIX_COUNT - 1))"
     "--time=${SLURM_TIME}"
-    "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE=${EVAL_DOCKER_IMAGE},POST_TRAIN_BENCH_SEED_HF_CACHE=${SEED_HF_CACHE},POST_TRAIN_BENCH_PROMPT_AGENT=${PROMPT_AGENT},POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=${BASELINE_FINAL_MODEL}"
+    "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE=${EVAL_DOCKER_IMAGE},POST_TRAIN_BENCH_SEED_HF_CACHE=${SEED_HF_CACHE},POST_TRAIN_BENCH_PROMPT_AGENT=${PROMPT_AGENT},POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=${BASELINE_FINAL_MODEL},POST_TRAIN_BENCH_REPROMPT=${REPROMPT},POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES=${REPROMPT_MIN_MINUTES}"
     post_train_bench/launch.slurm
 )
 SBATCH_RESULT="$("${SBATCH_CMD[@]}")"

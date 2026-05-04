@@ -116,11 +116,14 @@ async def _bash_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     except subprocess.TimeoutExpired:
         return (
             f"Command timed out after {timeout}s and was killed.\n\n"
-            f"For long-running commands, run in the background and poll:\n"
-            f"  nohup <command> > /tmp/output.log 2>&1 & echo $!\n"
-            f"Then check status with:\n"
+            f"For long-running training/evaluation commands, prefer rerunning "
+            f"with a larger timeout so the command exits in the foreground.\n"
+            f"If backgrounding is necessary, keep the PID and wait for it "
+            f"before finishing:\n"
+            f"  <command> > /tmp/output.log 2>&1 & PID=$!\n"
             f"  kill -0 <PID> 2>/dev/null && echo 'running' || echo 'done'\n"
-            f"  tail -n 50 /tmp/output.log"
+            f"  tail -n 50 /tmp/output.log\n"
+            f"  wait <PID>; echo $?"
         ), False
     except Exception as e:
         return f"bash error: {e}", False
@@ -249,11 +252,14 @@ _LOCAL_TOOL_SPECS = {
             "Chain dependent commands with &&. Independent commands should be "
             "separate bash calls (they can run in parallel).\n"
             "\n"
-            "For long-running commands (training, evaluation), run in the background and poll:\n"
-            "  nohup <command> > /tmp/output.log 2>&1 & echo $!\n"
-            "Then check status:\n"
+            "For long-running commands (training, evaluation), prefer a "
+            "foreground run with an explicit timeout large enough to finish.\n"
+            "If backgrounding is necessary, keep the PID, poll logs, then wait "
+            "for the PID and check the exit code before finishing:\n"
+            "  <command> > /tmp/output.log 2>&1 & PID=$!\n"
             "  kill -0 <PID> 2>/dev/null && echo 'running' || echo 'done'\n"
             "  tail -n 50 /tmp/output.log\n"
+            "  wait <PID>; echo $?\n"
             "\n"
             "Timeout default 120s, max 36000s."
         ),

@@ -80,8 +80,8 @@ export POST_TRAIN_BENCH_SLURM_TIME=00:30:00
 Smoke mode defaults `POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=1`. If the agent
 does not leave a `final_model`, the runner creates a base-model `final_model`
 after the protected-file check so the judge, validation, evaluation, artifact
-collection, and hash reporting paths are still exercised. Full mode defaults
-this fallback off.
+collection, and hash reporting paths are still exercised. Validation and full
+modes default this fallback off.
 
 To check paths and metadata without submitting:
 
@@ -101,6 +101,41 @@ After completion, inspect:
 ```bash
 find post_train_bench/runs/${ML_INTERN_AGENT_MODEL} -maxdepth 4 -type f | sort
 ```
+
+## Artifact Validation Matrix
+
+Before launching the full matrix, run the strict 4-job validation matrix:
+
+```bash
+bash post_train_bench/submit_eval_set.sh validation --dry-run
+bash post_train_bench/submit_eval_set.sh validation
+```
+
+Validation uses 2-hour solve budgets with small eval limits for:
+
+```text
+humaneval + Qwen/Qwen3-1.7B-Base
+gsm8k     + Qwen/Qwen3-1.7B-Base
+bfcl      + Qwen/Qwen3-1.7B-Base
+gsm8k     + google/gemma-3-4b-pt
+```
+
+`POST_TRAIN_BENCH_BASELINE_FINAL_MODEL` defaults to `0` in validation mode.
+Treat the run as an artifact-validity gate: inspect `final_model_precheck.json`
+and require at least 3 of 4 clean `final_model` prechecks before a full
+non-reprompt Claude run.
+
+Reprompting is an explicit method variant and is off by default:
+
+```bash
+export POST_TRAIN_BENCH_REPROMPT=1
+export POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES=30
+bash post_train_bench/submit_eval_set.sh validation
+```
+
+Reprompted runs write under method directories with a `_reprompt` suffix and
+record `reprompt_enabled`, `reprompt_min_minutes`, and `method_variant` in
+`run_metadata.json`. Compare them only against other reprompted-method runs.
 
 ## Run Layout
 
@@ -161,7 +196,8 @@ tree -L 5 post_train_bench/runs/${ML_INTERN_AGENT_MODEL}/{RUN_ID}
 
 ## Full Matrix
 
-Do not run this until the smoke test succeeds. This command submits the full
+Do not run this until smoke succeeds and the strict validation matrix has at
+least 3 of 4 clean `final_model` prechecks. This command submits the full
 4-model x 7-benchmark matrix with 10 agent hours per job:
 
 ```bash
