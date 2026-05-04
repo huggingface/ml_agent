@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Integrity checks used by the PostTrainBench Slurm runner."""
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
