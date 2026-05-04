@@ -100,9 +100,9 @@ def _available_models() -> list[dict[str, Any]]:
             "tier": "free",
         },
         {
-            "id": "zai-org/GLM-5.1",
+            "id": "zai/glm-5.1",
             "label": "GLM 5.1",
-            "provider": "huggingface",
+            "provider": "zai",
             "tier": "free",
         },
         {

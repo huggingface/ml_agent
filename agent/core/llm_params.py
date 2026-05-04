@@ -5,12 +5,26 @@ can import it without pulling in the whole agent loop / tool router and
 creating circular imports.
 """
 
+import os
+
 from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
+
+
+ZAI_API_BASE = "https://api.z.ai/api/paas/v4/"
 
 
 def _resolve_hf_router_token(session_hf_token: str | None = None) -> str | None:
     """Backward-compatible private wrapper used by tests and older imports."""
     return resolve_hf_router_token(session_hf_token)
+
+
+def _resolve_zai_api_key() -> str | None:
+    """Resolve the API key for Z.AI's OpenAI-compatible endpoint."""
+    for env_name in ("ZAI_API_KEY", "ZHIPUAI_API_KEY", "GLM_API_KEY"):
+        value = os.environ.get(env_name)
+        if value and value.strip():
+            return value.strip()
+    return None
 
 
 def _patch_litellm_effort_validation() -> None:
@@ -79,12 +93,14 @@ _patch_litellm_effort_validation()
 # Effort levels accepted on the wire.
 #   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
 #   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
+#   Z.AI direct:       thinking.enabled                  (no effort granularity)
 #   HF router:         low | medium | high                 (extra_body.reasoning_effort)
 #
 # We validate *shape* here and let the probe cascade walk down on rejection;
 # we deliberately do NOT maintain a per-model capability table.
 _ANTHROPIC_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _OPENAI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+_ZAI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"}
 _HF_EFFORTS = {"low", "medium", "high"}
 
 
@@ -120,6 +136,13 @@ def _resolve_llm_params(
 
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
+
+    • ``zai/<model>`` — Z.AI's OpenAI-compatible endpoint. LiteLLM uses the
+      OpenAI adapter with ``api_base=https://api.z.ai/api/paas/v4/`` and
+      ``ZAI_API_KEY`` (fallbacks: ``ZHIPUAI_API_KEY``, ``GLM_API_KEY``).
+      Reasoning effort is mapped to Z.AI's ``thinking={"type": "enabled"}``
+      body shape because the API exposes thinking as a mode, not an effort
+      ladder.
 
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
@@ -185,6 +208,28 @@ def _resolve_llm_params(
                     )
             else:
                 params["reasoning_effort"] = reasoning_effort
+        return params
+
+    if model_name.startswith("zai/"):
+        api_key = _resolve_zai_api_key()
+        if not api_key:
+            raise ValueError(
+                "Missing ZAI_API_KEY for Z.AI model. Set ZAI_API_KEY "
+                "(or legacy ZHIPUAI_API_KEY / GLM_API_KEY)."
+            )
+        params = {
+            "model": f"openai/{model_name.removeprefix('zai/')}",
+            "api_base": ZAI_API_BASE,
+            "api_key": api_key,
+        }
+        if reasoning_effort:
+            if reasoning_effort not in _ZAI_EFFORTS:
+                if strict:
+                    raise UnsupportedEffortError(
+                        f"Z.AI doesn't accept effort={reasoning_effort!r}"
+                    )
+            else:
+                params["extra_body"] = {"thinking": {"type": "enabled"}}
         return params
 
     hf_model = model_name.removeprefix("huggingface/")

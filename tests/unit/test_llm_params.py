@@ -1,5 +1,6 @@
 from agent.core.hf_tokens import resolve_hf_request_token
 from agent.core.llm_params import (
+    ZAI_API_BASE,
     UnsupportedEffortError,
     _resolve_hf_router_token,
     _resolve_llm_params,
@@ -28,6 +29,58 @@ def test_openai_max_effort_is_still_rejected():
         assert "OpenAI doesn't accept effort='max'" in str(exc)
     else:
         raise AssertionError("Expected UnsupportedEffortError for max effort")
+
+
+def test_zai_params_use_openai_compatible_endpoint(monkeypatch):
+    monkeypatch.setenv("ZAI_API_KEY", " zai-key ")
+
+    params = _resolve_llm_params("zai/glm-5.1")
+
+    assert params == {
+        "model": "openai/glm-5.1",
+        "api_base": ZAI_API_BASE,
+        "api_key": "zai-key",
+    }
+
+
+def test_zai_params_map_effort_to_thinking(monkeypatch):
+    monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+
+    params = _resolve_llm_params(
+        "zai/glm-5.1",
+        reasoning_effort="max",
+        strict=True,
+    )
+
+    assert params["model"] == "openai/glm-5.1"
+    assert params["api_base"] == ZAI_API_BASE
+    assert params["api_key"] == "zai-key"
+    assert params["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert "reasoning_effort" not in params
+
+
+def test_zai_key_falls_back_to_legacy_glm_env(monkeypatch):
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.delenv("ZHIPUAI_API_KEY", raising=False)
+    monkeypatch.setenv("GLM_API_KEY", "glm-key")
+
+    params = _resolve_llm_params("zai/glm-5.1")
+
+    assert params["api_key"] == "glm-key"
+
+
+def test_zai_params_require_dedicated_api_key(monkeypatch):
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.delenv("ZHIPUAI_API_KEY", raising=False)
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    try:
+        _resolve_llm_params("zai/glm-5.1")
+    except ValueError as exc:
+        assert "Missing ZAI_API_KEY" in str(exc)
+    else:
+        raise AssertionError("Expected missing Z.AI key to fail explicitly")
 
 
 def test_hf_router_token_prefers_inference_token(monkeypatch):

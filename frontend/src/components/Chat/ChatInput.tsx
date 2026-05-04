@@ -66,8 +66,8 @@ const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
   {
     id: 'glm-5.1',
     name: 'GLM 5.1',
-    description: 'Together',
-    modelPath: 'zai-org/GLM-5.1',
+    description: 'Z.AI',
+    modelPath: 'zai/glm-5.1',
     avatarUrl: getHfAvatarUrl('zai-org/GLM-5.1'),
   },
   {
