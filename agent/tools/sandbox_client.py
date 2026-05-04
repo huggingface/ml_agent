@@ -66,6 +66,7 @@ WAIT_TIMEOUT = 600
 WAIT_INTERVAL = 5
 API_WAIT_TIMEOUT = 180
 HARDWARE_REQUEST_TIMEOUT = 60
+CPU_BASIC_HARDWARE = "cpu-basic"
 
 
 def _is_transient_space_visibility_error(error: Exception) -> bool:
@@ -678,18 +679,22 @@ class Sandbox:
 
         _check_cancel()
 
-        # Some template duplicates can initially inherit the template hardware.
-        # Explicitly request the target tier so automatic CPU sandboxes never
-        # silently come up on GPU hardware.
-        _request_space_hardware_with_retry(
-            api,
-            space_id,
-            hardware=hardware,
-            sleep_time=sleep_time,
-            log=_log,
-            check_cancel=_check_cancel,
-        )
-        _log(f"Requested hardware: {hardware}")
+        # ``duplicate_space`` already receives the target hardware. The extra
+        # /hardware call is useful for paid tiers, but hosted OAuth tokens can
+        # 401 on that endpoint for a fresh private Space even after duplication
+        # succeeds. Avoid the redundant call for default CPU sandboxes.
+        if hardware == CPU_BASIC_HARDWARE and sleep_time is None:
+            _log(f"Using duplicated Space hardware: {hardware}")
+        else:
+            _request_space_hardware_with_retry(
+                api,
+                space_id,
+                hardware=hardware,
+                sleep_time=sleep_time,
+                log=_log,
+                check_cancel=_check_cancel,
+            )
+            _log(f"Requested hardware: {hardware}")
 
         # Inject secrets BEFORE uploading server files (which triggers rebuild).
         # Secrets added after a Space is running aren't available until restart,
