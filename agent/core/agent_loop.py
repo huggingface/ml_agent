@@ -516,19 +516,56 @@ def _friendly_error_message(error: Exception) -> str | None:
 
 
 async def _compact_and_notify(session: Session) -> None:
-    """Run compaction and send event if context was reduced."""
+    """Run compaction and send event if context was reduced.
+
+    Catches ``CompactionFailedError`` and ends the session cleanly instead
+    of letting the caller retry. Pre-2026-05-04 the caller looped on
+    ContextWindowExceededError → compact → re-trigger, burning Bedrock
+    budget at ~$3/Opus retry while the session never reached the upload
+    path (so the cost was invisible in the dataset).
+    """
+    from agent.context_manager.manager import CompactionFailedError
+
     cm = session.context_manager
     old_usage = cm.running_context_usage
     logger.debug(
         "Compaction check: usage=%d, max=%d, threshold=%d, needs_compact=%s",
         old_usage, cm.model_max_tokens, cm.compaction_threshold, cm.needs_compaction,
     )
-    await cm.compact(
-        model_name=session.config.model_name,
-        tool_specs=session.tool_router.get_tool_specs_for_llm(),
-        hf_token=session.hf_token,
-        session=session,
-    )
+    try:
+        await cm.compact(
+            model_name=session.config.model_name,
+            tool_specs=session.tool_router.get_tool_specs_for_llm(),
+            hf_token=session.hf_token,
+            session=session,
+        )
+    except CompactionFailedError as e:
+        logger.error(
+            "Compaction failed for session %s: %s — terminating session",
+            session.session_id, e,
+        )
+        # Persist the failure event so the dataset has a record of WHY this
+        # session ended (and the cost it incurred up to that point) even if
+        # save_and_upload_detached has issues downstream.
+        await session.send_event(Event(
+            event_type="session_terminated",
+            data={
+                "reason": "compaction_failed",
+                "context_usage": cm.running_context_usage,
+                "context_threshold": cm.compaction_threshold,
+                "error": str(e)[:300],
+                "user_message": (
+                    "Your conversation has grown too large to continue. "
+                    "The work you've done is saved — start a new session to keep going."
+                ),
+            },
+        ))
+        # Stop the agent loop; the finally in _run_session will fire
+        # cleanup_sandbox + save_trajectory so the dataset captures
+        # everything that did happen.
+        session.is_running = False
+        return
+
     new_usage = cm.running_context_usage
     if new_usage != old_usage:
         logger.warning(
@@ -1035,8 +1072,15 @@ class Handlers:
             if session.is_cancelled:
                 break
 
-            # Compact before calling the LLM if context is near the limit
+            # Compact before calling the LLM if context is near the limit.
+            # When _compact_and_notify catches CompactionFailedError it sets
+            # session.is_running = False; we MUST exit the loop here, otherwise
+            # the LLM call below fires with an over-threshold context, hits
+            # ContextWindowExceededError, and we end up looping again on the
+            # except path — exactly the bug this PR is supposed to fix.
             await _compact_and_notify(session)
+            if not session.is_running:
+                break
 
             # Doom-loop detection: break out of repeated tool call patterns
             doom_prompt = check_for_doom_loop(session.context_manager.items)
@@ -1421,7 +1465,7 @@ class Handlers:
                 iteration += 1
 
             except ContextWindowExceededError:
-                # Force compact and retry this iteration
+                # Force compact and retry this iteration.
                 cm = session.context_manager
                 logger.warning(
                     "ContextWindowExceededError at iteration %d — forcing compaction "
@@ -1430,6 +1474,12 @@ class Handlers:
                 )
                 cm.running_context_usage = cm.model_max_tokens + 1
                 await _compact_and_notify(session)
+                # Same guard as the top of the loop: if compaction couldn't
+                # bring us under threshold, _compact_and_notify has already
+                # emitted session_terminated and set is_running=False. Continue
+                # would just re-call the LLM with the same too-big context.
+                if not session.is_running:
+                    break
                 continue
 
             except Exception as e:
