@@ -43,7 +43,8 @@ def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     Sandbox.create(owner="alice", token="hf-token", log=lambda msg: None)
 
     assert duplicate_kwargs["private"] is True
-    assert requested_hardware == [(duplicate_kwargs["to_id"], "cpu-basic", None)]
+    assert duplicate_kwargs["hardware"] == "cpu-basic"
+    assert requested_hardware == []
 
 
 def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
@@ -124,7 +125,7 @@ def test_sandbox_client_retries_transient_hardware_401(monkeypatch):
             pass
 
         def get_space_runtime(self, space_id):
-            return SimpleNamespace(stage="RUNNING", hardware="cpu-basic")
+            return SimpleNamespace(stage="RUNNING", hardware="t4-small")
 
     monkeypatch.setattr(sandbox_client, "HfApi", FakeApi)
     monkeypatch.setattr(sandbox_client.time, "sleep", lambda seconds: None)
@@ -135,7 +136,12 @@ def test_sandbox_client_retries_transient_hardware_401(monkeypatch):
     )
     monkeypatch.setattr(Sandbox, "_wait_for_api", lambda self, *args, **kwargs: None)
 
-    sandbox = Sandbox.create(owner="alice", token="hf-token", log=logs.append)
+    sandbox = Sandbox.create(
+        owner="alice",
+        token="hf-token",
+        hardware="t4-small",
+        log=logs.append,
+    )
 
     assert sandbox.space_id.startswith("alice/sandbox-")
     assert hardware_calls == 2
