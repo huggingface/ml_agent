@@ -1,0 +1,307 @@
+import importlib.util
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+def _load():
+    path = Path(__file__).parent.parent.parent / "scripts" / "prioritize_backlog.py"
+    spec = importlib.util.spec_from_file_location("prioritize_backlog", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["prioritize_backlog"] = mod
+    spec.loader.exec_module(mod)  # type: ignore
+    return mod
+
+
+class FakeResponse:
+    def __init__(self, data, headers=None):
+        self._data = data
+        self.headers = headers or {}
+
+    def json(self):
+        return self._data
+
+    def raise_for_status(self):
+        return None
+
+
+class FakeGitHubClient:
+    def __init__(self):
+        self.requests = []
+
+    def get(self, url, headers=None, params=None):
+        self.requests.append((url, params or {}))
+        page = (params or {}).get("page")
+
+        if url == "https://api.github.com/repos/owner/repo/issues":
+            if page == 1:
+                return FakeResponse(
+                    [
+                        {
+                            "number": 1,
+                            "html_url": "https://github.com/owner/repo/issues/1",
+                            "title": "Issue one",
+                            "body": "broken",
+                            "labels": [{"name": "bug"}],
+                            "user": {"login": "alice"},
+                            "state": "open",
+                            "created_at": "2026-05-01T00:00:00Z",
+                            "updated_at": "2026-05-02T00:00:00Z",
+                            "comments": 1,
+                            "comments_url": "https://api.github.test/issues/1/comments",
+                        },
+                        {
+                            "number": 2,
+                            "html_url": "https://github.com/owner/repo/pull/2",
+                            "title": "PR two",
+                            "body": "adds feature",
+                            "labels": [{"name": "enhancement"}],
+                            "user": {"login": "bob"},
+                            "state": "open",
+                            "created_at": "2026-05-01T00:00:00Z",
+                            "updated_at": "2026-05-02T00:00:00Z",
+                            "comments": 0,
+                            "comments_url": "https://api.github.test/issues/2/comments",
+                            "pull_request": {"url": "https://api.github.test/pulls/2"},
+                        },
+                    ],
+                    headers={"link": '<https://api.github.test?page=2>; rel="next"'},
+                )
+            return FakeResponse(
+                [
+                    {
+                        "number": 3,
+                        "html_url": "https://github.com/owner/repo/issues/3",
+                        "title": "Issue three",
+                        "body": "request",
+                        "labels": [],
+                        "user": {"login": "carol"},
+                        "state": "open",
+                        "created_at": "2026-05-03T00:00:00Z",
+                        "updated_at": "2026-05-03T00:00:00Z",
+                        "comments": 0,
+                        "comments_url": "https://api.github.test/issues/3/comments",
+                    }
+                ]
+            )
+
+        if url.endswith("/comments") and "/pulls/" not in url:
+            return FakeResponse(
+                [
+                    {
+                        "body": "comment",
+                        "user": {"login": "dana"},
+                        "created_at": "2026-05-02T00:00:00Z",
+                        "html_url": "https://github.com/comment",
+                    }
+                ]
+            )
+
+        if url == "https://api.github.com/repos/owner/repo/pulls/2":
+            return FakeResponse(
+                {
+                    "number": 2,
+                    "html_url": "https://github.com/owner/repo/pull/2",
+                    "title": "PR two",
+                    "body": "adds feature",
+                    "user": {"login": "bob"},
+                    "state": "open",
+                    "draft": False,
+                    "base": {"ref": "main"},
+                    "head": {"ref": "feature"},
+                    "commits": 2,
+                    "additions": 10,
+                    "deletions": 3,
+                    "changed_files": 2,
+                    "review_comments": 0,
+                }
+            )
+
+        if url in {
+            "https://api.github.com/repos/owner/repo/pulls/2/comments",
+            "https://api.github.com/repos/owner/repo/pulls/2/reviews",
+        }:
+            return FakeResponse([])
+
+        raise AssertionError(f"unexpected URL: {url}")
+
+
+def test_github_pagination_and_issue_pr_splitting():
+    mod = _load()
+    records = mod.collect_github_sources("owner/repo", client=FakeGitHubClient())
+
+    assert [record["id"] for record in records] == [
+        "github_issue#1",
+        "github_pr#2",
+        "github_issue#3",
+    ]
+    assert records[0]["source"] == "github_issue"
+    assert records[1]["source"] == "github_pr"
+    assert records[1]["metadata"]["base"] == "main"
+
+
+def test_github_comment_cap_and_truncation():
+    mod = _load()
+
+    class CommentClient:
+        def get(self, url, headers=None, params=None):
+            assert url == "https://api.github.test/comments"
+            return FakeResponse(
+                [
+                    {"body": "abcdef", "user": {"login": "one"}},
+                    {"body": "second", "user": {"login": "two"}},
+                ],
+                headers={"link": '<https://api.github.test/comments?page=2>; rel="next"'},
+            )
+
+    comments = mod._fetch_github_comments(
+        CommentClient(),
+        "https://api.github.test/comments",
+        {},
+        max_comments=1,
+        max_comment_chars=5,
+    )
+
+    assert len(comments) == 1
+    assert comments[0]["author"] == "one"
+    assert comments[0]["body"].endswith("[truncated]")
+
+
+def test_hf_discussion_event_normalization():
+    mod = _load()
+    discussion = SimpleNamespace(
+        num=7,
+        repo_id="smolagents/ml-intern",
+        repo_type="space",
+        title="Space fails",
+        status="open",
+        author="alice",
+        created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    details = SimpleNamespace(
+        title="Space fails",
+        status="open",
+        events=[
+            SimpleNamespace(
+                type="comment",
+                content="Initial report",
+                hidden=False,
+                author="alice",
+                created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            ),
+            SimpleNamespace(
+                type="comment",
+                content="Hidden moderation",
+                hidden=True,
+                author="mod",
+                created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            ),
+            SimpleNamespace(
+                type="comment",
+                content="Maintainer reply",
+                hidden=False,
+                author="bob",
+                created_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+            ),
+            SimpleNamespace(type="status-change", new_status="open"),
+        ],
+    )
+
+    record = mod.normalize_hf_discussion(discussion, details)
+
+    assert record["id"] == "hf_discussion#7"
+    assert record["url"] == (
+        "https://huggingface.co/spaces/smolagents/ml-intern/discussions/7"
+    )
+    assert record["body"] == "Initial report"
+    assert len(record["comments"]) == 1
+    assert record["comments"][0]["body"] == "Maintainer reply"
+    assert record["engagement"]["comments_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_call_json_llm_retries_after_invalid_json():
+    mod = _load()
+    calls = []
+
+    async def fake_completion(**kwargs):
+        calls.append(kwargs)
+        content = "not json" if len(calls) == 1 else '{"ok": true}'
+        return {"choices": [{"message": {"content": content}}]}
+
+    result = await mod._call_json_llm(
+        [{"role": "user", "content": "return json"}],
+        {},
+        completion_func=fake_completion,
+        retries=1,
+    )
+
+    assert result == {"ok": True}
+    assert len(calls) == 2
+    assert "previous response was not valid JSON" in calls[1]["messages"][-1]["content"]
+
+
+def test_render_markdown_report_from_sample_ranking():
+    mod = _load()
+    records = [
+        {
+            "id": "github_issue#1",
+            "source": "github_issue",
+            "url": "https://github.com/owner/repo/issues/1",
+            "title": "Broken login",
+        },
+        {
+            "id": "github_pr#2",
+            "source": "github_pr",
+            "url": "https://github.com/owner/repo/pull/2",
+            "title": "Fix login",
+        },
+    ]
+    ranking = {
+        "summary": "Fix login first.",
+        "highest_impact_next": [
+            {
+                "title": "Unblock login",
+                "category": "fix",
+                "recommendation": "Review and merge the existing PR.",
+                "impact_score": 5,
+                "effort_score": 1,
+                "confidence": 0.9,
+                "source_ids": ["github_issue#1", "github_pr#2"],
+                "rationale": "It blocks onboarding.",
+                "next_action": "Review PR #2.",
+            }
+        ],
+        "features": [],
+        "fixes": [],
+    }
+
+    report = mod.render_markdown_report(
+        ranking,
+        records,
+        generated_at="2026-05-04T10:00:00+00:00",
+        model="openai/gpt-5.5",
+    )
+
+    assert "# ML Intern Backlog Prioritization" in report
+    assert "## Highest Impact Next" in report
+    assert "[github_issue#1](https://github.com/owner/repo/issues/1)" in report
+    assert "Review and merge the existing PR." in report
+
+
+def test_cli_defaults_without_live_network_or_llm():
+    mod = _load()
+    args = mod.parse_args([])
+    out = mod.resolve_output_dir(
+        None, now=datetime(2026, 5, 4, 12, 30, tzinfo=timezone.utc)
+    )
+
+    assert args.github_repo == "huggingface/ml-intern"
+    assert args.hf_space == "smolagents/ml-intern"
+    assert args.config == "configs/cli_agent_config.json"
+    assert args.output_dir is None
+    assert out.name == "20260504T123000Z"
+    assert "scratch/backlog-prioritization" in str(out)
