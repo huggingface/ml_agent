@@ -15,7 +15,11 @@ import httpx
 from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
 
-from agent.core.hf_access import JobsAccessError, is_billing_error, resolve_jobs_namespace
+from agent.core.hf_access import (
+    JobsAccessError,
+    is_billing_error,
+    resolve_jobs_namespace,
+)
 from agent.core.session import Event
 from agent.tools.trackio_seed import ensure_trackio_dashboard
 from agent.tools.types import ToolResult
@@ -117,11 +121,11 @@ def _filter_uv_install_output(logs: list[str]) -> list[str]:
     return logs
 
 
-_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07')
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07")
 
 
 def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub('', text)
+    return _ANSI_RE.sub("", text)
 
 
 _DEFAULT_ENV = {
@@ -430,7 +434,9 @@ class HfJobsTool:
                 def log_producer():
                     try:
                         # fetch_job_logs is a blocking sync generator
-                        logs_gen = self.api.fetch_job_logs(job_id=job_id, namespace=namespace)
+                        logs_gen = self.api.fetch_job_logs(
+                            job_id=job_id, namespace=namespace
+                        )
                         for line in logs_gen:
                             # Push line to queue thread-safely
                             loop.call_soon_threadsafe(queue.put_nowait, line)
@@ -576,7 +582,9 @@ class HfJobsTool:
                     image=image,
                     command=command,
                     env=env_dict,
-                    secrets=_add_environment_variables(args.get("secrets"), self.hf_token),
+                    secrets=_add_environment_variables(
+                        args.get("secrets"), self.hf_token
+                    ),
                     flavor=flavor,
                     timeout=timeout_str,
                     namespace=self.namespace,
@@ -634,10 +642,18 @@ class HfJobsTool:
             submit_ts = None
             if self.session:
                 from agent.core import telemetry
+
                 submit_ts = await telemetry.record_hf_job_submit(
-                    self.session, job,
-                    {**args, "hardware_flavor": flavor, "timeout": timeout_str, "namespace": self.namespace},
-                    image=image, job_type=job_type,
+                    self.session,
+                    job,
+                    {
+                        **args,
+                        "hardware_flavor": flavor,
+                        "timeout": timeout_str,
+                        "namespace": self.namespace,
+                    },
+                    image=image,
+                    job_type=job_type,
                 )
                 # Top-up signal: this submit succeeded after a prior billing
                 # block in the same session, and we haven't fired the event
@@ -654,7 +670,8 @@ class HfJobsTool:
                     )
                     if blocked:
                         await telemetry.record_credits_topped_up(
-                            self.session, namespace=self.namespace,
+                            self.session,
+                            namespace=self.namespace,
                         )
 
             # Wait for completion and stream logs
@@ -668,9 +685,13 @@ class HfJobsTool:
 
             if self.session and submit_ts is not None:
                 from agent.core import telemetry
+
                 await telemetry.record_hf_job_complete(
-                    self.session, job,
-                    flavor=flavor, final_status=final_status, submit_ts=submit_ts,
+                    self.session,
+                    job,
+                    flavor=flavor,
+                    final_status=final_status,
+                    submit_ts=submit_ts,
                 )
 
             # Untrack job ID (completed or failed, no longer needs cancellation)
@@ -697,7 +718,9 @@ class HfJobsTool:
             filtered_logs = _filter_uv_install_output(all_logs)
 
             # Format all logs for the agent
-            log_text = _strip_ansi("\n".join(filtered_logs)) if filtered_logs else "(no logs)"
+            log_text = (
+                _strip_ansi("\n".join(filtered_logs)) if filtered_logs else "(no logs)"
+            )
 
             response = f"""{job_type} job completed!
 
@@ -1213,6 +1236,7 @@ async def hf_jobs_handler(
         sandbox = getattr(session, "sandbox", None) if session else None
         if sandbox and script:
             from agent.tools.sandbox_tool import resolve_sandbox_script
+
             content, error = await resolve_sandbox_script(sandbox, script)
             if error:
                 return error, False

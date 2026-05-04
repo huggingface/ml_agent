@@ -88,7 +88,9 @@ class CostEstimate:
     label: str | None = None
 
 
-def parse_timeout_hours(value: Any, *, default_hours: float = DEFAULT_JOB_TIMEOUT_HOURS) -> float | None:
+def parse_timeout_hours(
+    value: Any, *, default_hours: float = DEFAULT_JOB_TIMEOUT_HOURS
+) -> float | None:
     """Parse HF timeout values into hours.
 
     Strings accept ``s``, ``m``, ``h``, or ``d`` suffixes. Numeric values are
@@ -247,7 +249,9 @@ async def estimate_hf_job_cost(args: dict[str, Any]) -> CostEstimate:
     )
 
 
-async def estimate_sandbox_cost(args: dict[str, Any], *, session: Any = None) -> CostEstimate:
+async def estimate_sandbox_cost(
+    args: dict[str, Any], *, session: Any = None
+) -> CostEstimate:
     if session is not None and getattr(session, "sandbox", None):
         return CostEstimate(estimated_cost_usd=0.0, billable=False, label="existing")
 

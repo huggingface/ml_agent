@@ -61,7 +61,9 @@ class HfRepoFilesTool:
             if handler:
                 return await handler(args)
             else:
-                return self._error(f"Unknown operation: {operation}. Valid: list, read, upload, delete")
+                return self._error(
+                    f"Unknown operation: {operation}. Valid: list, read, upload, delete"
+                )
 
         except RepositoryNotFoundError:
             return self._error(f"Repository not found: {args.get('repo_id')}")
@@ -96,17 +98,23 @@ class HfRepoFilesTool:
         revision = args.get("revision", "main")
         path = args.get("path", "")
 
-        items = list(await _async_call(
-            self.api.list_repo_tree,
-            repo_id=repo_id,
-            repo_type=repo_type,
-            revision=revision,
-            path_in_repo=path,
-            recursive=True,
-        ))
+        items = list(
+            await _async_call(
+                self.api.list_repo_tree,
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+                path_in_repo=path,
+                recursive=True,
+            )
+        )
 
         if not items:
-            return {"formatted": f"No files in {repo_id}", "totalResults": 0, "resultsShared": 0}
+            return {
+                "formatted": f"No files in {repo_id}",
+                "totalResults": 0,
+                "resultsShared": 0,
+            }
 
         lines = []
         total_size = 0
@@ -118,9 +126,16 @@ class HfRepoFilesTool:
                 lines.append(f"{item.path}/")
 
         url = _build_repo_url(repo_id, repo_type)
-        response = f"**{repo_id}** ({len(items)} files, {_format_size(total_size)})\n{url}/tree/{revision}\n\n" + "\n".join(lines)
+        response = (
+            f"**{repo_id}** ({len(items)} files, {_format_size(total_size)})\n{url}/tree/{revision}\n\n"
+            + "\n".join(lines)
+        )
 
-        return {"formatted": response, "totalResults": len(items), "resultsShared": len(items)}
+        return {
+            "formatted": response,
+            "totalResults": len(items),
+            "resultsShared": len(items),
+        }
 
     async def _read(self, args: Dict[str, Any]) -> ToolResult:
         """Read file content from a repository."""
@@ -160,8 +175,13 @@ class HfRepoFilesTool:
 
         except UnicodeDecodeError:
             import os
+
             size = os.path.getsize(file_path)
-            return {"formatted": f"Binary file ({_format_size(size)})", "totalResults": 1, "resultsShared": 1}
+            return {
+                "formatted": f"Binary file ({_format_size(size)})",
+                "totalResults": 1,
+                "resultsShared": 1,
+            }
 
     async def _upload(self, args: Dict[str, Any]) -> ToolResult:
         """Upload content to a repository."""
@@ -235,7 +255,12 @@ class HfRepoFilesTool:
 
     def _error(self, message: str) -> ToolResult:
         """Return an error result."""
-        return {"formatted": message, "totalResults": 0, "resultsShared": 0, "isError": True}
+        return {
+            "formatted": message,
+            "totalResults": 0,
+            "resultsShared": 0,
+            "isError": True,
+        }
 
 
 # Tool specification
@@ -312,7 +337,9 @@ HF_REPO_FILES_TOOL_SPEC = {
 }
 
 
-async def hf_repo_files_handler(arguments: Dict[str, Any], session=None) -> tuple[str, bool]:
+async def hf_repo_files_handler(
+    arguments: Dict[str, Any], session=None
+) -> tuple[str, bool]:
     """Handler for agent tool router."""
     try:
         hf_token = session.hf_token if session else None

@@ -33,7 +33,12 @@ from models import (
     SubmitRequest,
     TruncateRequest,
 )
-from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, session_manager
+from session_manager import (
+    MAX_SESSIONS,
+    AgentSession,
+    SessionCapacityError,
+    session_manager,
+)
 
 import user_quotas
 
@@ -135,7 +140,7 @@ async def _require_hf_for_gated_model(request: Request, model_id: str) -> None:
     """403 if a non-``huggingface``-org user tries to select a gated model.
 
     Gated models are deployed paid endpoints backed by service-owned
-    credentials. The gate only fires for deployed paid models so non-HF users 
+    credentials. The gate only fires for deployed paid models so non-HF users
     can still freely switch between the free models.
     """
     if not _is_gated_model(model_id):
@@ -225,7 +230,11 @@ async def _check_session_access(
     preload_sandbox: bool = True,
 ) -> AgentSession:
     """Verify and lazily load the user's session. Raises 403 or 404."""
-    hf_token = resolve_hf_request_token(request) if request is not None else _user_hf_token(user)
+    hf_token = (
+        resolve_hf_request_token(request)
+        if request is not None
+        else _user_hf_token(user)
+    )
     agent_session = await session_manager.ensure_session_loaded(
         session_id,
         user["user_id"],
@@ -235,7 +244,10 @@ async def _check_session_access(
     )
     if not agent_session:
         raise HTTPException(status_code=404, detail="Session not found")
-    if user["user_id"] != "dev" and agent_session.user_id not in {user["user_id"], "dev"}:
+    if user["user_id"] != "dev" and agent_session.user_id not in {
+        user["user_id"],
+        "dev",
+    }:
         raise HTTPException(status_code=403, detail="Access denied to this session")
     return agent_session
 
@@ -361,7 +373,9 @@ async def generate_title(
             await _check_session_access(request.session_id, user)
             await session_manager.update_session_title(request.session_id, title)
         except Exception:
-            logger.debug("Skipping title persistence for missing session %s", request.session_id)
+            logger.debug(
+                "Skipping title persistence for missing session %s", request.session_id
+            )
         return {"title": title}
     except Exception as e:
         logger.warning(f"Title generation failed: {e}")
@@ -371,7 +385,10 @@ async def generate_title(
             await _check_session_access(request.session_id, user)
             await session_manager.update_session_title(request.session_id, title)
         except Exception:
-            logger.debug("Skipping fallback title persistence for missing session %s", request.session_id)
+            logger.debug(
+                "Skipping fallback title persistence for missing session %s",
+                request.session_id,
+            )
         return {"title": title}
 
 
@@ -585,7 +602,9 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
 
 
 @router.get("/user/jobs-access")
-async def get_jobs_access_info(request: Request, user: dict = Depends(get_current_user)) -> dict:
+async def get_jobs_access_info(
+    request: Request, user: dict = Depends(get_current_user)
+) -> dict:
     """Return the namespaces the current token can run HF Jobs under.
 
     Credits are enforced by the HF API at job-creation time, not here —
@@ -718,7 +737,9 @@ async def chat_sse(
             success = await session_manager.submit_user_input(session_id, text)
         else:
             broadcaster.unsubscribe(sub_id)
-            raise HTTPException(status_code=400, detail="Must provide 'text' or 'approvals'")
+            raise HTTPException(
+                status_code=400, detail="Must provide 'text' or 'approvals'"
+            )
 
         if not success:
             broadcaster.unsubscribe(sub_id)
@@ -743,6 +764,7 @@ async def record_pro_click(
     agent_session = await _check_session_access(session_id, user)
 
     from agent.core import telemetry
+
     await telemetry.record_pro_cta_click(
         agent_session.session,
         source=str(body.get("source") or "unknown"),
@@ -758,12 +780,20 @@ async def record_pro_click(
 # ---------------------------------------------------------------------------
 # Shared SSE helpers
 # ---------------------------------------------------------------------------
-_TERMINAL_EVENTS = {"turn_complete", "approval_required", "error", "interrupted", "shutdown"}
+_TERMINAL_EVENTS = {
+    "turn_complete",
+    "approval_required",
+    "error",
+    "interrupted",
+    "shutdown",
+}
 _SSE_KEEPALIVE_SECONDS = 15
 
 
 def _last_event_seq(request: Request) -> int:
-    raw = request.headers.get("last-event-id") or request.query_params.get("after") or "0"
+    raw = (
+        request.headers.get("last-event-id") or request.query_params.get("after") or "0"
+    )
     try:
         return max(0, int(raw))
     except (TypeError, ValueError):
@@ -852,7 +882,9 @@ async def subscribe_events(
         raise HTTPException(status_code=404, detail="Session not found or inactive")
 
     after_seq = _last_event_seq(request)
-    replay_events = await session_manager._store().load_events_after(session_id, after_seq)
+    replay_events = await session_manager._store().load_events_after(
+        session_id, after_seq
+    )
     broadcaster = agent_session.broadcaster
     sub_id, event_queue = broadcaster.subscribe()
     return _sse_response(
@@ -884,7 +916,10 @@ async def get_session_messages(
     agent_session = await _check_session_access(session_id, user)
     if not agent_session or not agent_session.is_active:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
-    return [msg.model_dump(mode="json") for msg in agent_session.session.context_manager.items]
+    return [
+        msg.model_dump(mode="json")
+        for msg in agent_session.session.context_manager.items
+    ]
 
 
 @router.post("/undo/{session_id}")
@@ -905,7 +940,10 @@ async def truncate_session(
     await _check_session_access(session_id, user)
     success = await session_manager.truncate(session_id, body.user_message_index)
     if not success:
-        raise HTTPException(status_code=404, detail="Session not found, inactive, or message index out of range")
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found, inactive, or message index out of range",
+        )
     return {"status": "truncated", "session_id": session_id}
 
 
@@ -932,6 +970,7 @@ async def shutdown_session(
         raise HTTPException(status_code=404, detail="Session not found or inactive")
     return {"status": "shutdown_requested", "session_id": session_id}
 
+
 @router.post("/feedback/{session_id}")
 async def submit_feedback(
     session_id: str,
@@ -951,6 +990,7 @@ async def submit_feedback(
         raise HTTPException(status_code=400, detail="invalid rating")
 
     from agent.core import telemetry
+
     await telemetry.record_feedback(
         agent_session.session,
         rating=rating,

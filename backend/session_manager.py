@@ -70,7 +70,11 @@ class EventBroadcaster:
         while True:
             try:
                 event: Event = await self._source.get()
-                msg = {"event_type": event.event_type, "data": event.data, "seq": event.seq}
+                msg = {
+                    "event_type": event.event_type,
+                    "data": event.data,
+                    "seq": event.seq,
+                }
                 for q in self._subscribers.values():
                     await q.put(msg)
             except asyncio.CancelledError:
@@ -153,9 +157,7 @@ class SessionManager:
     def _count_user_sessions(self, user_id: str) -> int:
         """Count active sessions owned by a specific user."""
         return sum(
-            1
-            for s in self.sessions.values()
-            if s.user_id == user_id and s.is_active
+            1 for s in self.sessions.values() if s.user_id == user_id and s.is_active
         )
 
     def _create_session_sync(
@@ -196,10 +198,7 @@ class SessionManager:
         return tool_router, session
 
     def _serialize_messages(self, session: Session) -> list[dict[str, Any]]:
-        return [
-            msg.model_dump(mode="json")
-            for msg in session.context_manager.items
-        ]
+        return [msg.model_dump(mode="json") for msg in session.context_manager.items]
 
     def _serialize_pending_approval(self, session: Session) -> list[dict[str, Any]]:
         pending = session.pending_approval or {}
@@ -307,7 +306,9 @@ class SessionManager:
         if hasattr(session, "auto_approval_policy_summary"):
             return session.auto_approval_policy_summary()
         cap = getattr(session, "auto_approval_cost_cap_usd", None)
-        estimated = float(getattr(session, "auto_approval_estimated_spend_usd", 0.0) or 0.0)
+        estimated = float(
+            getattr(session, "auto_approval_estimated_spend_usd", 0.0) or 0.0
+        )
         remaining = None if cap is None else round(max(0.0, float(cap) - estimated), 4)
         return {
             "enabled": bool(getattr(session, "auto_approval_enabled", False)),
@@ -514,7 +515,9 @@ class SessionManager:
                 runtime_state=runtime_state or self._runtime_state(agent_session),
                 status=status,
                 turn_count=agent_session.session.turn_count,
-                pending_approval=self._serialize_pending_approval(agent_session.session),
+                pending_approval=self._serialize_pending_approval(
+                    agent_session.session
+                ),
                 claude_counted=agent_session.claude_counted,
                 created_at=agent_session.created_at,
                 notification_destinations=list(
@@ -626,7 +629,10 @@ class SessionManager:
         if restored_messages:
             # Keep the freshly-rendered system prompt, then attach the durable
             # non-system context so tools/date/user context stay current.
-            session.context_manager.items = [session.context_manager.items[0], *restored_messages]
+            session.context_manager.items = [
+                session.context_manager.items[0],
+                *restored_messages,
+            ]
 
         self._restore_pending_approval(session, meta.get("pending_approval") or [])
         session.turn_count = int(meta.get("turn_count") or 0)
@@ -760,7 +766,9 @@ class SessionManager:
         logger.info(f"Created session {session_id} for user {user_id}")
         return session_id
 
-    async def _track_pro_status(self, agent_session: AgentSession, *, is_pro: bool) -> None:
+    async def _track_pro_status(
+        self, agent_session: AgentSession, *, is_pro: bool
+    ) -> None:
         """Update Mongo per-user Pro state and emit a one-shot conversion
         event if the store reports a free→Pro transition. Best-effort: any
         Mongo failure is swallowed so we never fail session creation on
@@ -777,6 +785,7 @@ class SessionManager:
             return
         try:
             from agent.core import telemetry
+
             await telemetry.record_pro_conversion(
                 agent_session.session,
                 first_seen_at=result.get("first_seen_at"),
@@ -933,7 +942,9 @@ class SessionManager:
                         )
                         agent_session.is_processing = True
                         try:
-                            should_continue = await process_submission(session, submission)
+                            should_continue = await process_submission(
+                                session, submission
+                            )
                         finally:
                             agent_session.is_processing = False
                             await self.persist_session_snapshot(agent_session)
@@ -964,7 +975,9 @@ class SessionManager:
             # Idempotent via session_id key; detached subprocess.
             if session.config.save_sessions:
                 try:
-                    session.save_and_upload_detached(session.config.session_dataset_repo)
+                    session.save_and_upload_detached(
+                        session.config.session_dataset_repo
+                    )
                 except Exception as e:
                     logger.warning(f"Final-flush failed for {session_id}: {e}")
 
@@ -1025,7 +1038,9 @@ class SessionManager:
             agent_session = self.sessions.get(session_id)
         if not agent_session or not agent_session.is_active:
             return False
-        success = agent_session.session.context_manager.truncate_to_user_message(user_message_index)
+        success = agent_session.session.context_manager.truncate_to_user_message(
+            user_message_index
+        )
         if success:
             await self.persist_session_snapshot(agent_session, runtime_state="idle")
         return success
@@ -1118,9 +1133,7 @@ class SessionManager:
         session = agent_session.session
         if enabled:
             if not cap_provided and cost_cap_usd is None:
-                cost_cap_usd = getattr(
-                    session, "auto_approval_cost_cap_usd", None
-                )
+                cost_cap_usd = getattr(session, "auto_approval_cost_cap_usd", None)
                 if cost_cap_usd is None:
                     cost_cap_usd = DEFAULT_YOLO_COST_CAP_USD
             elif cost_cap_usd is None:
@@ -1203,9 +1216,7 @@ class SessionManager:
             if destination is None:
                 raise ValueError(f"Unknown destination '{name}'")
             if not destination.allow_auto_events:
-                raise ValueError(
-                    f"Destination '{name}' is not enabled for auto events"
-                )
+                raise ValueError(f"Destination '{name}' is not enabled for auto events")
             if name not in seen:
                 normalized.append(name)
                 seen.add(name)
@@ -1248,7 +1259,10 @@ class SessionManager:
                         "pending_approval": pending or None,
                         "model": row.get("model"),
                         "title": row.get("title"),
-                        "notification_destinations": row.get("notification_destinations") or [],
+                        "notification_destinations": row.get(
+                            "notification_destinations"
+                        )
+                        or [],
                         "auto_approval": {
                             "enabled": bool(row.get("auto_approval_enabled", False)),
                             "cost_cap_usd": row.get("auto_approval_cost_cap_usd"),
@@ -1261,8 +1275,13 @@ class SessionManager:
                                 else round(
                                     max(
                                         0.0,
-                                        float(row.get("auto_approval_cost_cap_usd") or 0.0)
-                                        - float(row.get("auto_approval_estimated_spend_usd") or 0.0),
+                                        float(
+                                            row.get("auto_approval_cost_cap_usd") or 0.0
+                                        )
+                                        - float(
+                                            row.get("auto_approval_estimated_spend_usd")
+                                            or 0.0
+                                        ),
                                     ),
                                     4,
                                 )

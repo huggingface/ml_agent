@@ -271,7 +271,9 @@ class MongoSessionStore(NoopSessionStore):
                     upsert=True,
                 )
             )
-        ops.append(DeleteMany({"session_id": session_id, "idx": {"$gte": len(messages)}}))
+        ops.append(
+            DeleteMany({"session_id": session_id, "idx": {"$gte": len(messages)}})
+        )
         try:
             if ops:
                 await self.db.session_messages.bulk_write(ops, ordered=False)
@@ -288,7 +290,9 @@ class MongoSessionStore(NoopSessionStore):
             return None
         if meta.get("visibility") == "deleted" and not include_deleted:
             return None
-        cursor = self.db.session_messages.find({"session_id": session_id}).sort("idx", 1)
+        cursor = self.db.session_messages.find({"session_id": session_id}).sort(
+            "idx", 1
+        )
         messages = [row.get("message") async for row in cursor]
         return {"metadata": meta, "messages": messages}
 
@@ -356,7 +360,9 @@ class MongoSessionStore(NoopSessionStore):
             logger.debug("Failed to append event for %s: %s", session_id, e)
             return None
 
-    async def load_events_after(self, session_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
+    async def load_events_after(
+        self, session_id: str, after_seq: int = 0
+    ) -> list[dict[str, Any]]:
         if not self._ready():
             return []
         cursor = self.db.session_events.find(
@@ -496,6 +502,8 @@ def get_session_store() -> NoopSessionStore | MongoSessionStore:
     return _store
 
 
-def _reset_store_for_tests(store: NoopSessionStore | MongoSessionStore | None = None) -> None:
+def _reset_store_for_tests(
+    store: NoopSessionStore | MongoSessionStore | None = None,
+) -> None:
     global _store
     _store = store

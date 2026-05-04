@@ -95,6 +95,7 @@ class CompactionFailedError(Exception):
     burns Bedrock budget for free (~$3 per re-attempt on Opus).
     """
 
+
 # Used when seeding a brand-new session from prior browser-cached messages.
 # Here we're writing a note to *ourselves* — so preserve the tool-call trail,
 # files produced, and planned next steps in first person. Optimized for
@@ -154,12 +155,15 @@ async def summarize_messages(
     )
     if session is not None:
         from agent.core import telemetry
+
         await telemetry.record_llm_call(
             session,
             model=model_name,
             response=response,
             latency_ms=int((time.monotonic() - _t0) * 1000),
-            finish_reason=response.choices[0].finish_reason if response.choices else None,
+            finish_reason=response.choices[0].finish_reason
+            if response.choices
+            else None,
             kind=kind,
         )
     summary = response.choices[0].message.content or ""
@@ -232,6 +236,7 @@ class ContextManager:
         # CLI-specific context for local mode
         if local_mode:
             import os
+
             cwd = os.getcwd()
             local_context = (
                 f"\n\n# CLI / Local mode\n\n"
@@ -304,7 +309,9 @@ class ContextManager:
         i = 0
         while i < len(self.items):
             msg = self.items[i]
-            if getattr(msg, "role", None) != "assistant" or not getattr(msg, "tool_calls", None):
+            if getattr(msg, "role", None) != "assistant" or not getattr(
+                msg, "tool_calls", None
+            ):
                 i += 1
                 continue
 
@@ -315,7 +322,9 @@ class ContextManager:
             # before the next non-tool message to satisfy provider ordering.
             j = i + 1
             immediate_ids: set[str | None] = set()
-            while j < len(self.items) and getattr(self.items[j], "role", None) == "tool":
+            while (
+                j < len(self.items) and getattr(self.items[j], "role", None) == "tool"
+            ):
                 immediate_ids.add(getattr(self.items[j], "tool_call_id", None))
                 j += 1
 
@@ -385,7 +394,9 @@ class ContextManager:
 
     @property
     def needs_compaction(self) -> bool:
-        return self.running_context_usage > self.compaction_threshold and bool(self.items)
+        return self.running_context_usage > self.compaction_threshold and bool(
+            self.items
+        )
 
     def _truncate_oversized(
         self, messages: list[Message], model_name: str
@@ -424,7 +435,9 @@ class ContextManager:
             )
             logger.warning(
                 "Truncating %s message: %d -> %d tokens for compaction",
-                msg.role, n, len(placeholder) // 4,
+                msg.role,
+                n,
+                len(placeholder) // 4,
             )
             # Preserve all known assistant-side fields (tool_calls, thinking_blocks,
             # reasoning_content, provider_specific_fields) even when content is
@@ -458,9 +471,9 @@ class ContextManager:
         except Exception as e:
             logger.warning("token_counter failed (%s); rough estimate", e)
             # Rough fallback: 4 chars per token.
-            self.running_context_usage = sum(
-                len(getattr(m, "content", "") or "") for m in self.items
-            ) // 4
+            self.running_context_usage = (
+                sum(len(getattr(m, "content", "") or "") for m in self.items) // 4
+            )
 
     async def compact(
         self,
@@ -515,7 +528,7 @@ class ContextManager:
             idx = first_user_idx + 1
 
         recent_messages = self.items[idx:]
-        messages_to_summarize = self.items[first_user_idx + 1:idx]
+        messages_to_summarize = self.items[first_user_idx + 1 : idx]
 
         # Truncate any message that's larger than _MAX_TOKENS_PER_MESSAGE in
         # the parts we PRESERVE through compaction (first_user + recent_tail).

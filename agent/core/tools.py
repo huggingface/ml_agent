@@ -131,7 +131,12 @@ class ToolRouter:
     Based on codex-rs/core/src/tools/router.rs
     """
 
-    def __init__(self, mcp_servers: dict[str, MCPServerConfig], hf_token: str | None = None, local_mode: bool = False):
+    def __init__(
+        self,
+        mcp_servers: dict[str, MCPServerConfig],
+        hf_token: str | None = None,
+        local_mode: bool = False,
+    ):
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
 
@@ -144,7 +149,9 @@ class ToolRouter:
             for name, server in mcp_servers.items():
                 data = server.model_dump()
                 if hf_token:
-                    data.setdefault("headers", {})["Authorization"] = f"Bearer {hf_token}"
+                    data.setdefault("headers", {})["Authorization"] = (
+                        f"Bearer {hf_token}"
+                    )
                 mcp_servers_payload[name] = data
             self.mcp_client = Client({"mcpServers": mcp_servers_payload})
         self._mcp_initialized = False
@@ -218,7 +225,9 @@ class ToolRouter:
                 await self.register_mcp_tools()
                 self._mcp_initialized = True
             except Exception as e:
-                logger.warning("MCP connection failed, continuing without MCP tools: %s", e)
+                logger.warning(
+                    "MCP connection failed, continuing without MCP tools: %s", e
+                )
                 self.mcp_client = None
 
         await self.register_openapi_tool()
@@ -380,6 +389,7 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
     # Sandbox or local tools (highest priority)
     if local_mode:
         from agent.tools.local_tools import get_local_tools
+
         tools = get_local_tools() + tools
     else:
         tools = get_sandbox_tools() + tools

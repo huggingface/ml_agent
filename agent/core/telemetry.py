@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 # ── usage extraction ────────────────────────────────────────────────────────
 
+
 def extract_usage(response_or_chunk: Any) -> dict:
     """Flat usage dict from a litellm response or final-chunk usage object.
 
@@ -71,6 +72,7 @@ def extract_usage(response_or_chunk: Any) -> dict:
 
 # ── llm_call ────────────────────────────────────────────────────────────────
 
+
 async def record_llm_call(
     session: Any,
     *,
@@ -106,28 +108,33 @@ async def record_llm_call(
     if response is not None:
         try:
             from litellm import completion_cost
+
             cost_usd = float(completion_cost(completion_response=response) or 0.0)
         except Exception:
             cost_usd = 0.0
     from agent.core.session import Event  # local import to avoid cycle
+
     try:
-        await session.send_event(Event(
-            event_type="llm_call",
-            data={
-                "model": model,
-                "latency_ms": latency_ms,
-                "finish_reason": finish_reason,
-                "cost_usd": cost_usd,
-                "kind": kind,
-                **usage,
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="llm_call",
+                data={
+                    "model": model,
+                    "latency_ms": latency_ms,
+                    "finish_reason": finish_reason,
+                    "cost_usd": cost_usd,
+                    "kind": kind,
+                    **usage,
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_llm_call failed (non-fatal): %s", e)
     return usage
 
 
 # ── hf_jobs ────────────────────────────────────────────────────────────────
+
 
 def _infer_push_to_hub(script_or_cmd: Any) -> bool:
     if not isinstance(script_or_cmd, str):
@@ -150,22 +157,25 @@ async def record_hf_job_submit(
     """Emit ``hf_job_submit``. Returns the monotonic start timestamp so the
     caller can pass it back into :func:`record_hf_job_complete`."""
     from agent.core.session import Event
+
     t_start = time.monotonic()
     try:
         script_text = args.get("script") or args.get("command") or ""
-        await session.send_event(Event(
-            event_type="hf_job_submit",
-            data={
-                "job_id": getattr(job, "id", None),
-                "job_url": getattr(job, "url", None),
-                "flavor": args.get("hardware_flavor", "cpu-basic"),
-                "timeout": args.get("timeout", "30m"),
-                "job_type": job_type,
-                "image": image,
-                "namespace": args.get("namespace"),
-                "push_to_hub": _infer_push_to_hub(script_text),
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="hf_job_submit",
+                data={
+                    "job_id": getattr(job, "id", None),
+                    "job_url": getattr(job, "url", None),
+                    "flavor": args.get("hardware_flavor", "cpu-basic"),
+                    "timeout": args.get("timeout", "30m"),
+                    "job_type": job_type,
+                    "image": image,
+                    "namespace": args.get("namespace"),
+                    "push_to_hub": _infer_push_to_hub(script_text),
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_hf_job_submit failed (non-fatal): %s", e)
     return t_start
@@ -180,22 +190,26 @@ async def record_hf_job_complete(
     submit_ts: float,
 ) -> None:
     from agent.core.session import Event
+
     try:
         wall_time_s = int(time.monotonic() - submit_ts)
-        await session.send_event(Event(
-            event_type="hf_job_complete",
-            data={
-                "job_id": getattr(job, "id", None),
-                "flavor": flavor,
-                "final_status": final_status,
-                "wall_time_s": wall_time_s,
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="hf_job_complete",
+                data={
+                    "job_id": getattr(job, "id", None),
+                    "flavor": flavor,
+                    "final_status": final_status,
+                    "wall_time_s": wall_time_s,
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_hf_job_complete failed (non-fatal): %s", e)
 
 
 # ── sandbox ─────────────────────────────────────────────────────────────────
+
 
 async def record_sandbox_create(
     session: Any,
@@ -205,38 +219,45 @@ async def record_sandbox_create(
     create_latency_s: int,
 ) -> None:
     from agent.core.session import Event
+
     try:
         # Pin created-at on the session so record_sandbox_destroy can diff.
         session._sandbox_created_at = time.monotonic() - create_latency_s
-        await session.send_event(Event(
-            event_type="sandbox_create",
-            data={
-                "sandbox_id": getattr(sandbox, "space_id", None),
-                "hardware": hardware,
-                "create_latency_s": int(create_latency_s),
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="sandbox_create",
+                data={
+                    "sandbox_id": getattr(sandbox, "space_id", None),
+                    "hardware": hardware,
+                    "create_latency_s": int(create_latency_s),
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_sandbox_create failed (non-fatal): %s", e)
 
 
 async def record_sandbox_destroy(session: Any, sandbox: Any) -> None:
     from agent.core.session import Event
+
     try:
         created = getattr(session, "_sandbox_created_at", None)
         lifetime_s = int(time.monotonic() - created) if created else None
-        await session.send_event(Event(
-            event_type="sandbox_destroy",
-            data={
-                "sandbox_id": getattr(sandbox, "space_id", None),
-                "lifetime_s": lifetime_s,
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="sandbox_destroy",
+                data={
+                    "sandbox_id": getattr(sandbox, "space_id", None),
+                    "lifetime_s": lifetime_s,
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_sandbox_destroy failed (non-fatal): %s", e)
 
 
 # ── feedback ───────────────────────────────────────────────────────────────
+
 
 async def record_feedback(
     session: Any,
@@ -247,16 +268,19 @@ async def record_feedback(
     comment: str | None = None,
 ) -> None:
     from agent.core.session import Event
+
     try:
-        await session.send_event(Event(
-            event_type="feedback",
-            data={
-                "rating": rating,
-                "turn_index": turn_index,
-                "message_id": message_id,
-                "comment": (comment or "")[:500],
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="feedback",
+                data={
+                    "rating": rating,
+                    "turn_index": turn_index,
+                    "message_id": message_id,
+                    "comment": (comment or "")[:500],
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_feedback failed (non-fatal): %s", e)
 
@@ -269,15 +293,18 @@ async def record_jobs_access_blocked(
     eligible_namespaces: list[str],
 ) -> None:
     from agent.core.session import Event
+
     try:
-        await session.send_event(Event(
-            event_type="jobs_access_blocked",
-            data={
-                "tool_call_ids": tool_call_ids,
-                "plan": plan,
-                "eligible_namespaces": eligible_namespaces,
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="jobs_access_blocked",
+                data={
+                    "tool_call_ids": tool_call_ids,
+                    "plan": plan,
+                    "eligible_namespaces": eligible_namespaces,
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_jobs_access_blocked failed (non-fatal): %s", e)
 
@@ -289,11 +316,14 @@ async def record_pro_cta_click(
     target: str = "pro_pricing",
 ) -> None:
     from agent.core.session import Event
+
     try:
-        await session.send_event(Event(
-            event_type="pro_cta_click",
-            data={"source": source, "target": target},
-        ))
+        await session.send_event(
+            Event(
+                event_type="pro_cta_click",
+                data={"source": source, "target": target},
+            )
+        )
     except Exception as e:
         logger.debug("record_pro_cta_click failed (non-fatal): %s", e)
 
@@ -308,11 +338,14 @@ async def record_pro_conversion(
     ``MongoSessionStore.mark_pro_seen``; fired into the user's first Pro
     session so the rollup picks it up alongside other event-driven KPIs."""
     from agent.core.session import Event
+
     try:
-        await session.send_event(Event(
-            event_type="pro_conversion",
-            data={"first_seen_at": first_seen_at},
-        ))
+        await session.send_event(
+            Event(
+                event_type="pro_conversion",
+                data={"first_seen_at": first_seen_at},
+            )
+        )
     except Exception as e:
         logger.debug("record_pro_conversion failed (non-fatal): %s", e)
 
@@ -327,11 +360,14 @@ async def record_credits_topped_up(
     came back from the HF billing top-up flow and unblocked themselves.
     Caller is responsible for firing this at most once per session."""
     from agent.core.session import Event
+
     try:
-        await session.send_event(Event(
-            event_type="credits_topped_up",
-            data={"namespace": namespace},
-        ))
+        await session.send_event(
+            Event(
+                event_type="credits_topped_up",
+                data={"namespace": namespace},
+            )
+        )
     except Exception as e:
         logger.debug("record_credits_topped_up failed (non-fatal): %s", e)
 

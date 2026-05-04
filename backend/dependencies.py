@@ -102,7 +102,9 @@ async def _fetch_user_plan(token: str) -> str:
         _WHOAMI_SHAPE_LOGGED = True
         logger.debug(
             "whoami-v2 payload keys: %s (sample values: plan=%r type=%r isPro=%r)",
-            sorted(whoami.keys()) if isinstance(whoami, dict) else type(whoami).__name__,
+            sorted(whoami.keys())
+            if isinstance(whoami, dict)
+            else type(whoami).__name__,
             whoami.get("plan") if isinstance(whoami, dict) else None,
             whoami.get("type") if isinstance(whoami, dict) else None,
             whoami.get("isPro") if isinstance(whoami, dict) else None,

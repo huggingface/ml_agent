@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
     # rollup lives next to the data and reuses the Space's HF token.
     try:
         import kpis_scheduler
+
         kpis_scheduler.start()
     except Exception as e:
         logger.warning("KPI scheduler failed to start: %s", e)
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down HF Agent backend...")
     try:
         import kpis_scheduler
+
         await kpis_scheduler.shutdown()
     except Exception as e:
         logger.warning("KPI scheduler shutdown failed: %s", e)

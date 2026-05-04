@@ -60,12 +60,16 @@ class Config(BaseModel):
 
 
 USER_CONFIG_ENV_VAR = "ML_INTERN_CLI_CONFIG"
-DEFAULT_USER_CONFIG_PATH = Path.home() / ".config" / "ml-intern" / "cli_agent_config.json"
+DEFAULT_USER_CONFIG_PATH = (
+    Path.home() / ".config" / "ml-intern" / "cli_agent_config.json"
+)
 SLACK_DEFAULT_DESTINATION = "slack.default"
 SLACK_DEFAULT_AUTO_EVENT_TYPES = ["approval_required", "error", "turn_complete"]
 
 
-def _deep_merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def _deep_merge_config(
+    base: dict[str, Any], override: dict[str, Any]
+) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
         current = merged.get(key)

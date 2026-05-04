@@ -729,9 +729,7 @@ class Sandbox:
                     runtime, "requested_hardware", None
                 )
                 if current_hardware != hardware:
-                    _log(
-                        f"  RUNNING on {current_hardware}; waiting for {hardware}..."
-                    )
+                    _log(f"  RUNNING on {current_hardware}; waiting for {hardware}...")
                     time.sleep(WAIT_INTERVAL)
                     continue
                 _log(f"Space is running (hardware: {runtime.hardware})")
@@ -767,7 +765,9 @@ class Sandbox:
         return sb
 
     @staticmethod
-    def _setup_server(space_id: str, api: HfApi, *, log: Callable[[str], object] = print) -> None:
+    def _setup_server(
+        space_id: str, api: HfApi, *, log: Callable[[str], object] = print
+    ) -> None:
         """Upload embedded sandbox server + Dockerfile to the Space (single commit)."""
         log(f"Uploading sandbox server to {space_id}...")
         api.create_commit(
@@ -809,7 +809,9 @@ class Sandbox:
         sb._wait_for_api(timeout=60)
         return sb
 
-    def _wait_for_api(self, timeout: int = API_WAIT_TIMEOUT, log: Callable[[str], object] = print):
+    def _wait_for_api(
+        self, timeout: int = API_WAIT_TIMEOUT, log: Callable[[str], object] = print
+    ):
         """Poll the health endpoint until the server responds."""
         deadline = time.time() + timeout
         last_err = None
@@ -986,7 +988,12 @@ class Sandbox:
         return result
 
     def edit(
-        self, path: str, old_str: str, new_str: str, *, replace_all: bool = False,
+        self,
+        path: str,
+        old_str: str,
+        new_str: str,
+        *,
+        replace_all: bool = False,
         mode: str = "replace",
     ) -> ToolResult:
         if old_str == new_str:

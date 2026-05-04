@@ -115,7 +115,9 @@ async def test_explicit_gated_session_request_still_rejects_non_hf_user(monkeypa
     async def fake_require_hf_org_member(_request):
         return False
 
-    monkeypatch.setattr(agent, "require_huggingface_org_member", fake_require_hf_org_member)
+    monkeypatch.setattr(
+        agent, "require_huggingface_org_member", fake_require_hf_org_member
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await agent._model_override_for_new_session(None, agent.DEFAULT_CLAUDE_MODEL_ID)
@@ -301,7 +303,9 @@ async def test_teardown_session_access_check_skips_sandbox_preload(monkeypatch):
         "ensure_session_loaded",
         fake_ensure_session_loaded,
     )
-    monkeypatch.setattr(agent.session_manager, "teardown_sandbox", fake_teardown_sandbox)
+    monkeypatch.setattr(
+        agent.session_manager, "teardown_sandbox", fake_teardown_sandbox
+    )
 
     response = await agent.teardown_session_sandbox("s1", {"user_id": "u1"})
     await asyncio.sleep(0)

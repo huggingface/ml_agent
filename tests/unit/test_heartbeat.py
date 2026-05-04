@@ -31,6 +31,7 @@ def _mk_session(tmp_path: Path, monkeypatch) -> Session:
     monkeypatch.chdir(tmp_path)  # so session_logs/ lands under tmp_path
     # Stub out the context manager to avoid litellm lookups.
     from agent.context_manager.manager import ContextManager
+
     cm = ContextManager.__new__(ContextManager)
     cm.items = []
     cm.tool_specs = []
@@ -94,6 +95,7 @@ def test_heartbeat_fires_after_interval(tmp_path, monkeypatch):
 def test_stable_local_path_overwrites(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     from agent.context_manager.manager import ContextManager
+
     cm = ContextManager.__new__(ContextManager)
     cm.items = []
     cm.tool_specs = []

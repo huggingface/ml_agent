@@ -38,7 +38,11 @@ class FakeRuntimeSession:
 
     def auto_approval_policy_summary(self):
         cap = self.auto_approval_cost_cap_usd
-        remaining = None if cap is None else max(0, cap - self.auto_approval_estimated_spend_usd)
+        remaining = (
+            None
+            if cap is None
+            else max(0, cap - self.auto_approval_estimated_spend_usd)
+        )
         return {
             "enabled": self.auto_approval_enabled,
             "cost_cap_usd": cap,
@@ -438,7 +442,9 @@ async def test_lazy_restore_schedules_cpu_sandbox_preload():
     manager._start_cpu_sandbox_preload = fake_start_cpu_sandbox_preload  # type: ignore[method-assign]
 
     try:
-        restored = await manager.ensure_session_loaded("persisted-session", user_id="owner")
+        restored = await manager.ensure_session_loaded(
+            "persisted-session", user_id="owner"
+        )
 
         assert restored is not None
         assert scheduled == ["persisted-session"]
@@ -572,7 +578,9 @@ async def test_lazy_restore_preserves_pending_approval_tool_calls():
     stop = _install_fake_runtime(manager)
 
     try:
-        restored = await manager.ensure_session_loaded("approval-session", user_id="owner")
+        restored = await manager.ensure_session_loaded(
+            "approval-session", user_id="owner"
+        )
 
         assert restored is not None
         tool_calls = restored.session.pending_approval["tool_calls"]

@@ -197,7 +197,9 @@ def _cleanup_user_orphan_sandboxes(
         if not _SANDBOX_NAME_RE.match(space_name):
             continue
 
-        last_mod = getattr(space, "lastModified", None) or getattr(space, "last_modified", None)
+        last_mod = getattr(space, "lastModified", None) or getattr(
+            space, "last_modified", None
+        )
         if isinstance(last_mod, str):
             try:
                 last_mod = datetime.fromisoformat(last_mod.replace("Z", "+00:00"))
@@ -337,6 +339,7 @@ async def _create_sandbox_locked(
     if hardware != DEFAULT_CPU_SANDBOX_HARDWARE:
         kwargs["sleep_time"] = 2700
     import time as _t
+
     _t_start = _t.monotonic()
     try:
         sb = await asyncio.to_thread(Sandbox.create, **kwargs)
@@ -350,7 +353,9 @@ async def _create_sandbox_locked(
             try:
                 await asyncio.to_thread(sb.delete)
             except Exception as e:
-                logger.warning("Failed to delete cancelled sandbox %s: %s", sb.space_id, e)
+                logger.warning(
+                    "Failed to delete cancelled sandbox %s: %s", sb.space_id, e
+                )
         return None, "Sandbox creation cancelled by user."
 
     session.sandbox = sb
@@ -360,8 +365,11 @@ async def _create_sandbox_locked(
 
     # Telemetry: sandbox creation (infra consumption signal)
     from agent.core import telemetry
+
     await telemetry.record_sandbox_create(
-        session, sb, hardware=hardware,
+        session,
+        sb,
+        hardware=hardware,
         create_latency_s=int(_t.monotonic() - _t_start),
     )
 
@@ -510,12 +518,13 @@ async def teardown_session_sandbox(session: Any) -> None:
                 )
                 await asyncio.to_thread(sandbox.delete)
                 from agent.core import telemetry
+
                 await telemetry.record_sandbox_destroy(session, sandbox)
                 return
             except Exception as e:
                 last_err = e
                 if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(2**attempt)
         logger.error(
             "Failed to delete sandbox %s after 3 attempts: %s. "
             "Orphan — sweep script will pick it up.",
@@ -758,8 +767,7 @@ def get_sandbox_tools():
         description = (
             "Uses the session's active sandbox. A private cpu-basic sandbox is "
             "started automatically for normal CPU work; call sandbox_create only "
-            "for GPU or other non-default hardware.\n\n"
-            + spec["description"]
+            "for GPU or other non-default hardware.\n\n" + spec["description"]
         )
         tools.append(
             ToolSpec(

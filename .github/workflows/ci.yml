@@ -36,6 +36,9 @@ jobs:
       - name: Run Ruff
         run: uv run ruff check .
 
+      - name: Check formatting
+        run: uv run ruff format --check .
+
   tests:
     name: Tests
     runs-on: ubuntu-latest
