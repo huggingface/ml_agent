@@ -6,12 +6,16 @@ usage() {
 Usage:
   bash post_train_bench/submit_eval_set.sh smoke
 
+  bash post_train_bench/submit_eval_set.sh model-validation --dry-run
+
   bash post_train_bench/submit_eval_set.sh validation --dry-run
 
   bash post_train_bench/submit_eval_set.sh full --dry-run
 
 Modes:
   smoke  Submit one 10-minute validation job.
+  model-validation
+         Submit one 2-hour GSM8K artifact-validity job per full-matrix model.
   validation
          Submit a 4-job artifact-validity matrix with 2-hour solve budgets.
   full   Submit the full 4-model x 7-benchmark matrix. This is documented for manual use.
@@ -34,7 +38,7 @@ Environment:
   POST_TRAIN_BENCH_PROMPT_AGENT
                                Prompt rendering agent. Default: claude.
   POST_TRAIN_BENCH_SLURM_TIME  Slurm walltime. Default: 01:00:00 for smoke,
-                               03:00:00 for validation,
+                               03:00:00 for validation/model-validation,
                                14:00:00 for full.
   POST_TRAIN_BENCH_RUN_ID      Optional explicit run id. Overrides the default
                                YYYY-MM-DD_HH-MM-SS_{slurm_job_id} format.
@@ -211,6 +215,30 @@ rows = [
 Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 PY
         ;;
+    model-validation)
+        python3 - "$MATRIX_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+models = [
+    "google/gemma-3-4b-pt",
+    "Qwen/Qwen3-4B-Base",
+    "Qwen/Qwen3-1.7B-Base",
+    "HuggingFaceTB/SmolLM3-3B-Base",
+]
+rows = [
+    {
+        "benchmark": "gsm8k",
+        "model_to_train": model,
+        "num_hours": 2,
+        "eval_limit": 8,
+    }
+    for model in models
+]
+Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+PY
+        ;;
     full)
         python3 - "$MATRIX_FILE" <<'PY'
 import json
@@ -255,6 +283,9 @@ case "$MODE" in
     validation)
         DEFAULT_SLURM_TIME="03:00:00"
         ;;
+    model-validation)
+        DEFAULT_SLURM_TIME="03:00:00"
+        ;;
     full)
         DEFAULT_SLURM_TIME="14:00:00"
         ;;
@@ -294,8 +325,11 @@ def image_metadata(value: str) -> dict:
     path = Path(value)
     payload = {"value": value, "kind": "local_file" if path.is_file() else "registry"}
     if path.is_file():
-        payload["sha256"] = sha256_file(path)
         payload["bytes"] = path.stat().st_size
+        if os.environ["MODE"] == "full":
+            payload["sha256"] = sha256_file(path)
+        else:
+            payload["sha256_skipped"] = "local image hashing is skipped outside full mode"
     elif "@sha256:" in value:
         payload["digest"] = value.rsplit("@sha256:", 1)[1]
     else:

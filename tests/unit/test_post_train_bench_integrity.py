@@ -276,15 +276,19 @@ def test_submit_supports_validation_and_reprompt_metadata():
         encoding="utf-8"
     )
 
+    assert "model-validation)" in submit
     assert "validation)" in submit
     assert '"benchmark": "humaneval"' in submit
     assert '"benchmark": "bfcl"' in submit
     assert '"model_to_train": "google/gemma-3-4b-pt"' in submit
+    assert '"Qwen/Qwen3-4B-Base"' in submit
+    assert '"HuggingFaceTB/SmolLM3-3B-Base"' in submit
     assert "POST_TRAIN_BENCH_REPROMPT" in submit
     assert "POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES" in submit
     assert '"reprompt_enabled"' in submit
     assert '"method_variant"' in submit
     assert '"method_suffix"' in submit
+    assert "sha256_skipped" in submit
 
 
 def test_headless_reprompt_is_explicit_opt_in():

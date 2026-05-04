@@ -104,6 +104,16 @@ find post_train_bench/runs/${ML_INTERN_AGENT_MODEL} -maxdepth 4 -type f | sort
 
 ## Artifact Validation Matrix
 
+To check final-model artifact creation once per full-matrix base model, run:
+
+```bash
+bash post_train_bench/submit_eval_set.sh model-validation --dry-run
+bash post_train_bench/submit_eval_set.sh model-validation
+```
+
+This submits one 2-hour GSM8K job with a small eval limit for each full-matrix
+model: Gemma 3 4B, Qwen3 4B, Qwen3 1.7B, and SmolLM3 3B.
+
 Before launching the full matrix, run the strict 4-job validation matrix:
 
 ```bash
