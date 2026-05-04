@@ -246,7 +246,9 @@ def test_orphan_sweep_preserves_spaces_without_last_modified():
 
     assert count == 0
     assert deleted == []
-    assert logs == ["orphan sweep: skipping alice/sandbox-12345678; missing lastModified"]
+    assert logs == [
+        "orphan sweep: skipping alice/sandbox-12345678; missing lastModified"
+    ]
 
 
 def test_ensure_sandbox_overrides_private_argument(monkeypatch):
@@ -455,7 +457,9 @@ def test_sandbox_create_replaces_auto_cpu_sandbox(monkeypatch):
         pass
 
     monkeypatch.setattr(sandbox_tool, "_ensure_sandbox", fake_ensure_sandbox)
-    monkeypatch.setattr(telemetry, "record_sandbox_destroy", fake_record_sandbox_destroy)
+    monkeypatch.setattr(
+        telemetry, "record_sandbox_destroy", fake_record_sandbox_destroy
+    )
 
     session = FakeSession()
     out, ok = asyncio.run(
@@ -479,7 +483,9 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
     async def fake_record_sandbox_destroy(*args, **kwargs):
         pass
 
-    monkeypatch.setattr(telemetry, "record_sandbox_destroy", fake_record_sandbox_destroy)
+    monkeypatch.setattr(
+        telemetry, "record_sandbox_destroy", fake_record_sandbox_destroy
+    )
 
     async def run():
         cancel_event = threading.Event()

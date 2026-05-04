@@ -7,7 +7,9 @@ def _write_json(path, data):
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def test_load_config_does_not_apply_slack_user_defaults_by_default(tmp_path, monkeypatch):
+def test_load_config_does_not_apply_slack_user_defaults_by_default(
+    tmp_path, monkeypatch
+):
     config_path = tmp_path / "config.json"
     _write_json(
         config_path,

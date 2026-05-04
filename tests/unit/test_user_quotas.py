@@ -1,10 +1,8 @@
 """Tests for backend/user_quotas.py — the in-memory Claude daily-quota store."""
 
 import asyncio
-import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 

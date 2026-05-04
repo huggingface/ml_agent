@@ -94,8 +94,7 @@ def _msg_uuid(session_id: str, role: str, idx: int) -> str:
     digest = hashlib.sha1(f"{session_id}::{role}::{idx}".encode("utf-8")).hexdigest()
     # Format like a UUID for visual familiarity (32 hex chars w/ dashes).
     return (
-        f"{digest[0:8]}-{digest[8:12]}-{digest[12:16]}-"
-        f"{digest[16:20]}-{digest[20:32]}"
+        f"{digest[0:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
     )
 
 
@@ -347,7 +346,7 @@ def _update_upload_status(
 
 def dataset_card_readme(repo_id: str) -> str:
     """Dataset card for personal ML Intern session trace repos."""
-    return f"""---
+    return """---
 pretty_name: "ML Intern Session Traces"
 language:
 - en

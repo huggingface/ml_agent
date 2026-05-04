@@ -48,7 +48,8 @@ def _get_max_tokens_safe(model_name: str) -> int:
             continue
     logger.info(
         "No litellm.get_model_info entry for %s, falling back to %d",
-        model_name, _DEFAULT_MAX_TOKENS,
+        model_name,
+        _DEFAULT_MAX_TOKENS,
     )
     return _DEFAULT_MAX_TOKENS
 
@@ -277,8 +278,7 @@ class Session:
             if summary:
                 summary = summary[:_TURN_COMPLETE_NOTIFICATION_CHARS]
                 message = (
-                    f"Session {self.session_id} completed successfully.\n"
-                    f"{summary}"
+                    f"Session {self.session_id} completed successfully.\n{summary}"
                 )
             else:
                 message = f"Session {self.session_id} completed successfully."
@@ -444,6 +444,7 @@ class Session:
             # snapshot between heartbeats would otherwise leak them.
             try:
                 from agent.core.redact import scrub
+
                 for key in ("messages", "events", "tools"):
                     if key in trajectory:
                         trajectory[key] = scrub(trajectory[key])

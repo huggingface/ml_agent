@@ -164,7 +164,10 @@ async def test_compact_raises_when_post_compact_still_over_threshold():
         self.running_context_usage = 95_000
 
     with (
-        patch("agent.context_manager.manager.summarize_messages", side_effect=fake_summarize),
+        patch(
+            "agent.context_manager.manager.summarize_messages",
+            side_effect=fake_summarize,
+        ),
         patch.object(ContextManager, "_recompute_usage", fake_recompute),
         # Avoid token_counter calls in _truncate_oversized
         patch("litellm.token_counter", return_value=100),
@@ -195,8 +198,8 @@ async def test_compact_does_not_duplicate_system_when_idx_is_zero():
         Message(role="system", content="system"),
         Message(role="user", content="task"),
         Message(role="assistant", content="ok"),  # would be the only
-                                                   # message_to_summarize but the
-                                                   # idx bug pulls it into recent
+        # message_to_summarize but the
+        # idx bug pulls it into recent
         Message(role="user", content="followup"),
         Message(role="assistant", content="reply"),
     ]  # exactly 5 = untouched_messages, so idx initialises to 0
@@ -209,7 +212,10 @@ async def test_compact_does_not_duplicate_system_when_idx_is_zero():
         self.running_context_usage = 5_000
 
     with (
-        patch("agent.context_manager.manager.summarize_messages", side_effect=fake_summarize),
+        patch(
+            "agent.context_manager.manager.summarize_messages",
+            side_effect=fake_summarize,
+        ),
         patch.object(ContextManager, "_recompute_usage", fake_recompute),
         patch("litellm.token_counter", return_value=100),
     ):
@@ -232,8 +238,7 @@ async def test_compact_does_not_duplicate_system_when_idx_is_zero():
     # so first_user_msg ends up in BOTH head and recent_messages →
     # duplicate user message → Anthropic 400 (two consecutive user roles).
     task_count = sum(
-        1 for m in cm.items
-        if m.role == "user" and (m.content or "") == "task"
+        1 for m in cm.items if m.role == "user" and (m.content or "") == "task"
     )
     assert task_count == 1, (
         f"Expected exactly 1 'task' user message, found {task_count}. "
@@ -243,9 +248,9 @@ async def test_compact_does_not_duplicate_system_when_idx_is_zero():
     # API contract). System counts separately.
     non_system = [m for m in cm.items if m.role != "system"]
     for i in range(1, len(non_system)):
-        assert non_system[i].role != non_system[i-1].role, (
+        assert non_system[i].role != non_system[i - 1].role, (
             f"Two consecutive {non_system[i].role} messages at non-system "
-            f"position {i-1},{i} — Anthropic API rejects this. "
+            f"position {i - 1},{i} — Anthropic API rejects this. "
             f"Roles: {[m.role for m in cm.items]}"
         )
 
@@ -272,7 +277,10 @@ async def test_compact_succeeds_when_post_compact_under_threshold():
         self.running_context_usage = 5_000  # well under threshold
 
     with (
-        patch("agent.context_manager.manager.summarize_messages", side_effect=fake_summarize),
+        patch(
+            "agent.context_manager.manager.summarize_messages",
+            side_effect=fake_summarize,
+        ),
         patch.object(ContextManager, "_recompute_usage", fake_recompute),
         patch("litellm.token_counter", return_value=100),
     ):

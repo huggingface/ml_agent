@@ -58,7 +58,9 @@ async def test_scheduled_hf_jobs_always_require_manual_approval(operation):
     assert decision.requires_approval is True
     assert decision.auto_approval_blocked is True
     assert "Scheduled HF jobs" in decision.block_reason
-    assert agent_loop._needs_approval("hf_jobs", {"operation": operation}, session.config)
+    assert agent_loop._needs_approval(
+        "hf_jobs", {"operation": operation}, session.config
+    )
 
 
 @pytest.mark.asyncio
@@ -147,7 +149,9 @@ async def test_batch_reservation_blocks_second_over_budget_job(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_manual_approval_does_not_record_spend_when_session_yolo_disabled(monkeypatch):
+async def test_manual_approval_does_not_record_spend_when_session_yolo_disabled(
+    monkeypatch,
+):
     called = False
 
     async def fake_estimate(*args, **kwargs):

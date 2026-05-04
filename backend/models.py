@@ -131,4 +131,6 @@ class LLMHealthResponse(BaseModel):
     status: str  # "ok" | "error"
     model: str
     error: str | None = None
-    error_type: str | None = None  # "auth" | "credits" | "rate_limit" | "network" | "unknown"
+    error_type: str | None = (
+        None  # "auth" | "credits" | "rate_limit" | "network" | "unknown"
+    )

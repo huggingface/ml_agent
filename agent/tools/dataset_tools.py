@@ -423,7 +423,9 @@ HF_INSPECT_DATASET_TOOL_SPEC = {
 }
 
 
-async def hf_inspect_dataset_handler(arguments: dict[str, Any], session=None) -> tuple[str, bool]:
+async def hf_inspect_dataset_handler(
+    arguments: dict[str, Any], session=None
+) -> tuple[str, bool]:
     """Handler for agent tool router"""
     try:
         hf_token = session.hf_token if session else None

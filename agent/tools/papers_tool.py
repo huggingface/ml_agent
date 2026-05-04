@@ -102,7 +102,9 @@ async def _s2_request(
 
 
 async def _s2_get_json(
-    client: httpx.AsyncClient, path: str, params: dict | None = None,
+    client: httpx.AsyncClient,
+    path: str,
+    params: dict | None = None,
 ) -> dict | None:
     """Cached S2 GET returning parsed JSON or None."""
     key = _s2_cache_key(path, params)
@@ -119,7 +121,9 @@ async def _s2_get_json(
 
 
 async def _s2_get_paper(
-    client: httpx.AsyncClient, arxiv_id: str, fields: str,
+    client: httpx.AsyncClient,
+    arxiv_id: str,
+    fields: str,
 ) -> dict | None:
     """Fetch a single paper from S2 by arxiv ID. Returns None on failure."""
     return await _s2_get_json(
@@ -322,7 +326,9 @@ def _format_paper_detail(paper: dict, s2_data: dict | None = None) -> str:
     if keywords:
         lines.append(f"**Keywords:** {', '.join(keywords)}")
     if s2_data and s2_data.get("s2FieldsOfStudy"):
-        fields = [f["category"] for f in s2_data["s2FieldsOfStudy"] if f.get("category")]
+        fields = [
+            f["category"] for f in s2_data["s2FieldsOfStudy"] if f.get("category")
+        ]
         if fields:
             lines.append(f"**Fields:** {', '.join(fields)}")
     if s2_data and s2_data.get("venue"):
@@ -393,7 +399,9 @@ def _format_datasets(datasets: list, arxiv_id: str, sort: str) -> str:
         ds_id = ds.get("id", "unknown")
         downloads = ds.get("downloads", 0)
         likes = ds.get("likes", 0)
-        desc = _truncate(_clean_description(ds.get("description") or ""), MAX_SUMMARY_LEN)
+        desc = _truncate(
+            _clean_description(ds.get("description") or ""), MAX_SUMMARY_LEN
+        )
         tags = ds.get("tags") or []
         interesting = [t for t in tags if not t.startswith(("arxiv:", "region:"))][:5]
 
@@ -582,11 +590,15 @@ def _format_s2_paper_list(papers: list[dict], title: str) -> str:
             lines.append(f"**TL;DR:** {tldr}")
         lines.append("")
 
-    lines.append("Use paper_details with arxiv_id for full info, or read_paper to read sections.")
+    lines.append(
+        "Use paper_details with arxiv_id for full info, or read_paper to read sections."
+    )
     return "\n".join(lines)
 
 
-async def _s2_bulk_search(query: str, args: dict[str, Any], limit: int) -> ToolResult | None:
+async def _s2_bulk_search(
+    query: str, args: dict[str, Any], limit: int
+) -> ToolResult | None:
     """Search via S2 bulk endpoint with filters. Returns None on failure."""
     params: dict[str, Any] = {
         "query": query,
@@ -616,7 +628,9 @@ async def _s2_bulk_search(query: str, args: dict[str, Any], limit: int) -> ToolR
         params["sort"] = f"{sort_by}:desc"
 
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await _s2_request(client, "GET", "/graph/v1/paper/search/bulk", params=params)
+        resp = await _s2_request(
+            client, "GET", "/graph/v1/paper/search/bulk", params=params
+        )
         if not resp or resp.status_code != 200:
             return None
         data = resp.json()
@@ -629,7 +643,9 @@ async def _s2_bulk_search(query: str, args: dict[str, Any], limit: int) -> ToolR
             "resultsShared": 0,
         }
 
-    formatted = _format_s2_paper_list(papers[:limit], f"Papers matching '{query}' (Semantic Scholar)")
+    formatted = _format_s2_paper_list(
+        papers[:limit], f"Papers matching '{query}' (Semantic Scholar)"
+    )
     return {
         "formatted": formatted,
         "totalResults": data.get("total", len(papers)),
@@ -643,7 +659,10 @@ async def _op_search(args: dict[str, Any], limit: int) -> ToolResult:
         return _error("'query' is required for search operation.")
 
     # Route to S2 when filters are present
-    use_s2 = any(args.get(k) for k in ("date_from", "date_to", "categories", "min_citations", "sort_by"))
+    use_s2 = any(
+        args.get(k)
+        for k in ("date_from", "date_to", "categories", "min_citations", "sort_by")
+    )
     if use_s2:
         result = await _s2_bulk_search(query, args, limit)
         if result is not None:
@@ -806,7 +825,9 @@ def _format_citation_graph(
             lines.append("No citations found.")
         lines.append("")
 
-    lines.append("**Tip:** Use paper_details with an arxiv_id from above to explore further.")
+    lines.append(
+        "**Tip:** Use paper_details with an arxiv_id from above to explore further."
+    )
     return "\n".join(lines)
 
 
@@ -824,9 +845,13 @@ async def _op_citation_graph(args: dict[str, Any], limit: int) -> ToolResult:
         refs, cites = None, None
         coros = []
         if direction in ("references", "both"):
-            coros.append(_s2_get_json(client, f"/graph/v1/paper/{s2_id}/references", params))
+            coros.append(
+                _s2_get_json(client, f"/graph/v1/paper/{s2_id}/references", params)
+            )
         if direction in ("citations", "both"):
-            coros.append(_s2_get_json(client, f"/graph/v1/paper/{s2_id}/citations", params))
+            coros.append(
+                _s2_get_json(client, f"/graph/v1/paper/{s2_id}/citations", params)
+            )
 
         results = await asyncio.gather(*coros, return_exceptions=True)
         idx = 0
@@ -841,7 +866,9 @@ async def _op_citation_graph(args: dict[str, Any], limit: int) -> ToolResult:
                 cites = r.get("data", [])
 
     if refs is None and cites is None:
-        return _error(f"Could not fetch citation data for {arxiv_id}. Paper may not be indexed by Semantic Scholar.")
+        return _error(
+            f"Could not fetch citation data for {arxiv_id}. Paper may not be indexed by Semantic Scholar."
+        )
 
     total = (len(refs) if refs else 0) + (len(cites) if cites else 0)
     return {
@@ -1039,7 +1066,9 @@ def _format_snippets(snippets: list[dict], query: str) -> str:
             lines.append(f"> {_truncate(text, 400)}")
         lines.append("")
 
-    lines.append("Use paper_details or read_paper with arxiv_id to explore a paper further.")
+    lines.append(
+        "Use paper_details or read_paper with arxiv_id to explore a paper further."
+    )
     return "\n".join(lines)
 
 
@@ -1065,7 +1094,9 @@ async def _op_snippet_search(args: dict[str, Any], limit: int) -> ToolResult:
         params["minCitationCount"] = str(args["min_citations"])
 
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await _s2_request(client, "GET", "/graph/v1/snippet/search", params=params)
+        resp = await _s2_request(
+            client, "GET", "/graph/v1/snippet/search", params=params
+        )
         if not resp or resp.status_code != 200:
             return _error("Snippet search failed. Semantic Scholar may be unavailable.")
         data = resp.json()
@@ -1102,16 +1133,28 @@ async def _op_recommend(args: dict[str, Any], limit: int) -> ToolResult:
     async with httpx.AsyncClient(timeout=15) as client:
         if positive_ids and not arxiv_id:
             # Multi-paper recommendations (POST, not cached)
-            pos = [_s2_paper_id(pid.strip()) for pid in positive_ids.split(",") if pid.strip()]
+            pos = [
+                _s2_paper_id(pid.strip())
+                for pid in positive_ids.split(",")
+                if pid.strip()
+            ]
             neg_raw = args.get("negative_ids", "")
-            neg = [_s2_paper_id(pid.strip()) for pid in neg_raw.split(",") if pid.strip()] if neg_raw else []
+            neg = (
+                [_s2_paper_id(pid.strip()) for pid in neg_raw.split(",") if pid.strip()]
+                if neg_raw
+                else []
+            )
             resp = await _s2_request(
-                client, "POST", "/recommendations/v1/papers/",
+                client,
+                "POST",
+                "/recommendations/v1/papers/",
                 json={"positivePaperIds": pos, "negativePaperIds": neg},
                 params={"fields": fields, "limit": limit},
             )
             if not resp or resp.status_code != 200:
-                return _error("Recommendation request failed. Semantic Scholar may be unavailable.")
+                return _error(
+                    "Recommendation request failed. Semantic Scholar may be unavailable."
+                )
             data = resp.json()
         else:
             # Single-paper recommendations (cached)
@@ -1121,7 +1164,9 @@ async def _op_recommend(args: dict[str, Any], limit: int) -> ToolResult:
                 {"fields": fields, "limit": limit, "from": "recent"},
             )
             if not data:
-                return _error("Recommendation request failed. Semantic Scholar may be unavailable.")
+                return _error(
+                    "Recommendation request failed. Semantic Scholar may be unavailable."
+                )
 
     papers = data.get("recommendedPapers") or []
     if not papers:

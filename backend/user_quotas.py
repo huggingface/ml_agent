@@ -20,7 +20,11 @@ import asyncio
 import os
 from datetime import UTC, datetime
 
-from agent.core.session_persistence import NoopSessionStore, get_session_store, _reset_store_for_tests
+from agent.core.session_persistence import (
+    NoopSessionStore,
+    get_session_store,
+    _reset_store_for_tests,
+)
 
 CLAUDE_FREE_DAILY: int = int(os.environ.get("CLAUDE_FREE_DAILY", "1"))
 CLAUDE_PRO_DAILY: int = int(os.environ.get("CLAUDE_PRO_DAILY", "20"))

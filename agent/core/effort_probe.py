@@ -39,12 +39,12 @@ logger = logging.getLogger(__name__)
 # requested level raise ``UnsupportedEffortError`` synchronously (no wasted
 # network round-trip) and we advance to the next level.
 _EFFORT_CASCADE: dict[str, list[str]] = {
-    "max":     ["max", "xhigh", "high", "medium", "low"],
-    "xhigh":   ["xhigh", "high", "medium", "low"],
-    "high":    ["high", "medium", "low"],
-    "medium":  ["medium", "low"],
+    "max": ["max", "xhigh", "high", "medium", "low"],
+    "xhigh": ["xhigh", "high", "medium", "low"],
+    "high": ["high", "medium", "low"],
+    "medium": ["medium", "low"],
     "minimal": ["minimal", "low"],
-    "low":     ["low"],
+    "low": ["low"],
 }
 
 _PROBE_TIMEOUT = 15.0
@@ -69,6 +69,7 @@ class ProbeOutcome:
     * str → send this level
     * None → model doesn't support thinking; strip it
     """
+
     effective_effort: str | None
     attempts: int
     elapsed_ms: int
@@ -108,10 +109,15 @@ def _is_invalid_effort(e: Exception) -> bool:
     return any(
         phrase in s
         for phrase in (
-            "invalid", "not supported", "must be one of", "not a valid",
-            "unrecognized", "unknown",
+            "invalid",
+            "not supported",
+            "must be one of",
+            "not a valid",
+            "unrecognized",
+            "unknown",
             # LiteLLM's own pre-flight validation phrasing.
-            "only supported by", "is only supported",
+            "only supported by",
+            "is only supported",
         )
     )
 
@@ -128,11 +134,23 @@ def _is_transient(e: Exception) -> bool:
     return any(
         p in s
         for p in (
-            "timeout", "timed out", "429", "rate limit",
-            "503", "service unavailable", "502", "bad gateway",
-            "500", "internal server error", "overloaded", "capacity",
-            "connection reset", "connection refused", "connection error",
-            "eof", "broken pipe",
+            "timeout",
+            "timed out",
+            "429",
+            "rate limit",
+            "503",
+            "service unavailable",
+            "502",
+            "bad gateway",
+            "500",
+            "internal server error",
+            "overloaded",
+            "capacity",
+            "connection reset",
+            "connection refused",
+            "connection error",
+            "eof",
+            "broken pipe",
         )
     )
 
@@ -173,7 +191,10 @@ async def probe_effort(
     for effort in cascade:
         try:
             params = _resolve_llm_params(
-                model_name, hf_token, reasoning_effort=effort, strict=True,
+                model_name,
+                hf_token,
+                reasoning_effort=effort,
+                strict=True,
             )
         except UnsupportedEffortError:
             # Provider can't even accept this effort name (e.g. "max" on
@@ -198,12 +219,15 @@ async def probe_effort(
                 # out of the probe and break model switching.
                 try:
                     from agent.core import telemetry
+
                     await telemetry.record_llm_call(
                         session,
                         model=model_name,
                         response=response,
                         latency_ms=int((time.monotonic() - _t0) * 1000),
-                        finish_reason=response.choices[0].finish_reason if response.choices else None,
+                        finish_reason=response.choices[0].finish_reason
+                        if response.choices
+                        else None,
                         kind="effort_probe",
                     )
                 except Exception as _telem_err:
@@ -219,7 +243,9 @@ async def probe_effort(
                     note="model doesn't support reasoning, dropped",
                 )
             if _is_invalid_effort(e):
-                logger.debug("probe: %s rejected effort=%s, trying next", model_name, effort)
+                logger.debug(
+                    "probe: %s rejected effort=%s, trying next", model_name, effort
+                )
                 continue
             if _is_transient(e):
                 raise ProbeInconclusive(str(e)) from e

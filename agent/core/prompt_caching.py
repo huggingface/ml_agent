@@ -40,7 +40,11 @@ def with_prompt_caching(
 
     if messages:
         first = messages[0]
-        role = first.get("role") if isinstance(first, dict) else getattr(first, "role", None)
+        role = (
+            first.get("role")
+            if isinstance(first, dict)
+            else getattr(first, "role", None)
+        )
         if role == "system":
             content = (
                 first.get("content")
@@ -48,11 +52,13 @@ def with_prompt_caching(
                 else getattr(first, "content", None)
             )
             if isinstance(content, str) and content:
-                cached_block = [{
-                    "type": "text",
-                    "text": content,
-                    "cache_control": {"type": "ephemeral"},
-                }]
+                cached_block = [
+                    {
+                        "type": "text",
+                        "text": content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
                 new_first = {"role": "system", "content": cached_block}
                 messages = [new_first] + list(messages[1:])
 

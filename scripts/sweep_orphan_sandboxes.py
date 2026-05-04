@@ -128,14 +128,19 @@ def main() -> int:
 
     api = HfApi(token=token)
     cutoff = datetime.now(timezone.utc) - timedelta(days=args.max_age_days)
-    log({"level": "info", "msg": "sweep_start", "cutoff": cutoff.isoformat(),
-         "max_deletes": args.max_deletes, "apply": args.apply})
+    log(
+        {
+            "level": "info",
+            "msg": "sweep_start",
+            "cutoff": cutoff.isoformat(),
+            "max_deletes": args.max_deletes,
+            "apply": args.apply,
+        }
+    )
 
     # ``list_spaces`` doesn't filter by name pattern — we scan and filter
     # client-side. ``search="sandbox"`` narrows the network payload.
-    candidates = api.list_spaces(
-        search="sandbox", full=True, limit=args.limit
-    )
+    candidates = api.list_spaces(search="sandbox", full=True, limit=args.limit)
 
     scanned = 0
     matched = 0
@@ -150,15 +155,23 @@ def main() -> int:
             continue
         matched += 1
 
-        last_mod = getattr(space, "lastModified", None) or getattr(space, "last_modified", None)
+        last_mod = getattr(space, "lastModified", None) or getattr(
+            space, "last_modified", None
+        )
         if isinstance(last_mod, str):
             last_mod = datetime.fromisoformat(last_mod.replace("Z", "+00:00"))
         if last_mod and last_mod > cutoff:
             skipped_too_recent += 1
             continue
 
-        log({"level": "info", "msg": "candidate", "space_id": space.id,
-             "last_modified": last_mod.isoformat() if last_mod else None})
+        log(
+            {
+                "level": "info",
+                "msg": "candidate",
+                "space_id": space.id,
+                "last_modified": last_mod.isoformat() if last_mod else None,
+            }
+        )
 
         if not args.apply:
             continue
@@ -179,20 +192,40 @@ def main() -> int:
             time.sleep(0.2)
         except HfHubHTTPError as e:
             failed += 1
-            log({"level": "error", "msg": "delete_failed", "space_id": space.id,
-                 "status": e.response.status_code, "error": str(e)[:200]})
+            log(
+                {
+                    "level": "error",
+                    "msg": "delete_failed",
+                    "space_id": space.id,
+                    "status": e.response.status_code,
+                    "error": str(e)[:200],
+                }
+            )
         except Exception as e:
             failed += 1
-            log({"level": "error", "msg": "delete_failed", "space_id": space.id,
-                 "error": str(e)[:200]})
+            log(
+                {
+                    "level": "error",
+                    "msg": "delete_failed",
+                    "space_id": space.id,
+                    "error": str(e)[:200],
+                }
+            )
 
-    log({"level": "info", "msg": "sweep_end",
-         "scanned": scanned, "matched": matched,
-         "skipped_too_recent": skipped_too_recent,
-         "skipped_capped": skipped_capped,
-         "deleted": deleted, "failed": failed,
-         "capped": skipped_capped > 0,
-         "apply": args.apply})
+    log(
+        {
+            "level": "info",
+            "msg": "sweep_end",
+            "scanned": scanned,
+            "matched": matched,
+            "skipped_too_recent": skipped_too_recent,
+            "skipped_capped": skipped_capped,
+            "deleted": deleted,
+            "failed": failed,
+            "capped": skipped_capped > 0,
+            "apply": args.apply,
+        }
+    )
 
     return 0 if failed == 0 else 2
 
