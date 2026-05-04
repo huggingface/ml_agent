@@ -59,12 +59,12 @@ def fuzzy_find(content: str, pattern: str) -> tuple[int | None, str | None]:
         line_start_map[i] = original byte offset of the start of line i.
         """
         orig_lines = text.split("\n")
-        stripped_lines = [strip_fn(l) for l in orig_lines]
+        stripped_lines = [strip_fn(line) for line in orig_lines]
         return "\n".join(stripped_lines), orig_lines, stripped_lines
 
     # Pass 2 — right-trim
     c_rt, c_orig_lines, c_rt_lines = _build_stripped(content, str.rstrip)
-    p_rt = "\n".join(l.rstrip() for l in pattern.split("\n"))
+    p_rt = "\n".join(line.rstrip() for line in pattern.split("\n"))
     idx = c_rt.find(p_rt)
     if idx != -1:
         orig_idx = _map_back(idx, c_orig_lines, c_rt_lines)
@@ -72,7 +72,7 @@ def fuzzy_find(content: str, pattern: str) -> tuple[int | None, str | None]:
 
     # Pass 3 — both-sides trim
     c_st, _, c_st_lines = _build_stripped(content, str.strip)
-    p_st = "\n".join(l.strip() for l in pattern.split("\n"))
+    p_st = "\n".join(line.strip() for line in pattern.split("\n"))
     idx = c_st.find(p_st)
     if idx != -1:
         orig_idx = _map_back(idx, c_orig_lines, c_st_lines)

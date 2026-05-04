@@ -347,7 +347,7 @@ def _update_upload_status(
 
 def dataset_card_readme(repo_id: str) -> str:
     """Dataset card for personal ML Intern session trace repos."""
-    return f"""---
+    return """---
 pretty_name: "ML Intern Session Traces"
 language:
 - en

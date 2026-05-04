@@ -10,8 +10,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from agent.core.session import Event, Session
 
 
@@ -29,9 +27,8 @@ class _FakeConfig:
     mcpServers: dict = {}
 
 
-def _mk_session(tmp_path: Path) -> Session:
-    import os
-    os.chdir(tmp_path)  # so session_logs/ lands under tmp_path
+def _mk_session(tmp_path: Path, monkeypatch) -> Session:
+    monkeypatch.chdir(tmp_path)  # so session_logs/ lands under tmp_path
     # Stub out the context manager to avoid litellm lookups.
     from agent.context_manager.manager import ContextManager
     cm = ContextManager.__new__(ContextManager)
@@ -58,7 +55,7 @@ def test_heartbeat_fires_after_interval(tmp_path, monkeypatch):
     # Use asyncio.run rather than pytest-asyncio so the test works without the
     # plugin installed (same pattern elsewhere in this repo).
     async def body():
-        s = _mk_session(tmp_path)
+        s = _mk_session(tmp_path, monkeypatch)
         calls = []
 
         def fake_upload(repo_id):
@@ -94,9 +91,8 @@ def test_heartbeat_fires_after_interval(tmp_path, monkeypatch):
     asyncio.run(body())
 
 
-def test_stable_local_path_overwrites(tmp_path):
-    import os
-    os.chdir(tmp_path)
+def test_stable_local_path_overwrites(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     from agent.context_manager.manager import ContextManager
     cm = ContextManager.__new__(ContextManager)
     cm.items = []

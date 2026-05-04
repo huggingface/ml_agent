@@ -99,7 +99,6 @@ import sys
 import tempfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
 logger = logging.getLogger("build_kpis")

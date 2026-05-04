@@ -2,6 +2,7 @@
 Terminal display utilities — rich-powered CLI formatting.
 """
 
+import asyncio
 import re
 
 from rich.console import Console
@@ -124,8 +125,8 @@ def print_init_done(tool_count: int = 0) -> None:
     import time
     f = _console.file
     # Overwrite the "Tools: loading..." line with actual count
-    f.write(f"\033[A\033[A\033[A\033[K")  # Move up 3 lines (blank + help + blank) then up to tools line
-    f.write(f"\033[A\033[K")
+    f.write("\033[A\033[A\033[A\033[K")  # Move up 3 lines (blank + help + blank) then up to tools line
+    f.write("\033[A\033[K")
     gold = "\033[38;2;180;140;40m"
     reset = "\033[0m"
     tool_text = f"{_I}  Tools: {tool_count} loaded"
@@ -324,8 +325,8 @@ async def print_markdown(
     cancel_event: "asyncio.Event | None" = None,
     instant: bool = False,
 ) -> None:
-    import asyncio
-    import io, random
+    import io
+    import random
     from rich.padding import Padding
 
     _console.print()

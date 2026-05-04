@@ -5,19 +5,19 @@ from pathlib import Path
 from typing import Any, Union
 
 from dotenv import load_dotenv
-
-from agent.messaging.models import MessagingConfig
-
-# Project root: two levels up from this file (agent/config.py -> project root)
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 from fastmcp.mcp_config import (
     RemoteMCPServer,
     StdioMCPServer,
 )
 from pydantic import BaseModel
 
+from agent.messaging.models import MessagingConfig
+
 # These two are the canonical server config types for MCP servers.
 MCPServerConfig = Union[StdioMCPServer, RemoteMCPServer]
+
+# Project root: two levels up from this file (agent/config.py -> project root)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Config(BaseModel):

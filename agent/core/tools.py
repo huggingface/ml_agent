@@ -8,8 +8,6 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
-logger = logging.getLogger(__name__)
-
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from mcp.types import EmbeddedResource, ImageContent, TextContent
@@ -63,6 +61,8 @@ from agent.tools.web_search_tool import WEB_SEARCH_TOOL_SPEC, web_search_handler
 warnings.filterwarnings(
     "ignore", category=DeprecationWarning, module="aiohttp.connector"
 )
+
+logger = logging.getLogger(__name__)
 
 NOT_ALLOWED_TOOL_NAMES = ["hf_jobs", "hf_doc_search", "hf_doc_fetch", "hf_whoami"]
 

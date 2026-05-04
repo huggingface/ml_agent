@@ -1179,7 +1179,7 @@ async def headless_main(
         print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"HF token loaded", file=sys.stderr)
+    print("HF token loaded", file=sys.stderr)
 
     config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     config.yolo_mode = True  # Auto-approve everything in headless mode
@@ -1382,7 +1382,7 @@ def cli():
 
     parser = argparse.ArgumentParser(description="Hugging Face Agent CLI")
     parser.add_argument("prompt", nargs="?", default=None, help="Run headlessly with this prompt")
-    parser.add_argument("--model", "-m", default=None, help=f"Model to use (default: from config)")
+    parser.add_argument("--model", "-m", default=None, help="Model to use (default: from config)")
     parser.add_argument("--max-iterations", type=int, default=None,
                         help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
     parser.add_argument("--no-stream", action="store_true",

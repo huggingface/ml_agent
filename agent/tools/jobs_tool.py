@@ -7,11 +7,9 @@ Refactored to use official huggingface-hub library instead of custom HTTP client
 import asyncio
 import base64
 import http.client
-import os
-import re
-from typing import Any, Dict, Literal, Optional, Callable, Awaitable
-
 import logging
+import re
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 import httpx
 from huggingface_hub import HfApi
@@ -21,14 +19,14 @@ from agent.core.hf_access import JobsAccessError, is_billing_error, resolve_jobs
 from agent.core.session import Event
 from agent.tools.trackio_seed import ensure_trackio_dashboard
 from agent.tools.types import ToolResult
-
-logger = logging.getLogger(__name__)
 from agent.tools.utilities import (
     format_job_details,
     format_jobs_table,
     format_scheduled_job_details,
     format_scheduled_jobs_table,
 )
+
+logger = logging.getLogger(__name__)
 
 # Hardware flavors
 CPU_FLAVORS = ["cpu-basic", "cpu-upgrade"]

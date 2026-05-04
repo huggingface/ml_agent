@@ -5,7 +5,6 @@ Main agent implementation with integrated tool system and MCP support
 import asyncio
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any

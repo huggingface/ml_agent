@@ -27,7 +27,7 @@ Tags are deduplicated before returning.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Iterable
 
 # Flavor → GPU-family mapping. Keep conservative; unknown flavors → "none".
 _GPU_FAMILY = {

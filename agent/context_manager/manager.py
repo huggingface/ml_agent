@@ -3,7 +3,6 @@ Context management for conversation history
 """
 
 import logging
-import os
 import time
 import zoneinfo
 from datetime import datetime

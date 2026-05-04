@@ -7,7 +7,6 @@ dependency. In dev mode (no OAUTH_CLIENT_ID), auth is bypassed automatically.
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
 from dependencies import get_current_user, require_huggingface_org_member
@@ -644,7 +643,7 @@ async def submit_approval(
     request: ApprovalRequest, user: dict = Depends(get_current_user)
 ) -> dict:
     """Submit tool approvals to a session. Only accessible by the session owner."""
-    agent_session = await _check_session_access(request.session_id, user)
+    await _check_session_access(request.session_id, user)
     approvals = [
         {
             "tool_call_id": a.tool_call_id,
