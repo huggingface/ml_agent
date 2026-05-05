@@ -33,6 +33,7 @@ Notes:
 - The Space remote is `space` and points to `https://huggingface.co/spaces/smolagents/ml-intern`.
 - Deploy GitHub `main` to the Space from the local `space-main` branch by merging `origin/main` into `space-main` with a single merge commit, then pushing `space-main:main` to the `space` remote.
 - Keep the Space-only README frontmatter on `space-main`; `.gitattributes` should contain `README.md merge=ours` and the local repo config should include `merge.ours.driver=true`.
+- Local dev commonly uses a personal `HF_TOKEN`, but the deployed Space uses HF OAuth tokens. When adding Hub features, make sure the Space README `hf_oauth_scopes` frontmatter and the backend OAuth request in `backend/routes/auth.py` include the scopes required by the Hub APIs being called. A feature can work locally with a broad PAT and still fail in production with 403s if OAuth scopes are missing; after changing scopes, users may need to log out and log in again to receive a fresh token.
 - Recommended deploy flow:
 
 ```bash
