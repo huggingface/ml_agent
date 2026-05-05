@@ -672,7 +672,14 @@ async def submit_input(
     raw_session_id = payload.get("session_id")
     if not isinstance(raw_session_id, str) or not raw_session_id:
         raise RequestValidationError(
-            [{"type": "missing", "loc": ("body", "session_id"), "msg": "Field required", "input": payload}]
+            [
+                {
+                    "type": "missing",
+                    "loc": ("body", "session_id"),
+                    "msg": "Field required",
+                    "input": payload,
+                }
+            ]
         )
     agent_session = await _check_session_access(raw_session_id, user)
     try:
