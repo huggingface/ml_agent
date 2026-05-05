@@ -10,6 +10,7 @@ from typing import Any, Dict, Literal, Optional
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
+from agent.core.hub_artifacts import is_known_hub_artifact, register_hub_artifact
 from agent.tools.types import ToolResult
 
 OperationType = Literal["list", "read", "upload", "delete"]
@@ -39,8 +40,9 @@ def _format_size(size_bytes: int) -> str:
 class HfRepoFilesTool:
     """Tool for file operations on HF repos."""
 
-    def __init__(self, hf_token: Optional[str] = None):
+    def __init__(self, hf_token: Optional[str] = None, session: Any = None):
         self.api = HfApi(token=hf_token)
+        self.session = session
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the specified operation."""
@@ -214,6 +216,16 @@ class HfRepoFilesTool:
             create_pr=create_pr,
         )
 
+        if not create_pr and is_known_hub_artifact(self.session, repo_id, repo_type):
+            await _async_call(
+                register_hub_artifact,
+                self.api,
+                repo_id,
+                repo_type,
+                session=self.session,
+                force=path == "README.md",
+            )
+
         url = _build_repo_url(repo_id, repo_type)
         if create_pr and hasattr(result, "pr_url"):
             response = f"**Uploaded as PR**\n{result.pr_url}"
@@ -343,7 +355,7 @@ async def hf_repo_files_handler(
     """Handler for agent tool router."""
     try:
         hf_token = session.hf_token if session else None
-        tool = HfRepoFilesTool(hf_token=hf_token)
+        tool = HfRepoFilesTool(hf_token=hf_token, session=session)
         result = await tool.execute(arguments)
         return result["formatted"], not result.get("isError", False)
     except Exception as e:

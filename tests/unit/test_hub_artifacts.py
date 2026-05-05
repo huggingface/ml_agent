@@ -1,0 +1,191 @@
+from types import SimpleNamespace
+
+import pytest
+
+from agent.core import hub_artifacts
+from agent.core.hub_artifacts import (
+    ML_INTERN_TAG,
+    PROVENANCE_MARKER,
+    artifact_collection_title,
+    augment_repo_card_content,
+    build_hub_artifact_sitecustomize,
+    is_known_hub_artifact,
+    register_hub_artifact,
+)
+from agent.tools.hf_repo_git_tool import HfRepoGitTool
+from agent.tools.jobs_tool import _wrap_command_with_artifact_bootstrap
+
+
+def _session() -> SimpleNamespace:
+    return SimpleNamespace(
+        session_id="session-123",
+        session_start_time="2026-05-05T10:20:30",
+    )
+
+
+def test_artifact_collection_title_uses_session_date_and_id():
+    assert (
+        artifact_collection_title(_session())
+        == "ml-intern-artifacts-2026-05-05-session-123"
+    )
+
+
+def test_model_card_merges_tags_and_appends_provenance_and_usage():
+    content = """---
+license: apache-2.0
+tags:
+- text-generation
+---
+# Existing Model
+
+Existing details stay here.
+"""
+
+    updated = augment_repo_card_content(content, "alice/model", "model")
+    second_pass = augment_repo_card_content(updated, "alice/model", "model")
+
+    assert "license: apache-2.0" in updated
+    assert "- text-generation" in updated
+    assert f"- {ML_INTERN_TAG}" in updated
+    assert "# Existing Model" in updated
+    assert "Existing details stay here." in updated
+    assert PROVENANCE_MARKER in updated
+    assert "AutoModelForCausalLM" in updated
+    assert second_pass.count(PROVENANCE_MARKER) == 1
+    assert second_pass.count("AutoModelForCausalLM") == updated.count(
+        "AutoModelForCausalLM"
+    )
+
+
+def test_dataset_card_adds_load_dataset_usage():
+    updated = augment_repo_card_content("", "alice/dataset", "dataset")
+
+    assert f"- {ML_INTERN_TAG}" in updated
+    assert "# alice/dataset" in updated
+    assert "from datasets import load_dataset" in updated
+    assert 'load_dataset("alice/dataset")' in updated
+
+
+def test_existing_usage_section_is_preserved_without_duplicate_usage():
+    content = """# Existing Dataset
+
+## Usage
+
+Use the custom loader in this repository.
+"""
+
+    updated = augment_repo_card_content(content, "alice/dataset", "dataset")
+
+    assert "Use the custom loader in this repository." in updated
+    assert "from datasets import load_dataset" not in updated
+    assert PROVENANCE_MARKER in updated
+
+
+def test_space_card_gets_metadata_without_provenance_body():
+    updated = augment_repo_card_content("# Existing Space\n", "alice/space", "space")
+
+    assert f"- {ML_INTERN_TAG}" in updated
+    assert "# Existing Space" in updated
+    assert PROVENANCE_MARKER not in updated
+
+
+def test_register_hub_artifact_creates_private_collection_and_adds_item_once(
+    monkeypatch,
+):
+    session = _session()
+
+    class FakeApi:
+        token = "hf-token"
+
+        def __init__(self):
+            self.created_collections = []
+            self.collection_items = []
+            self.uploads = []
+
+        def create_collection(self, **kwargs):
+            self.created_collections.append(kwargs)
+            return SimpleNamespace(slug="alice/ml-intern-artifacts")
+
+        def add_collection_item(self, **kwargs):
+            self.collection_items.append(kwargs)
+
+        def upload_file(self, **kwargs):
+            self.uploads.append(kwargs)
+
+    api = FakeApi()
+    monkeypatch.setattr(hub_artifacts, "_read_remote_readme", lambda *_, **__: "")
+
+    assert register_hub_artifact(api, "alice/model", "model", session=session)
+    assert register_hub_artifact(api, "alice/model", "model", session=session)
+
+    assert is_known_hub_artifact(session, "alice/model", "model")
+    assert len(api.created_collections) == 1
+    assert api.created_collections[0]["title"] == artifact_collection_title(session)
+    assert api.created_collections[0]["private"] is True
+    assert len(api.collection_items) == 1
+    assert api.collection_items[0]["item_id"] == "alice/model"
+    assert api.collection_items[0]["item_type"] == "model"
+    assert api.collection_items[0]["exists_ok"] is True
+    assert len(api.uploads) == 1
+    assert b"ml-intern" in api.uploads[0]["path_or_fileobj"]
+
+
+@pytest.mark.asyncio
+async def test_hf_repo_git_create_repo_registers_artifact(monkeypatch):
+    session = _session()
+    calls = []
+
+    class FakeApi:
+        token = "hf-token"
+
+        def create_repo(self, **kwargs):
+            self.create_kwargs = kwargs
+            return "https://huggingface.co/spaces/alice/demo"
+
+    def fake_register(api, repo_id, repo_type, **kwargs):
+        calls.append((api, repo_id, repo_type, kwargs))
+        return True
+
+    monkeypatch.setattr(
+        "agent.tools.hf_repo_git_tool.register_hub_artifact",
+        fake_register,
+    )
+    tool = HfRepoGitTool(hf_token="hf-token", session=session)
+    tool.api = FakeApi()
+
+    result = await tool._create_repo(
+        {
+            "repo_id": "alice/demo",
+            "repo_type": "space",
+            "space_sdk": "gradio",
+            "private": True,
+        }
+    )
+
+    assert result["totalResults"] == 1
+    assert calls == [
+        (
+            tool.api,
+            "alice/demo",
+            "space",
+            {"session": session, "extra_metadata": {"sdk": "gradio"}},
+        )
+    ]
+
+
+def test_hf_jobs_artifact_bootstrap_wraps_command_without_changing_exec_target():
+    command = ["uv", "run", "train.py"]
+    wrapped = _wrap_command_with_artifact_bootstrap(command, _session())
+
+    assert wrapped[0:2] == ["/bin/sh", "-lc"]
+    assert "sitecustomize.py" in wrapped[2]
+    assert "PYTHONPATH" in wrapped[2]
+    assert "exec uv run train.py" in wrapped[2]
+    assert _wrap_command_with_artifact_bootstrap(command, None) == command
+
+
+def test_sitecustomize_bootstrap_is_valid_python():
+    code = build_hub_artifact_sitecustomize(_session())
+
+    compile(code, "sitecustomize.py", "exec")
+    assert "ml-intern-artifacts-2026-05-05-session-123" in code

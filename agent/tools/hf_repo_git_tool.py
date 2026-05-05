@@ -10,6 +10,7 @@ from typing import Any, Dict, Literal, Optional
 from huggingface_hub import HfApi
 from huggingface_hub.utils import RepositoryNotFoundError
 
+from agent.core.hub_artifacts import register_hub_artifact
 from agent.tools.types import ToolResult
 
 OperationType = Literal[
@@ -45,8 +46,9 @@ def _build_repo_url(repo_id: str, repo_type: str = "model") -> str:
 class HfRepoGitTool:
     """Tool for git-like operations on HF repos."""
 
-    def __init__(self, hf_token: Optional[str] = None):
+    def __init__(self, hf_token: Optional[str] = None, session: Any = None):
         self.api = HfApi(token=hf_token)
+        self.session = session
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the specified operation."""
@@ -552,6 +554,17 @@ class HfRepoGitTool:
             kwargs["space_sdk"] = space_sdk
 
         result = await _async_call(self.api.create_repo, **kwargs)
+        extra_metadata = None
+        if repo_type == "space" and space_sdk:
+            extra_metadata = {"sdk": space_sdk}
+        await _async_call(
+            register_hub_artifact,
+            self.api,
+            repo_id,
+            repo_type,
+            session=self.session,
+            extra_metadata=extra_metadata,
+        )
 
         return {
             "formatted": f"**Repository created:** {repo_id}\n**Private:** {private}\n{result}",
@@ -747,7 +760,7 @@ async def hf_repo_git_handler(
     """Handler for agent tool router."""
     try:
         hf_token = session.hf_token if session else None
-        tool = HfRepoGitTool(hf_token=hf_token)
+        tool = HfRepoGitTool(hf_token=hf_token, session=session)
         result = await tool.execute(arguments)
         return result["formatted"], not result.get("isError", False)
     except Exception as e:
