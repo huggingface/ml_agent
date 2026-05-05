@@ -38,7 +38,7 @@ def test_artifact_collection_title_uses_session_date_and_id():
     )
 
 
-def test_artifact_collection_title_truncates_uuid_to_hub_limit():
+def test_artifact_collection_title_uses_short_uuid_fragment():
     session = SimpleNamespace(
         session_id="fadcbc77-3439-4c2b-bc52-50d7f6353af3",
         session_start_time="2026-05-05T10:20:30",
@@ -46,7 +46,19 @@ def test_artifact_collection_title_truncates_uuid_to_hub_limit():
 
     title = artifact_collection_title(session)
 
-    assert title == "ml-intern-artifacts-2026-05-05-fadcbc77-3439-4c2b-bc52-50d7"
+    assert title == "ml-intern-artifacts-2026-05-05-fadcbc77"
+    assert len(title) < 60
+
+
+def test_artifact_collection_title_still_truncates_long_non_uuid_ids():
+    session = SimpleNamespace(
+        session_id="custom-session-id-that-is-longer-than-the-hub-title-limit",
+        session_start_time="2026-05-05T10:20:30",
+    )
+
+    title = artifact_collection_title(session)
+
+    assert title.startswith("ml-intern-artifacts-2026-05-05-custom-session-id")
     assert len(title) < 60
 
 

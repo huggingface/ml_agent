@@ -22,6 +22,10 @@ SUPPORTED_REPO_TYPES = {"model", "dataset", "space"}
 PROVENANCE_MARKER = "<!-- ml-intern-provenance -->"
 _COLLECTION_TITLE_PREFIX = "ml-intern-artifacts"
 _COLLECTION_TITLE_MAX_LENGTH = 59
+_UUID_SESSION_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 _KNOWN_ARTIFACTS_ATTR = "_ml_intern_known_hub_artifacts"
 _REGISTERED_ARTIFACTS_ATTR = "_ml_intern_registered_hub_artifacts"
 _COLLECTION_SLUG_ATTR = "_ml_intern_artifact_collection_slug"
@@ -55,6 +59,8 @@ def session_artifact_date(session: Any) -> str:
 
 def _collection_session_id_fragment(session: Any) -> str:
     safe_id = _safe_session_id(session)
+    if _UUID_SESSION_ID_RE.match(safe_id):
+        return safe_id[:8]
     stem = f"{_COLLECTION_TITLE_PREFIX}-{session_artifact_date(session)}-"
     max_id_length = max(1, _COLLECTION_TITLE_MAX_LENGTH - len(stem))
     if len(safe_id) <= max_id_length:
