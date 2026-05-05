@@ -145,6 +145,18 @@ def test_secret_scan_ignores_lowercase_token_parameter(tmp_path):
     assert payload["status"] == "clean"
 
 
+def test_secret_scan_ignores_json_escaped_redacted_env_assignments(tmp_path):
+    (tmp_path / "judge_output.txt").write_text(
+        'session_logs/session.json:1: "content": "HF_TOKEN=\\"[REDACTED]\\" '
+        'HUGGING_FACE_HUB_TOKEN=\\"[REDACTED]\\""\n',
+        encoding="utf-8",
+    )
+
+    payload = integrity.scan_secrets(tmp_path)
+
+    assert payload["status"] == "clean"
+
+
 def test_protected_files_snapshot_and_verify_clean_with_extra_files(tmp_path):
     task_dir = tmp_path / "task"
     (task_dir / "templates").mkdir(parents=True)

@@ -451,7 +451,7 @@ def find_secret_matches(text: str) -> list[dict]:
     for line_number, line in enumerate(text.splitlines(), start=1):
         for match in SECRET_ASSIGNMENT_RE.finditer(line):
             value = match.group(2)
-            if value.startswith("[REDACTED"):
+            if value.startswith("[REDACTED") or set(value) <= {"\\"}:
                 continue
             findings.append(
                 {
