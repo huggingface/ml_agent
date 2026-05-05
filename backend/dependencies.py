@@ -7,6 +7,8 @@
 import logging
 import os
 import time
+from collections.abc import Iterable
+from hashlib import sha256
 from typing import Any
 
 import httpx
@@ -37,10 +39,58 @@ DEV_USER: dict[str, Any] = {
 }
 
 INTERNAL_HF_TOKEN_KEY = "_hf_token"
+OAUTH_SCOPE_COOKIE = "hf_oauth_scope_hash"
+REQUIRED_OAUTH_SCOPES: tuple[str, ...] = (
+    "openid",
+    "profile",
+    "read-repos",
+    "write-repos",
+    "contribute-repos",
+    "manage-repos",
+    "write-collections",
+    "inference-api",
+    "jobs",
+    "write-discussions",
+)
 
 # Plan field discovery — log the whoami-v2 shape once at DEBUG so we can
 # confirm the actual key in production without hammering the HF API.
 _WHOAMI_SHAPE_LOGGED = False
+
+
+def normalize_oauth_scopes(scopes: Iterable[str]) -> tuple[str, ...]:
+    """Return stable, de-duplicated OAuth scopes preserving declaration order."""
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for scope in scopes:
+        value = str(scope).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return tuple(normalized)
+
+
+def configured_oauth_scopes() -> tuple[str, ...]:
+    """Return the scopes this backend should request from HF OAuth.
+
+    Spaces expose README ``hf_oauth_scopes`` through ``OAUTH_SCOPES``. Unioning
+    that value with the app-required scopes keeps the local request and Space
+    metadata in sync while ensuring new required scopes are never omitted.
+    """
+    env_scopes = os.environ.get("OAUTH_SCOPES", "").split()
+    return normalize_oauth_scopes((*env_scopes, *REQUIRED_OAUTH_SCOPES))
+
+
+def oauth_scope_fingerprint(scopes: Iterable[str] | None = None) -> str:
+    """Return a non-secret fingerprint for the current OAuth scope contract."""
+    scope_list = configured_oauth_scopes() if scopes is None else scopes
+    payload = " ".join(sorted(normalize_oauth_scopes(scope_list)))
+    return sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _cookie_has_current_oauth_scope_marker(request: Request) -> bool:
+    return request.cookies.get(OAUTH_SCOPE_COOKIE) == oauth_scope_fingerprint()
 
 
 async def _validate_token(token: str) -> dict[str, Any] | None:
@@ -223,6 +273,15 @@ async def get_current_user(request: Request) -> dict[str, Any]:
     # Try cookie
     token = request.cookies.get("hf_access_token")
     if token:
+        if not _cookie_has_current_oauth_scope_marker(request):
+            logger.info(
+                "Rejecting stale HF OAuth cookie; current scopes require refresh."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication scopes changed. Please log in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         user = await _extract_user_from_token(token)
         if user:
             return user

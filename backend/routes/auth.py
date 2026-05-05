@@ -10,7 +10,14 @@ import time
 from urllib.parse import urlencode
 
 import httpx
-from dependencies import AUTH_ENABLED, get_current_user
+from dependencies import (
+    AUTH_ENABLED,
+    OAUTH_SCOPE_COOKIE,
+    REQUIRED_OAUTH_SCOPES,
+    configured_oauth_scopes,
+    get_current_user,
+    oauth_scope_fingerprint,
+)
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
@@ -20,22 +27,19 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "")
 OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
 OPENID_PROVIDER_URL = os.environ.get("OPENID_PROVIDER_URL", "https://huggingface.co")
-OAUTH_SCOPES = (
-    "openid",
-    "profile",
-    "read-repos",
-    "write-repos",
-    "contribute-repos",
-    "manage-repos",
-    "write-collections",
-    "inference-api",
-    "jobs",
-    "write-discussions",
-)
+OAUTH_SCOPES = configured_oauth_scopes()
 
 # In-memory OAuth state store with expiry (5 min TTL)
 _OAUTH_STATE_TTL = 300
 oauth_states: dict[str, dict] = {}
+
+
+def _missing_required_scopes(token_data: dict) -> set[str]:
+    raw_scopes = token_data.get("scope")
+    if not isinstance(raw_scopes, str) or not raw_scopes.strip():
+        return set()
+    granted = set(raw_scopes.split())
+    return set(REQUIRED_OAUTH_SCOPES) - granted
 
 
 def _cleanup_expired_states() -> None:
@@ -131,6 +135,15 @@ async def oauth_callback(
             status_code=500,
             detail="Token exchange succeeded but no access_token was returned.",
         )
+    missing_scopes = _missing_required_scopes(token_data)
+    if missing_scopes:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "OAuth token is missing required scopes: "
+                + ", ".join(sorted(missing_scopes))
+            ),
+        )
 
     # Fetch user info (optional — failure is not fatal)
     async with httpx.AsyncClient() as client:
@@ -156,6 +169,15 @@ async def oauth_callback(
         max_age=3600 * 24 * 7,  # 7 days
         path="/",
     )
+    response.set_cookie(
+        key=OAUTH_SCOPE_COOKIE,
+        value=oauth_scope_fingerprint(OAUTH_SCOPES),
+        httponly=True,
+        secure=is_production,
+        samesite="lax",
+        max_age=3600 * 24 * 7,
+        path="/",
+    )
     return response
 
 
@@ -164,6 +186,7 @@ async def logout() -> RedirectResponse:
     """Log out the user by clearing the auth cookie."""
     response = RedirectResponse(url="/")
     response.delete_cookie(key="hf_access_token", path="/")
+    response.delete_cookie(key=OAUTH_SCOPE_COOKIE, path="/")
     return response
 
 
