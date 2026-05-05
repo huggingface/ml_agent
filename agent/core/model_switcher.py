@@ -48,6 +48,7 @@ def is_valid_model_id(model_id: str) -> bool:
     Accepts:
       • anthropic/<model>
       • openai/<model>
+      • azure/<model>
       • <org>/<model>[:<tag>]            (HF router; tag = provider or policy)
       • huggingface/<org>/<model>[:<tag>] (same, accepts legacy prefix)
 
@@ -67,10 +68,17 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     proceed with the switch, ``False`` to indicate a hard problem the user
     should notice before we fire the effort probe.
 
-    Anthropic / OpenAI ids return ``True`` without printing anything —
+    Anthropic / OpenAI / Azure ids return ``True`` without printing anything —
     the probe below covers "does this model exist".
     """
-    if model_id.startswith(("anthropic/", "openai/")):
+    if model_id.startswith(("anthropic/", "openai/", "azure/")):
+        import os
+        if model_id.startswith("azure/") and not os.environ.get("AZURE_API_BASE"):
+            console.print(
+                "[bold yellow]Warning:[/bold yellow] AZURE_API_BASE is not set. "
+                "Ensure AZURE_API_BASE, AZURE_API_KEY (or AZURE_AD_TOKEN), and "
+                "AZURE_API_VERSION are in your environment."
+            )
         return True
 
     from agent.core import hf_router_catalog as cat
@@ -141,7 +149,7 @@ def print_model_listing(config, console) -> None:
     console.print(
         "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
         "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
-        "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.[/dim]"
+        "Use 'anthropic/<model>', 'openai/<model>', or 'azure/<model>' for direct API access.[/dim]"
     )
 
 
@@ -151,7 +159,8 @@ def print_invalid_id(arg: str, console) -> None:
         "[dim]Expected:\n"
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
         "  • anthropic/<model>\n"
-        "  • openai/<model>[/dim]"
+        "  • openai/<model>\n"
+        "  • azure/<model>[/dim]"
     )
 
 

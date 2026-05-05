@@ -118,8 +118,8 @@ def _resolve_llm_params(
       will reject this; the probe's cascade catches that and falls back
       to no thinking.
 
-    • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
-      kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
+    • ``openai/<model>`` or ``azure/<model>`` — ``reasoning_effort`` forwarded
+      as a top-level kwarg. LiteLLM uses the user's API key or Azure credentials.
 
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
@@ -175,13 +175,14 @@ def _resolve_llm_params(
         # the same way, so we leave it off for now.
         return {"model": model_name}
 
-    if model_name.startswith("openai/"):
+    if model_name.startswith(("openai/", "azure/")):
         params = {"model": model_name}
         if reasoning_effort:
             if reasoning_effort not in _OPENAI_EFFORTS:
                 if strict:
+                    provider = "Azure" if model_name.startswith("azure/") else "OpenAI"
                     raise UnsupportedEffortError(
-                        f"OpenAI doesn't accept effort={reasoning_effort!r}"
+                        f"{provider} doesn't accept effort={reasoning_effort!r}"
                     )
             else:
                 params["reasoning_effort"] = reasoning_effort
