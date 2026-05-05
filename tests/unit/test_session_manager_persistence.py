@@ -431,6 +431,32 @@ async def test_create_session_schedules_cpu_sandbox_preload():
 
 
 @pytest.mark.asyncio
+async def test_create_session_starts_hub_artifact_collection(monkeypatch):
+    manager = _manager_with_store(NoopSessionStore())
+    manager.enable_hub_artifact_collections = True
+    stop = _install_fake_runtime(manager)
+    started: list[tuple[str, str]] = []
+
+    def fake_start_session_artifact_collection_task(session, **kwargs):
+        started.append((session.session_id, kwargs["token"]))
+        return None
+
+    monkeypatch.setattr(
+        "session_manager.start_session_artifact_collection_task",
+        fake_start_session_artifact_collection_task,
+    )
+    manager._start_cpu_sandbox_preload = lambda _: None  # type: ignore[method-assign]
+
+    try:
+        session_id = await manager.create_session(user_id="owner", hf_token="token")
+
+        assert started == [(session_id, "token")]
+    finally:
+        stop.set()
+        await _cancel_runtime_tasks(manager)
+
+
+@pytest.mark.asyncio
 async def test_lazy_restore_schedules_cpu_sandbox_preload():
     manager = _manager_with_store(RestoreStore())
     stop = _install_fake_runtime(manager)
@@ -449,6 +475,37 @@ async def test_lazy_restore_schedules_cpu_sandbox_preload():
         assert restored is not None
         assert scheduled == ["persisted-session"]
         assert "persisted-session" in manager.sessions
+    finally:
+        stop.set()
+        await _cancel_runtime_tasks(manager)
+
+
+@pytest.mark.asyncio
+async def test_lazy_restore_starts_hub_artifact_collection(monkeypatch):
+    manager = _manager_with_store(RestoreStore())
+    manager.enable_hub_artifact_collections = True
+    stop = _install_fake_runtime(manager)
+    started: list[tuple[str, str]] = []
+
+    def fake_start_session_artifact_collection_task(session, **kwargs):
+        started.append((session.session_id, kwargs["token"]))
+        return None
+
+    monkeypatch.setattr(
+        "session_manager.start_session_artifact_collection_task",
+        fake_start_session_artifact_collection_task,
+    )
+    manager._start_cpu_sandbox_preload = lambda _: None  # type: ignore[method-assign]
+
+    try:
+        restored = await manager.ensure_session_loaded(
+            "persisted-session",
+            user_id="owner",
+            hf_token="token",
+        )
+
+        assert restored is not None
+        assert started == [("persisted-session", "token")]
     finally:
         stop.set()
         await _cancel_runtime_tasks(manager)

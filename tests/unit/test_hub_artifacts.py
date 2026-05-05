@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -9,8 +10,10 @@ from agent.core.hub_artifacts import (
     artifact_collection_title,
     augment_repo_card_content,
     build_hub_artifact_sitecustomize,
+    ensure_session_artifact_collection,
     is_known_hub_artifact,
     register_hub_artifact,
+    start_session_artifact_collection_task,
     wrap_shell_command_with_hub_artifact_bootstrap,
 )
 from agent.tools import local_tools, sandbox_tool
@@ -130,6 +133,63 @@ def test_register_hub_artifact_creates_private_collection_and_adds_item_once(
     assert api.collection_items[0]["exists_ok"] is True
     assert len(api.uploads) == 1
     assert b"ml-intern" in api.uploads[0]["path_or_fileobj"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_artifact_collection_uses_user_token(monkeypatch):
+    session = _session()
+    calls = []
+
+    class FakeApi:
+        def __init__(self, token):
+            self.token = token
+
+    def fake_ensure_collection_slug(api, seen_session, **kwargs):
+        calls.append((api.token, seen_session, kwargs))
+        return "alice/ml-intern-artifacts"
+
+    monkeypatch.setattr(hub_artifacts, "HfApi", FakeApi)
+    monkeypatch.setattr(
+        hub_artifacts,
+        "_ensure_collection_slug",
+        fake_ensure_collection_slug,
+    )
+
+    slug = await ensure_session_artifact_collection(session, token="hf-token")
+
+    assert slug == "alice/ml-intern-artifacts"
+    assert calls == [
+        ("hf-token", session, {"token": "hf-token"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_session_artifact_collection_task_dedupes(monkeypatch):
+    session = _session()
+    calls = []
+
+    async def fake_ensure_session_artifact_collection(seen_session, **kwargs):
+        calls.append((seen_session, kwargs))
+        await asyncio.sleep(0)
+        return "alice/ml-intern-artifacts"
+
+    monkeypatch.setattr(
+        hub_artifacts,
+        "ensure_session_artifact_collection",
+        fake_ensure_session_artifact_collection,
+    )
+
+    task = start_session_artifact_collection_task(session, token="hf-token")
+    second = start_session_artifact_collection_task(session, token="hf-token")
+
+    assert task is not None
+    assert second is task
+    await task
+    assert calls == [(session, {"token": "hf-token"})]
+
+
+def test_start_session_artifact_collection_task_skips_without_token():
+    assert start_session_artifact_collection_task(_session()) is None
 
 
 @pytest.mark.asyncio
@@ -256,3 +316,19 @@ def test_sitecustomize_bootstrap_is_valid_python():
 
     compile(code, "sitecustomize.py", "exec")
     assert "ml-intern-artifacts-2026-05-05-session-123" in code
+
+
+def test_sitecustomize_bootstrap_reuses_existing_collection_slug():
+    session = _session()
+    setattr(
+        session,
+        hub_artifacts._COLLECTION_SLUG_ATTR,
+        "alice/ml-intern-artifacts-2026-05-05-session-123",
+    )
+
+    code = build_hub_artifact_sitecustomize(session)
+
+    compile(code, "sitecustomize.py", "exec")
+    assert (
+        "collection_slug = 'alice/ml-intern-artifacts-2026-05-05-session-123'" in code
+    )
