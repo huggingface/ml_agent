@@ -31,6 +31,9 @@ OPENAI_API_KEY=<your-openai-api-key> # if using openai models
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
+
+**Note on environment precedence:** Variables in the project root `.env` file take priority over shell environment variables. To temporarily override a value via the shell (e.g., `OPENAI_API_KEY=sk-********`), you must either remove it from `.env` or use a different `.env` path.
+
 If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
 
 ### Usage

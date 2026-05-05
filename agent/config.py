@@ -207,9 +207,10 @@ def load_config(
     Use ${VAR_NAME} in your JSON for any secret.
     Automatically loads from .env file.
     """
-    # Load .env from project root first (so it works from any directory),
-    # then CWD .env can override if present
-    load_dotenv(_PROJECT_ROOT / ".env")
+    # Load .env from project root first with override=True (project config takes precedence over shell env).
+    # Then attempt to load from CWD .env with override=False (won't override project-root .env or shell vars).
+    # Precedence: project-root .env > shell env > CWD .env
+    load_dotenv(_PROJECT_ROOT / ".env", override=True)
     load_dotenv(override=False)
 
     raw_config = _load_json_config(Path(config_path))
