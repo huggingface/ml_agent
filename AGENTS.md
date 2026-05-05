@@ -24,6 +24,10 @@ Notes:
 
 - For multiline PR descriptions, prefer `gh pr edit <number> --body-file <file>` over inline `--body` so shell quoting, `$` env-var names, backticks, and newlines are preserved correctly.
 
+## GitHub PRs
+
+- Open code changes as GitHub PRs first. Do not push code changes directly to the Hugging Face Space deployment branch or Space remote before the PR has been opened, reviewed, and merged, unless the user explicitly asks to bypass the PR flow.
+
 ## Hugging Face Space Deploys
 
 - The Space remote is `space` and points to `https://huggingface.co/spaces/smolagents/ml-intern`.
