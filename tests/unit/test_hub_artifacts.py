@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -13,10 +14,12 @@ from agent.core.hub_artifacts import (
     ensure_session_artifact_collection,
     is_known_hub_artifact,
     register_hub_artifact,
+    remember_hub_artifact,
     start_session_artifact_collection_task,
     wrap_shell_command_with_hub_artifact_bootstrap,
 )
 from agent.tools import local_tools, sandbox_tool
+from agent.tools.hf_repo_files_tool import HfRepoFilesTool
 from agent.tools.hf_repo_git_tool import HfRepoGitTool
 from agent.tools.jobs_tool import _wrap_command_with_artifact_bootstrap
 
@@ -135,6 +138,85 @@ def test_register_hub_artifact_creates_private_collection_and_adds_item_once(
     assert b"ml-intern" in api.uploads[0]["path_or_fileobj"]
 
 
+def test_register_hub_artifact_retries_after_partial_failure(monkeypatch):
+    session = _session()
+    api = SimpleNamespace(token="hf-token")
+    card_attempts = 0
+    collection_attempts = 0
+
+    def flaky_update_repo_card(*args, **kwargs):
+        nonlocal card_attempts
+        card_attempts += 1
+        if card_attempts == 1:
+            raise RuntimeError("temporary card failure")
+
+    def add_to_collection(*args, **kwargs):
+        nonlocal collection_attempts
+        collection_attempts += 1
+
+    monkeypatch.setattr(
+        hub_artifacts,
+        "_update_repo_card",
+        flaky_update_repo_card,
+    )
+    monkeypatch.setattr(hub_artifacts, "_add_to_collection", add_to_collection)
+
+    assert not register_hub_artifact(api, "alice/model", "model", session=session)
+    assert register_hub_artifact(api, "alice/model", "model", session=session)
+    assert register_hub_artifact(api, "alice/model", "model", session=session)
+
+    assert card_attempts == 2
+    assert collection_attempts == 2
+
+
+def test_register_hub_artifact_retries_after_collection_failure(monkeypatch):
+    session = _session()
+    api = SimpleNamespace(token="hf-token")
+    card_attempts = 0
+    collection_attempts = 0
+
+    def update_repo_card(*args, **kwargs):
+        nonlocal card_attempts
+        card_attempts += 1
+
+    def flaky_add_to_collection(*args, **kwargs):
+        nonlocal collection_attempts
+        collection_attempts += 1
+        if collection_attempts == 1:
+            raise RuntimeError("temporary collection failure")
+
+    monkeypatch.setattr(hub_artifacts, "_update_repo_card", update_repo_card)
+    monkeypatch.setattr(
+        hub_artifacts,
+        "_add_to_collection",
+        flaky_add_to_collection,
+    )
+
+    assert not register_hub_artifact(api, "alice/model", "model", session=session)
+    assert register_hub_artifact(api, "alice/model", "model", session=session)
+    assert register_hub_artifact(api, "alice/model", "model", session=session)
+
+    assert card_attempts == 2
+    assert collection_attempts == 2
+
+
+def test_session_artifact_set_falls_back_when_session_rejects_attrs(caplog):
+    class SlottedSession:
+        __slots__ = ("session_id", "session_start_time")
+
+        def __init__(self):
+            self.session_id = "session-123"
+            self.session_start_time = "2026-05-05T10:20:30"
+
+    session = SlottedSession()
+
+    with caplog.at_level(logging.WARNING):
+        remember_hub_artifact(session, "alice/model", "model")
+
+    assert is_known_hub_artifact(session, "alice/model", "model")
+    assert "using process-local fallback state" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_ensure_session_artifact_collection_uses_user_token(monkeypatch):
     session = _session()
@@ -232,6 +314,71 @@ async def test_hf_repo_git_create_repo_registers_artifact(monkeypatch):
             "space",
             {"session": session, "extra_metadata": {"sdk": "gradio"}},
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hf_repo_files_upload_registers_known_artifact_with_force(monkeypatch):
+    session = _session()
+    calls = []
+    uploads = []
+
+    class FakeApi:
+        token = "hf-token"
+
+        def upload_file(self, **kwargs):
+            uploads.append(kwargs)
+            return SimpleNamespace()
+
+    def fake_register(api, repo_id, repo_type, **kwargs):
+        calls.append((api, repo_id, repo_type, kwargs))
+        return True
+
+    monkeypatch.setattr(
+        "agent.tools.hf_repo_files_tool.register_hub_artifact",
+        fake_register,
+    )
+    remember_hub_artifact(session, "alice/model", "model")
+
+    tool = HfRepoFilesTool(hf_token="hf-token", session=session)
+    tool.api = FakeApi()
+
+    result = await tool._upload(
+        {
+            "repo_id": "alice/model",
+            "repo_type": "model",
+            "path": "weights.bin",
+            "content": b"weights",
+        }
+    )
+    readme_result = await tool._upload(
+        {
+            "repo_id": "alice/model",
+            "repo_type": "model",
+            "path": "README.md",
+            "content": "# Model",
+        }
+    )
+
+    assert result["totalResults"] == 1
+    assert readme_result["totalResults"] == 1
+    assert [upload["path_in_repo"] for upload in uploads] == [
+        "weights.bin",
+        "README.md",
+    ]
+    assert calls == [
+        (
+            tool.api,
+            "alice/model",
+            "model",
+            {"session": session, "force": False},
+        ),
+        (
+            tool.api,
+            "alice/model",
+            "model",
+            {"session": session, "force": True},
+        ),
     ]
 
 

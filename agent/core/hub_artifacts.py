@@ -24,6 +24,7 @@ _KNOWN_ARTIFACTS_ATTR = "_ml_intern_known_hub_artifacts"
 _REGISTERED_ARTIFACTS_ATTR = "_ml_intern_registered_hub_artifacts"
 _COLLECTION_SLUG_ATTR = "_ml_intern_artifact_collection_slug"
 _COLLECTION_TASK_ATTR = "_ml_intern_artifact_collection_task"
+_SESSION_ARTIFACT_SET_FALLBACK: dict[tuple[int, str], set[str]] = {}
 _USAGE_HEADING_RE = re.compile(
     r"^#{2,6}\s+(usage|how to use|using this (model|dataset)|use this (model|dataset))\b",
     re.IGNORECASE | re.MULTILINE,
@@ -66,7 +67,11 @@ def _session_artifact_set(session: Any, attr: str) -> set[str]:
     try:
         setattr(session, attr, current)
     except Exception:
-        logger.debug("Could not attach %s to session", attr)
+        logger.warning(
+            "Could not attach %s to session; using process-local fallback state",
+            attr,
+        )
+        return _SESSION_ARTIFACT_SET_FALLBACK.setdefault((id(session), attr), set())
     return current
 
 
@@ -376,6 +381,8 @@ def register_hub_artifact(
         return True
 
     token_value = token if token is not None else getattr(api, "token", None)
+    card_updated = False
+    collection_updated = False
     try:
         _update_repo_card(
             api,
@@ -384,16 +391,20 @@ def register_hub_artifact(
             token=token_value,
             extra_metadata=extra_metadata,
         )
+        card_updated = True
     except Exception as e:
         logger.debug("ML Intern repo-card update failed for %s: %s", repo_id, e)
 
     try:
         _add_to_collection(api, session, repo_id, repo_type, token=token_value)
+        collection_updated = True
     except Exception as e:
         logger.debug("ML Intern collection update failed for %s: %s", repo_id, e)
 
-    registered.add(key)
-    return True
+    if card_updated and collection_updated:
+        registered.add(key)
+        return True
+    return False
 
 
 def build_hub_artifact_sitecustomize(session: Any) -> str:
