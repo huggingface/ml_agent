@@ -28,10 +28,16 @@ Create a `.env` file in the project root (or export these in your shell):
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
 OPENAI_API_KEY=<your-openai-api-key> # if using openai models
+OLLAMA_BASE_URL=http://localhost:11434 # if using ollama/ local models
+VLLM_BASE_URL=http://localhost:8000 # if using vllm/ local models
+LMSTUDIO_BASE_URL=http://127.0.0.1:1234 # if using lm_studio/ local models
+LLAMACPP_BASE_URL=http://localhost:8080 # if using llamacpp/ local models
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
-If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
+If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch
+unless you start on a local model. To get a GITHUB_TOKEN follow the tutorial
+[here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
 
 ### Usage
 
@@ -52,9 +58,34 @@ ml-intern "fine-tune llama on my dataset"
 ```bash
 ml-intern --model anthropic/claude-opus-4-6 "your prompt"
 ml-intern --model openai/gpt-5.5 "your prompt"
+ml-intern --model ollama/llama3.1:8b "your prompt"
+ml-intern --model vllm/meta-llama/Llama-3.1-8B-Instruct "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
+
+**Local models:**
+
+Local model support uses OpenAI-compatible HTTP endpoints through LiteLLM. The
+agent does not load model weights directly from disk; start your inference
+server first, then select it with a provider-specific model prefix:
+
+```bash
+ml-intern --model ollama/llama3.1:8b "your prompt"
+ml-intern --model vllm/meta-llama/Llama-3.1-8B-Instruct "your prompt"
+```
+
+Inside interactive mode, switch with `/model`:
+
+```text
+/model ollama/llama3.1:8b
+/model lm_studio/google/gemma-3-4b
+/model llamacpp/llama-3.1-8b-instruct
+```
+
+Supported local prefixes are `ollama/`, `vllm/`, `lm_studio/`, and
+`llamacpp/`. Each prefix has a matching `*_BASE_URL` and optional `*_API_KEY`
+environment variable. Base URLs may include or omit `/v1`.
 
 ## Sharing Traces
 
