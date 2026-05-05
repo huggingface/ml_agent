@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 ML_INTERN_TAG = "ml-intern"
 SUPPORTED_REPO_TYPES = {"model", "dataset", "space"}
 PROVENANCE_MARKER = "<!-- ml-intern-provenance -->"
+_COLLECTION_TITLE_PREFIX = "ml-intern-artifacts"
+_COLLECTION_TITLE_MAX_LENGTH = 59
 _KNOWN_ARTIFACTS_ATTR = "_ml_intern_known_hub_artifacts"
 _REGISTERED_ARTIFACTS_ATTR = "_ml_intern_registered_hub_artifacts"
 _COLLECTION_SLUG_ATTR = "_ml_intern_artifact_collection_slug"
@@ -51,8 +53,20 @@ def session_artifact_date(session: Any) -> str:
     return datetime.utcnow().strftime("%Y-%m-%d")
 
 
+def _collection_session_id_fragment(session: Any) -> str:
+    safe_id = _safe_session_id(session)
+    stem = f"{_COLLECTION_TITLE_PREFIX}-{session_artifact_date(session)}-"
+    max_id_length = max(1, _COLLECTION_TITLE_MAX_LENGTH - len(stem))
+    if len(safe_id) <= max_id_length:
+        return safe_id
+    return safe_id[:max_id_length].rstrip("-._") or safe_id[:max_id_length]
+
+
 def artifact_collection_title(session: Any) -> str:
-    return f"ml-intern-artifacts-{session_artifact_date(session)}-{_safe_session_id(session)}"
+    return (
+        f"{_COLLECTION_TITLE_PREFIX}-{session_artifact_date(session)}-"
+        f"{_collection_session_id_fragment(session)}"
+    )
 
 
 def _artifact_key(repo_id: str, repo_type: str | None) -> str:
@@ -294,7 +308,11 @@ async def ensure_session_artifact_collection(
             token=token_value,
         )
     except Exception as e:
-        logger.debug("ML Intern session collection creation failed: %s", e)
+        logger.warning(
+            "ML Intern session collection creation failed for %s: %s",
+            _safe_session_id(session),
+            e,
+        )
         return None
 
 

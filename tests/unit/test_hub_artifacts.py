@@ -38,6 +38,18 @@ def test_artifact_collection_title_uses_session_date_and_id():
     )
 
 
+def test_artifact_collection_title_truncates_uuid_to_hub_limit():
+    session = SimpleNamespace(
+        session_id="fadcbc77-3439-4c2b-bc52-50d7f6353af3",
+        session_start_time="2026-05-05T10:20:30",
+    )
+
+    title = artifact_collection_title(session)
+
+    assert title == "ml-intern-artifacts-2026-05-05-fadcbc77-3439-4c2b-bc52-50d7"
+    assert len(title) < 60
+
+
 def test_model_card_merges_tags_and_appends_provenance_and_usage():
     content = """---
 license: apache-2.0
