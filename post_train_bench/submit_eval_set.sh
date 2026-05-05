@@ -6,6 +6,8 @@ usage() {
 Usage:
   bash post_train_bench/submit_eval_set.sh smoke
 
+  bash post_train_bench/submit_eval_set.sh smoke10 --dry-run
+
   bash post_train_bench/submit_eval_set.sh model-validation --dry-run
 
   bash post_train_bench/submit_eval_set.sh validation --dry-run
@@ -14,6 +16,8 @@ Usage:
 
 Modes:
   smoke  Submit one 10-minute validation job.
+  smoke10
+         Submit ten 2-hour artifact-validity jobs across models and benchmarks.
   model-validation
          Submit one 2-hour GSM8K artifact-validity job per full-matrix model.
   validation
@@ -180,6 +184,27 @@ rows = [{
 Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 PY
         ;;
+    smoke10)
+        python3 - "$MATRIX_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+rows = [
+    {"benchmark": "aime2025", "model_to_train": "google/gemma-3-4b-pt", "num_hours": 2, "eval_limit": 8},
+    {"benchmark": "gsm8k", "model_to_train": "google/gemma-3-4b-pt", "num_hours": 2, "eval_limit": 8},
+    {"benchmark": "humaneval", "model_to_train": "google/gemma-3-4b-pt", "num_hours": 2, "eval_limit": 8},
+    {"benchmark": "bfcl", "model_to_train": "Qwen/Qwen3-4B-Base", "num_hours": 2, "eval_limit": 8},
+    {"benchmark": "healthbench", "model_to_train": "Qwen/Qwen3-4B-Base", "num_hours": 2, "eval_limit": 8},
+    {"benchmark": "humaneval", "model_to_train": "Qwen/Qwen3-4B-Base", "num_hours": 2, "eval_limit": 8},
+    {"benchmark": "gsm8k", "model_to_train": "Qwen/Qwen3-1.7B-Base", "num_hours": 2, "eval_limit": 8},
+    {"benchmark": "gpqamain", "model_to_train": "Qwen/Qwen3-1.7B-Base", "num_hours": 2, "eval_limit": 8},
+    {"benchmark": "arenahardwriting", "model_to_train": "HuggingFaceTB/SmolLM3-3B-Base", "num_hours": 2, "eval_limit": 8},
+    {"benchmark": "bfcl", "model_to_train": "HuggingFaceTB/SmolLM3-3B-Base", "num_hours": 2, "eval_limit": 8},
+]
+Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+PY
+        ;;
     validation)
         python3 - "$MATRIX_FILE" <<'PY'
 import json
@@ -279,6 +304,9 @@ MATRIX_COUNT="$(wc -l < "$MATRIX_FILE" | tr -d ' ')"
 case "$MODE" in
     smoke)
         DEFAULT_SLURM_TIME="01:00:00"
+        ;;
+    smoke10)
+        DEFAULT_SLURM_TIME="03:00:00"
         ;;
     validation)
         DEFAULT_SLURM_TIME="03:00:00"
