@@ -11,7 +11,9 @@ from agent.core.hub_artifacts import (
     build_hub_artifact_sitecustomize,
     is_known_hub_artifact,
     register_hub_artifact,
+    wrap_shell_command_with_hub_artifact_bootstrap,
 )
+from agent.tools import local_tools, sandbox_tool
 from agent.tools.hf_repo_git_tool import HfRepoGitTool
 from agent.tools.jobs_tool import _wrap_command_with_artifact_bootstrap
 
@@ -182,6 +184,71 @@ def test_hf_jobs_artifact_bootstrap_wraps_command_without_changing_exec_target()
     assert "PYTHONPATH" in wrapped[2]
     assert "exec uv run train.py" in wrapped[2]
     assert _wrap_command_with_artifact_bootstrap(command, None) == command
+
+
+def test_shell_bootstrap_wraps_capybara_push_to_hub_pattern():
+    command = (
+        "pip install -q datasets huggingface_hub && python -c "
+        "\"subset.push_to_hub('lewtun/Capybara-100', private=False)\""
+    )
+
+    wrapped = wrap_shell_command_with_hub_artifact_bootstrap(command, _session())
+
+    assert "sitecustomize.py" in wrapped
+    assert "PYTHONPATH" in wrapped
+    assert command in wrapped
+    assert wrap_shell_command_with_hub_artifact_bootstrap(command, None) == command
+    assert (
+        wrap_shell_command_with_hub_artifact_bootstrap(
+            command,
+            SimpleNamespace(session_start_time="2026-05-05T10:20:30"),
+        )
+        == command
+    )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_bash_wraps_command_for_session_artifact_hooks():
+    calls = []
+
+    class FakeSandbox:
+        def call_tool(self, name, args):
+            calls.append((name, args))
+            return SimpleNamespace(success=True, output="ok", error="")
+
+    session = _session()
+    session.sandbox = FakeSandbox()
+
+    handler = sandbox_tool._make_tool_handler("bash")
+    output, ok = await handler({"command": "python make_dataset.py"}, session=session)
+
+    assert ok is True
+    assert output == "ok"
+    assert calls[0][0] == "bash"
+    assert "sitecustomize.py" in calls[0][1]["command"]
+    assert "python make_dataset.py" in calls[0][1]["command"]
+
+
+@pytest.mark.asyncio
+async def test_local_bash_wraps_command_for_session_artifact_hooks(monkeypatch):
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+    monkeypatch.setattr(local_tools.subprocess, "run", fake_run)
+
+    output, ok = await local_tools._bash_handler(
+        {"command": "python make_dataset.py"},
+        session=_session(),
+    )
+
+    assert ok is True
+    assert output == "ok"
+    assert "sitecustomize.py" in seen["command"]
+    assert "python make_dataset.py" in seen["command"]
 
 
 def test_sitecustomize_bootstrap_is_valid_python():

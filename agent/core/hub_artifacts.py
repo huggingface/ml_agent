@@ -2,8 +2,10 @@
 
 import logging
 import re
+import shlex
 import tempfile
 import textwrap
+import base64
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -334,7 +336,7 @@ def register_hub_artifact(
 
 def build_hub_artifact_sitecustomize(session: Any) -> str:
     """Build standalone sitecustomize.py code for HF Jobs Python processes."""
-    if session is None:
+    if session is None or not getattr(session, "session_id", None):
         return ""
 
     session_id = _safe_session_id(session)
@@ -644,3 +646,22 @@ def build_hub_artifact_sitecustomize(session: Any) -> str:
         ).strip()
         + "\n"
     )
+
+
+def wrap_shell_command_with_hub_artifact_bootstrap(
+    command: str,
+    session: Any,
+) -> str:
+    """Prefix a shell command so child Python processes load Hub hooks."""
+    sitecustomize = build_hub_artifact_sitecustomize(session)
+    if not sitecustomize or not command:
+        return command
+
+    encoded = base64.b64encode(sitecustomize.encode("utf-8")).decode("ascii")
+    bootstrap = (
+        '_ml_intern_artifacts_dir="$(mktemp -d 2>/dev/null)" '
+        f"&& printf %s {shlex.quote(encoded)} | base64 -d "
+        '> "$_ml_intern_artifacts_dir/sitecustomize.py" '
+        '&& export PYTHONPATH="$_ml_intern_artifacts_dir${PYTHONPATH:+:$PYTHONPATH}"'
+    )
+    return f"{bootstrap}; {command}"

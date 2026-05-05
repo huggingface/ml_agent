@@ -21,6 +21,7 @@ from typing import Any
 
 from huggingface_hub import HfApi, SpaceHardware
 
+from agent.core.hub_artifacts import wrap_shell_command_with_hub_artifact_bootstrap
 from agent.core.session import Event
 from agent.tools.sandbox_client import Sandbox
 from agent.tools.trackio_seed import ensure_trackio_dashboard
@@ -729,6 +730,14 @@ def _make_tool_handler(sandbox_tool_name: str):
             return "Sandbox is still starting. Please retry shortly.", False
 
         try:
+            if sandbox_tool_name == "bash" and args.get("command"):
+                args = {
+                    **args,
+                    "command": wrap_shell_command_with_hub_artifact_bootstrap(
+                        args["command"],
+                        session,
+                    ),
+                }
             result = await asyncio.to_thread(sb.call_tool, sandbox_tool_name, args)
             if result.success:
                 output = result.output or "(no output)"
