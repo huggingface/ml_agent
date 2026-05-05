@@ -53,6 +53,9 @@ Environment:
   POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES
                                Minimum minutes between headless continuation prompts.
                                Default: 30.
+  POST_TRAIN_BENCH_ARRAY_MAX_CONCURRENT
+                               Optional Slurm array throttle, e.g. 1 submits
+                               --array=0-N%1. Default: no throttle.
 EOF
 }
 
@@ -120,6 +123,7 @@ PROMPT_AGENT="${POST_TRAIN_BENCH_PROMPT_AGENT:-claude}"
 BASELINE_FINAL_MODEL="${POST_TRAIN_BENCH_BASELINE_FINAL_MODEL:-0}"
 REPROMPT="$(truthy_env "${POST_TRAIN_BENCH_REPROMPT:-0}")"
 REPROMPT_MIN_MINUTES="${POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES:-30}"
+ARRAY_MAX_CONCURRENT="${POST_TRAIN_BENCH_ARRAY_MAX_CONCURRENT:-}"
 METHOD_SUFFIX=""
 if [ "$REPROMPT" = "1" ]; then
     METHOD_SUFFIX="_reprompt"
@@ -127,6 +131,19 @@ fi
 export POST_TRAIN_BENCH_REPROMPT="$REPROMPT"
 export POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES="$REPROMPT_MIN_MINUTES"
 PTB_SLURM_JOB_ID=""
+
+array_spec() {
+    local count="$1"
+    local spec="0-$((count - 1))"
+    if [ -n "$ARRAY_MAX_CONCURRENT" ]; then
+        if ! [[ "$ARRAY_MAX_CONCURRENT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "POST_TRAIN_BENCH_ARRAY_MAX_CONCURRENT must be a positive integer." >&2
+            exit 2
+        fi
+        spec="${spec}%${ARRAY_MAX_CONCURRENT}"
+    fi
+    printf '%s\n' "$spec"
+}
 
 is_immutable_image() {
     local image="$1"
@@ -329,7 +346,7 @@ create_source_snapshot() {
 }
 
 write_metadata() {
-    export RUN_ID MODE DOCKER_IMAGE EVAL_DOCKER_IMAGE SEED_HF_CACHE PROMPT_AGENT PTB_DIR MATRIX_FILE MATRIX_COUNT RUN_STAMP PTB_SLURM_JOB_ID SOURCE_SNAPSHOT SLURM_TIME ALLOW_DIRTY ALLOW_MUTABLE_IMAGES BASELINE_FINAL_MODEL REPROMPT REPROMPT_MIN_MINUTES METHOD_SUFFIX
+    export RUN_ID MODE DOCKER_IMAGE EVAL_DOCKER_IMAGE SEED_HF_CACHE PROMPT_AGENT PTB_DIR MATRIX_FILE MATRIX_COUNT RUN_STAMP PTB_SLURM_JOB_ID SOURCE_SNAPSHOT SLURM_TIME ALLOW_DIRTY ALLOW_MUTABLE_IMAGES BASELINE_FINAL_MODEL REPROMPT REPROMPT_MIN_MINUTES METHOD_SUFFIX ARRAY_MAX_CONCURRENT
     python3 - "$RUN_ROOT/run_metadata.json" <<'PY'
 import hashlib
 import json
@@ -391,6 +408,7 @@ metadata = {
     "reprompt_min_minutes": float(os.environ["REPROMPT_MIN_MINUTES"]),
     "method_variant": "reprompt" if os.environ["REPROMPT"] == "1" else "standard",
     "method_suffix": os.environ["METHOD_SUFFIX"],
+    "array_max_concurrent": os.environ["ARRAY_MAX_CONCURRENT"] or None,
     "seed_hf_cache": os.environ["SEED_HF_CACHE"],
     "prompt_agent": os.environ["PROMPT_AGENT"],
     "slurm_time": os.environ["SLURM_TIME"],
@@ -419,11 +437,12 @@ PY
 
 if [ "$DRY_RUN" -eq 1 ]; then
     SOURCE_SNAPSHOT="${RUN_ROOT}/source_snapshot"
+    ARRAY_SPEC="$(array_spec "$MATRIX_COUNT")"
     SBATCH_CMD=(
         sbatch
         --parsable
         --hold
-        "--array=0-$((MATRIX_COUNT - 1))"
+        "--array=${ARRAY_SPEC}"
         "--time=${SLURM_TIME}"
         "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE=${EVAL_DOCKER_IMAGE},POST_TRAIN_BENCH_SEED_HF_CACHE=${SEED_HF_CACHE},POST_TRAIN_BENCH_PROMPT_AGENT=${PROMPT_AGENT},POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=${BASELINE_FINAL_MODEL},POST_TRAIN_BENCH_REPROMPT=${REPROMPT},POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES=${REPROMPT_MIN_MINUTES}"
         post_train_bench/launch.slurm
@@ -440,10 +459,11 @@ fi
 
 if [ -n "$EXPLICIT_RUN_ID" ]; then
     create_source_snapshot
+    ARRAY_SPEC="$(array_spec "$MATRIX_COUNT")"
     SBATCH_CMD=(
         sbatch
         --parsable
-        "--array=0-$((MATRIX_COUNT - 1))"
+        "--array=${ARRAY_SPEC}"
         "--time=${SLURM_TIME}"
         "--export=ALL,RUN_ROOT=${RUN_ROOT},MATRIX_FILE=${MATRIX_FILE},PTB_DIR=${PTB_DIR},REPO_ROOT=${SOURCE_SNAPSHOT},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE=${EVAL_DOCKER_IMAGE},POST_TRAIN_BENCH_SEED_HF_CACHE=${SEED_HF_CACHE},POST_TRAIN_BENCH_PROMPT_AGENT=${PROMPT_AGENT},POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=${BASELINE_FINAL_MODEL},POST_TRAIN_BENCH_REPROMPT=${REPROMPT},POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES=${REPROMPT_MIN_MINUTES},RUN_ID=${RUN_ID}"
         post_train_bench/launch.slurm
@@ -461,11 +481,12 @@ if [ -n "$EXPLICIT_RUN_ID" ]; then
     exit 0
 fi
 
+ARRAY_SPEC="$(array_spec "$MATRIX_COUNT")"
 SBATCH_CMD=(
     sbatch
     --parsable
     --hold
-    "--array=0-$((MATRIX_COUNT - 1))"
+    "--array=${ARRAY_SPEC}"
     "--time=${SLURM_TIME}"
     "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},POST_TRAIN_BENCH_EVAL_DOCKER_IMAGE=${EVAL_DOCKER_IMAGE},POST_TRAIN_BENCH_SEED_HF_CACHE=${SEED_HF_CACHE},POST_TRAIN_BENCH_PROMPT_AGENT=${PROMPT_AGENT},POST_TRAIN_BENCH_BASELINE_FINAL_MODEL=${BASELINE_FINAL_MODEL},POST_TRAIN_BENCH_REPROMPT=${REPROMPT},POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES=${REPROMPT_MIN_MINUTES}"
     post_train_bench/launch.slurm
