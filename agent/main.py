@@ -111,12 +111,21 @@ def _env_float(name: str, default: float) -> float:
 
 def _post_train_bench_reprompt_text() -> str:
     return (
-        "Continue working on the benchmark task. Check the timer and use the "
-        "remaining time productively. Do not end while primary training or "
-        "evaluation is still running in the background; wait for the PID and "
-        "check the exit code. Before your final response, verify that "
-        "`final_model` exists, contains the best available trained checkpoint, "
-        "and can be loaded with Transformers."
+        "You ended the previous turn before the benchmark artifact was "
+        "complete.\n\n"
+        "Immediately use tools. Do not answer with text only.\n\n"
+        "First run:\n"
+        "1. `bash timer.sh`\n"
+        "2. inspect whether `final_model/config.json` exists\n"
+        "3. inspect active training/evaluation PIDs\n"
+        "4. inspect checkpoint directories\n\n"
+        "If training is still running, do not start a new training run. Wait "
+        "for the existing PID, check its exit code, then save or copy the best "
+        "checkpoint into `final_model`.\n\n"
+        "If training has stopped, copy the newest valid checkpoint containing "
+        "`config.json` into `final_model`.\n\n"
+        "Before ending, run the required FINAL_MODEL_READY check. If it fails, "
+        "continue fixing. Do not send a final response until it passes."
     )
 
 
