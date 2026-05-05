@@ -50,11 +50,14 @@ ml-intern "fine-tune llama on my dataset"
 **Options:**
 
 ```bash
-ml-intern --model anthropic/claude-opus-4-6 "your prompt"
-ml-intern --model openai/gpt-5.5 "your prompt"
+ml-intern --model anthropic/claude-opus-4-7 "your prompt"   # requires ANTHROPIC_API_KEY
+ml-intern --model openai/gpt-5.5 "your prompt"              # requires OPENAI_API_KEY
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
+
+Run `ml-intern` then `/model` to see the full list of suggested model ids
+(Claude, GPT, and HF-router models like MiniMax, Kimi, GLM, DeepSeek).
 
 ## Sharing Traces
 
