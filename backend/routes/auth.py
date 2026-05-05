@@ -20,6 +20,18 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "")
 OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
 OPENID_PROVIDER_URL = os.environ.get("OPENID_PROVIDER_URL", "https://huggingface.co")
+OAUTH_SCOPES = (
+    "openid",
+    "profile",
+    "read-repos",
+    "write-repos",
+    "contribute-repos",
+    "manage-repos",
+    "write-collections",
+    "inference-api",
+    "jobs",
+    "write-discussions",
+)
 
 # In-memory OAuth state store with expiry (5 min TTL)
 _OAUTH_STATE_TTL = 300
@@ -69,7 +81,7 @@ async def oauth_login(request: Request) -> RedirectResponse:
     params = {
         "client_id": OAUTH_CLIENT_ID,
         "redirect_uri": get_redirect_uri(request),
-        "scope": "openid profile read-repos write-repos contribute-repos manage-repos inference-api jobs write-discussions",
+        "scope": " ".join(OAUTH_SCOPES),
         "response_type": "code",
         "state": state,
     }
