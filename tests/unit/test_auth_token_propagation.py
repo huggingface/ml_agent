@@ -3,6 +3,7 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -59,3 +60,16 @@ async def test_auth_me_does_not_expose_internal_hf_token():
         "username": "alice",
         "authenticated": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_oauth_login_requests_collection_write_scope(monkeypatch):
+    monkeypatch.setattr(auth, "OAUTH_CLIENT_ID", "oauth-client")
+    monkeypatch.setenv("SPACE_HOST", "example.hf.space")
+    auth.oauth_states.clear()
+
+    response = await auth.oauth_login(SimpleNamespace())
+    params = parse_qs(urlparse(response.headers["location"]).query)
+    scopes = set(params["scope"][0].split())
+
+    assert "write-collections" in scopes
