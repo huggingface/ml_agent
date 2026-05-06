@@ -375,7 +375,7 @@ If you use `ml-intern` in your work, please cite it by using the following BibTe
 ```bibtex
 @Misc{ml-intern,
   title =        {ml-intern: an agent that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem},
-  author =       {Aksel Joonas Reedi, Leandro von Werra, Lewis Tunstall, Henri Bonamy, Yoan Di Cosmo},
+  author =       {Aksel Joonas Reedi, Henri Bonamy, Yoan Di Cosmo, Leandro von Werra, Lewis Tunstall},
   howpublished = {\url{https://github.com/huggingface/ml-intern}},
   year =         {2026}
 }
