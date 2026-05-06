@@ -210,8 +210,10 @@ async def probe_and_switch_model(
     * ✗ hard error (auth, model-not-found, quota) — we reject the switch
       and keep the current model so the user isn't stranded
 
-    Transient errors (5xx, timeout) complete the switch with a yellow
-    warning; the next real call re-surfaces the error if it's persistent.
+    For non-local models, transient errors (5xx, timeout) complete the switch
+    with a yellow warning; the next real call re-surfaces the error if it's
+    persistent. Local models reject every probe error, including timeouts, and
+    keep the current model.
     """
     if is_local_model_id(model_id):
         console.print(f"[dim]checking local model {model_id}...[/dim]")

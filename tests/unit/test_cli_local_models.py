@@ -81,3 +81,41 @@ async def test_probe_and_switch_local_model_uses_no_effort(monkeypatch):
     assert calls[0]["model"] == "openai/llama3.1:8b"
     assert "reasoning_effort" not in calls[0]
     assert "extra_body" not in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_probe_and_switch_local_model_rejects_probe_errors(monkeypatch):
+    async def failing_acompletion(**kwargs):
+        raise ConnectionRefusedError("no server")
+
+    monkeypatch.setattr(model_switcher, "acompletion", failing_acompletion)
+
+    class Config:
+        model_name = "openai/gpt-5.5"
+        reasoning_effort = None
+
+    class Session:
+        def __init__(self):
+            self.model_id = None
+            self.model_effective_effort = {}
+
+        def update_model(self, model_id):
+            self.model_id = model_id
+
+    class Console:
+        def print(self, *args, **kwargs):
+            pass
+
+    config = Config()
+    session = Session()
+    await model_switcher.probe_and_switch_model(
+        "ollama/llama3.1:8b",
+        config,
+        session,
+        Console(),
+        hf_token=None,
+    )
+
+    assert config.model_name == "openai/gpt-5.5"
+    assert session.model_id is None
+    assert "ollama/llama3.1:8b" not in session.model_effective_effort

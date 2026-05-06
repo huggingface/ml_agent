@@ -12,7 +12,6 @@ from agent.core.local_models import (
     LOCAL_MODEL_API_KEY_DEFAULT,
     LOCAL_MODEL_API_KEY_ENV,
     LOCAL_MODEL_BASE_URL_ENV,
-    is_local_model_id,
     is_reserved_local_model_id,
     local_model_name,
     local_model_provider,
@@ -124,11 +123,12 @@ def _resolve_local_model_params(
             "Local OpenAI-compatible endpoints don't accept reasoning_effort"
         )
 
-    provider = local_model_provider(model_name)
     local_name = local_model_name(model_name)
-    if provider is None or local_name is None or not is_local_model_id(model_name):
+    if local_name is None:
         raise ValueError(f"Unsupported local model id: {model_name}")
 
+    provider = local_model_provider(model_name)
+    assert provider is not None
     raw_base = (
         os.environ.get(provider["base_url_env"])
         or os.environ.get(LOCAL_MODEL_BASE_URL_ENV)
