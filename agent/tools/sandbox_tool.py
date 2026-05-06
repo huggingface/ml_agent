@@ -21,6 +21,7 @@ from typing import Any
 
 from huggingface_hub import HfApi, SpaceHardware
 
+from agent.core.hub_artifacts import wrap_shell_command_with_hub_artifact_bootstrap
 from agent.core.session import Event
 from agent.tools.sandbox_client import Sandbox
 from agent.tools.trackio_seed import ensure_trackio_dashboard
@@ -120,6 +121,49 @@ async def _seed_trackio_dashboard_safe(session: Any, space_id: str) -> None:
         _log(f"trackio dashboard seed failed: {e}")
 
 
+async def _update_persisted_sandbox_fields(session: Any, **fields: Any) -> None:
+    """Best-effort update of sandbox metadata on the durable session record."""
+    store = getattr(session, "persistence_store", None)
+    session_id = getattr(session, "session_id", None)
+    if not (store and session_id and hasattr(store, "update_session_fields")):
+        return
+    try:
+        await store.update_session_fields(session_id, **fields)
+    except Exception as e:
+        logger.warning("Failed to persist sandbox metadata for %s: %s", session_id, e)
+
+
+async def _persist_active_sandbox(
+    session: Any,
+    sandbox: Sandbox,
+    *,
+    hardware: str,
+) -> None:
+    space_id = getattr(sandbox, "space_id", None)
+    if not space_id:
+        return
+    owner = space_id.split("/", 1)[0] if "/" in space_id else None
+    await _update_persisted_sandbox_fields(
+        session,
+        sandbox_space_id=space_id,
+        sandbox_hardware=hardware,
+        sandbox_owner=owner,
+        sandbox_created_at=datetime.now(timezone.utc),
+        sandbox_status="active",
+    )
+
+
+async def _clear_persisted_sandbox(session: Any) -> None:
+    await _update_persisted_sandbox_fields(
+        session,
+        sandbox_space_id=None,
+        sandbox_hardware=None,
+        sandbox_owner=None,
+        sandbox_created_at=None,
+        sandbox_status="destroyed",
+    )
+
+
 # ── Tool name mapping (short agent names → Sandbox client names) ──────
 
 
@@ -154,7 +198,9 @@ def _cleanup_user_orphan_sandboxes(
         if not _SANDBOX_NAME_RE.match(space_name):
             continue
 
-        last_mod = getattr(space, "lastModified", None) or getattr(space, "last_modified", None)
+        last_mod = getattr(space, "lastModified", None) or getattr(
+            space, "last_modified", None
+        )
         if isinstance(last_mod, str):
             try:
                 last_mod = datetime.fromisoformat(last_mod.replace("Z", "+00:00"))
@@ -294,6 +340,7 @@ async def _create_sandbox_locked(
     if hardware != DEFAULT_CPU_SANDBOX_HARDWARE:
         kwargs["sleep_time"] = 2700
     import time as _t
+
     _t_start = _t.monotonic()
     try:
         sb = await asyncio.to_thread(Sandbox.create, **kwargs)
@@ -307,17 +354,23 @@ async def _create_sandbox_locked(
             try:
                 await asyncio.to_thread(sb.delete)
             except Exception as e:
-                logger.warning("Failed to delete cancelled sandbox %s: %s", sb.space_id, e)
+                logger.warning(
+                    "Failed to delete cancelled sandbox %s: %s", sb.space_id, e
+                )
         return None, "Sandbox creation cancelled by user."
 
     session.sandbox = sb
     session.sandbox_hardware = hardware
     session.sandbox_preload_error = None
+    await _persist_active_sandbox(session, sb, hardware=hardware)
 
     # Telemetry: sandbox creation (infra consumption signal)
     from agent.core import telemetry
+
     await telemetry.record_sandbox_create(
-        session, sb, hardware=hardware,
+        session,
+        sb,
+        hardware=hardware,
         create_latency_s=int(_t.monotonic() - _t_start),
     )
 
@@ -448,28 +501,39 @@ async def teardown_session_sandbox(session: Any) -> None:
     session.sandbox = None
     session.sandbox_hardware = None
 
-    if not (sandbox and getattr(sandbox, "_owns_space", False)):
+    if not sandbox:
         return
 
-    space_id = getattr(sandbox, "space_id", None)
-    last_err: Exception | None = None
-    for attempt in range(3):
-        try:
-            logger.info("Deleting sandbox %s (attempt %s/3)...", space_id, attempt + 1)
-            await asyncio.to_thread(sandbox.delete)
-            from agent.core import telemetry
-            await telemetry.record_sandbox_destroy(session, sandbox)
+    try:
+        if not getattr(sandbox, "_owns_space", False):
             return
-        except Exception as e:
-            last_err = e
-            if attempt < 2:
-                await asyncio.sleep(2 ** attempt)
-    logger.error(
-        "Failed to delete sandbox %s after 3 attempts: %s. "
-        "Orphan — sweep script will pick it up.",
-        space_id,
-        last_err,
-    )
+
+        space_id = getattr(sandbox, "space_id", None)
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                logger.info(
+                    "Deleting sandbox %s (attempt %s/3)...",
+                    space_id,
+                    attempt + 1,
+                )
+                await asyncio.to_thread(sandbox.delete)
+                from agent.core import telemetry
+
+                await telemetry.record_sandbox_destroy(session, sandbox)
+                return
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    await asyncio.sleep(2**attempt)
+        logger.error(
+            "Failed to delete sandbox %s after 3 attempts: %s. "
+            "Orphan — sweep script will pick it up.",
+            space_id,
+            last_err,
+        )
+    finally:
+        await _clear_persisted_sandbox(session)
 
 
 # ── sandbox_create tool ──────────────────────────────────────────────
@@ -666,6 +730,14 @@ def _make_tool_handler(sandbox_tool_name: str):
             return "Sandbox is still starting. Please retry shortly.", False
 
         try:
+            if sandbox_tool_name == "bash" and args.get("command"):
+                args = {
+                    **args,
+                    "command": wrap_shell_command_with_hub_artifact_bootstrap(
+                        args["command"],
+                        session,
+                    ),
+                }
             result = await asyncio.to_thread(sb.call_tool, sandbox_tool_name, args)
             if result.success:
                 output = result.output or "(no output)"
@@ -704,8 +776,7 @@ def get_sandbox_tools():
         description = (
             "Uses the session's active sandbox. A private cpu-basic sandbox is "
             "started automatically for normal CPU work; call sandbox_create only "
-            "for GPU or other non-default hardware.\n\n"
-            + spec["description"]
+            "for GPU or other non-default hardware.\n\n" + spec["description"]
         )
         tools.append(
             ToolSpec(

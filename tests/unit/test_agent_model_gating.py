@@ -1,5 +1,6 @@
 """Tests for gated model handling in backend/routes/agent.py."""
 
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -114,7 +115,9 @@ async def test_explicit_gated_session_request_still_rejects_non_hf_user(monkeypa
     async def fake_require_hf_org_member(_request):
         return False
 
-    monkeypatch.setattr(agent, "require_huggingface_org_member", fake_require_hf_org_member)
+    monkeypatch.setattr(
+        agent, "require_huggingface_org_member", fake_require_hf_org_member
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await agent._model_override_for_new_session(None, agent.DEFAULT_CLAUDE_MODEL_ID)
@@ -253,3 +256,60 @@ async def test_set_session_yolo_calls_manager_with_cap_presence(monkeypatch):
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_delete_session_access_check_skips_sandbox_preload(monkeypatch):
+    ensure_calls = []
+    delete_calls = []
+
+    async def fake_ensure_session_loaded(session_id, user_id, **kwargs):
+        ensure_calls.append((session_id, user_id, kwargs))
+        return SimpleNamespace(user_id=user_id)
+
+    async def fake_delete_session(session_id):
+        delete_calls.append(session_id)
+        return True
+
+    monkeypatch.setattr(
+        agent.session_manager,
+        "ensure_session_loaded",
+        fake_ensure_session_loaded,
+    )
+    monkeypatch.setattr(agent.session_manager, "delete_session", fake_delete_session)
+
+    response = await agent.delete_session("s1", {"user_id": "u1"})
+
+    assert response == {"status": "deleted", "session_id": "s1"}
+    assert delete_calls == ["s1"]
+    assert ensure_calls[0][2]["preload_sandbox"] is False
+
+
+@pytest.mark.asyncio
+async def test_teardown_session_access_check_skips_sandbox_preload(monkeypatch):
+    ensure_calls = []
+    teardown_calls = []
+
+    async def fake_ensure_session_loaded(session_id, user_id, **kwargs):
+        ensure_calls.append((session_id, user_id, kwargs))
+        return SimpleNamespace(user_id=user_id)
+
+    async def fake_teardown_sandbox(session_id):
+        teardown_calls.append(session_id)
+        return True
+
+    monkeypatch.setattr(
+        agent.session_manager,
+        "ensure_session_loaded",
+        fake_ensure_session_loaded,
+    )
+    monkeypatch.setattr(
+        agent.session_manager, "teardown_sandbox", fake_teardown_sandbox
+    )
+
+    response = await agent.teardown_session_sandbox("s1", {"user_id": "u1"})
+    await asyncio.sleep(0)
+
+    assert response == {"status": "teardown_requested", "session_id": "s1"}
+    assert teardown_calls == ["s1"]
+    assert ensure_calls[0][2]["preload_sandbox"] is False

@@ -3,6 +3,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from agent.core import telemetry
 from agent.tools import sandbox_client, sandbox_tool
 from agent.tools.sandbox_client import Sandbox
@@ -41,7 +43,8 @@ def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     Sandbox.create(owner="alice", token="hf-token", log=lambda msg: None)
 
     assert duplicate_kwargs["private"] is True
-    assert requested_hardware == [(duplicate_kwargs["to_id"], "cpu-basic", None)]
+    assert duplicate_kwargs["hardware"] == "cpu-basic"
+    assert requested_hardware == []
 
 
 def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
@@ -89,6 +92,106 @@ def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
 
     assert sandbox.space_id.startswith("alice/sandbox-")
     assert runtime_calls == 2
+
+
+def test_sandbox_client_retries_transient_hardware_401(monkeypatch):
+    hardware_calls = 0
+    logs: list[str] = []
+
+    class FakeResponse:
+        status_code = 401
+
+    class FakeHardware401(Exception):
+        response = FakeResponse()
+
+        def __str__(self):
+            return "401 Client Error: Repository Not Found"
+
+    class FakeApi:
+        def __init__(self, token=None):
+            self.token = token
+
+        def duplicate_space(self, **kwargs):
+            pass
+
+        def request_space_hardware(self, space_id, hardware, sleep_time=None):
+            nonlocal hardware_calls
+            hardware_calls += 1
+            if hardware_calls == 1:
+                raise FakeHardware401()
+            return SimpleNamespace(stage="BUILDING", hardware=None)
+
+        def add_space_secret(self, *args, **kwargs):
+            pass
+
+        def get_space_runtime(self, space_id):
+            return SimpleNamespace(stage="RUNNING", hardware="t4-small")
+
+    monkeypatch.setattr(sandbox_client, "HfApi", FakeApi)
+    monkeypatch.setattr(sandbox_client.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        Sandbox,
+        "_setup_server",
+        staticmethod(lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(Sandbox, "_wait_for_api", lambda self, *args, **kwargs: None)
+
+    sandbox = Sandbox.create(
+        owner="alice",
+        token="hf-token",
+        hardware="t4-small",
+        log=logs.append,
+    )
+
+    assert sandbox.space_id.startswith("alice/sandbox-")
+    assert hardware_calls == 2
+    assert any("Hardware request not accepted yet (HTTP 401)" in log for log in logs)
+
+
+def test_sandbox_hardware_retry_reraises_after_timeout(monkeypatch):
+    calls = 0
+    logs: list[str] = []
+    sleeps: list[float] = []
+
+    class FakeResponse:
+        status_code = 401
+
+    class FakeHardware401(Exception):
+        response = FakeResponse()
+
+        def __str__(self):
+            return "401 Client Error: Repository Not Found"
+
+    first_error = FakeHardware401("first")
+    timeout_error = FakeHardware401("timeout")
+
+    class FakeApi:
+        def request_space_hardware(self, space_id, hardware, sleep_time=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise first_error
+            raise timeout_error
+
+    timestamps = iter([100.0, 100.0, 161.0])
+
+    monkeypatch.setattr(sandbox_client.time, "time", lambda: next(timestamps))
+    monkeypatch.setattr(sandbox_client.time, "sleep", sleeps.append)
+
+    with pytest.raises(FakeHardware401) as excinfo:
+        sandbox_client._request_space_hardware_with_retry(
+            FakeApi(),
+            "alice/sandbox-12345678",
+            hardware="cpu-basic",
+            sleep_time=None,
+            log=logs.append,
+            check_cancel=lambda: None,
+        )
+
+    assert excinfo.value is timeout_error
+    assert calls == 2
+    assert sleeps == [sandbox_client.WAIT_INTERVAL]
+    assert len(logs) == 1
 
 
 def test_sandbox_tool_forces_private_spaces(monkeypatch):
@@ -143,11 +246,14 @@ def test_orphan_sweep_preserves_spaces_without_last_modified():
 
     assert count == 0
     assert deleted == []
-    assert logs == ["orphan sweep: skipping alice/sandbox-12345678; missing lastModified"]
+    assert logs == [
+        "orphan sweep: skipping alice/sandbox-12345678; missing lastModified"
+    ]
 
 
 def test_ensure_sandbox_overrides_private_argument(monkeypatch):
     captured_kwargs = {}
+    persisted: list[dict] = []
 
     class FakeApi:
         def __init__(self, token=None):
@@ -158,13 +264,22 @@ def test_ensure_sandbox_overrides_private_argument(monkeypatch):
 
     class FakeSession:
         def __init__(self):
+            self.session_id = "s1"
             self.hf_token = "hf-token"
             self.sandbox = None
             self.event_queue = SimpleNamespace(put_nowait=lambda event: None)
             self._cancelled = asyncio.Event()
+            self.persistence_store = SimpleNamespace(
+                update_session_fields=lambda session_id, **fields: _record_metadata(
+                    session_id, fields
+                )
+            )
 
         async def send_event(self, event):
             pass
+
+    async def _record_metadata(session_id, fields):
+        persisted.append({"session_id": session_id, **fields})
 
     def fake_create(**kwargs):
         captured_kwargs.update(kwargs)
@@ -192,6 +307,11 @@ def test_ensure_sandbox_overrides_private_argument(monkeypatch):
     assert error is None
     assert sb is not None
     assert captured_kwargs["private"] is True
+    assert persisted[-1]["session_id"] == "s1"
+    assert persisted[-1]["sandbox_space_id"] == "alice/sandbox-12345678"
+    assert persisted[-1]["sandbox_hardware"] == "cpu-basic"
+    assert persisted[-1]["sandbox_owner"] == "alice"
+    assert persisted[-1]["sandbox_status"] == "active"
 
 
 def test_sandbox_creation_is_serialized_per_owner(monkeypatch):
@@ -337,7 +457,9 @@ def test_sandbox_create_replaces_auto_cpu_sandbox(monkeypatch):
         pass
 
     monkeypatch.setattr(sandbox_tool, "_ensure_sandbox", fake_ensure_sandbox)
-    monkeypatch.setattr(telemetry, "record_sandbox_destroy", fake_record_sandbox_destroy)
+    monkeypatch.setattr(
+        telemetry, "record_sandbox_destroy", fake_record_sandbox_destroy
+    )
 
     session = FakeSession()
     out, ok = asyncio.run(
@@ -356,11 +478,14 @@ def test_sandbox_create_replaces_auto_cpu_sandbox(monkeypatch):
 
 def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
     deleted: list[str] = []
+    persisted: list[dict] = []
 
     async def fake_record_sandbox_destroy(*args, **kwargs):
         pass
 
-    monkeypatch.setattr(telemetry, "record_sandbox_destroy", fake_record_sandbox_destroy)
+    monkeypatch.setattr(
+        telemetry, "record_sandbox_destroy", fake_record_sandbox_destroy
+    )
 
     async def run():
         cancel_event = threading.Event()
@@ -369,6 +494,7 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
             await asyncio.sleep(0)
 
         session = SimpleNamespace(
+            session_id="s1",
             sandbox=SimpleNamespace(
                 space_id="alice/sandbox-12345678",
                 _owns_space=True,
@@ -377,10 +503,18 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
             sandbox_hardware="cpu-basic",
             sandbox_preload_task=asyncio.create_task(preload()),
             sandbox_preload_cancel_event=cancel_event,
+            persistence_store=SimpleNamespace(
+                update_session_fields=lambda session_id, **fields: _record_metadata(
+                    session_id, fields
+                )
+            ),
         )
 
         await sandbox_tool.teardown_session_sandbox(session)
         return session, cancel_event
+
+    async def _record_metadata(session_id, fields):
+        persisted.append({"session_id": session_id, **fields})
 
     session, cancel_event = asyncio.run(run())
 
@@ -388,6 +522,9 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
     assert deleted == ["alice/sandbox-12345678"]
     assert session.sandbox is None
     assert session.sandbox_hardware is None
+    assert persisted[-1]["session_id"] == "s1"
+    assert persisted[-1]["sandbox_space_id"] is None
+    assert persisted[-1]["sandbox_status"] == "destroyed"
 
 
 def test_cancel_sandbox_preload_cancels_task_after_timeout(monkeypatch):

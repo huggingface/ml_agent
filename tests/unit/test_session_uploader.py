@@ -56,7 +56,9 @@ def test_upload_dataset_card_only_for_claude_code_format():
     assert api.calls[0]["repo_id"] == "lewtun/ml-intern-sessions"
     assert api.calls[0]["repo_type"] == "dataset"
     assert api.calls[0]["token"] == "hf_token"
-    assert b"no comprehensive redaction or human review" in api.calls[0]["path_or_fileobj"]
+    assert (
+        b"no comprehensive redaction or human review" in api.calls[0]["path_or_fileobj"]
+    )
 
 
 def test_personal_token_env_takes_precedence_for_hf_token(monkeypatch):

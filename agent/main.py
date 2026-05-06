@@ -25,6 +25,7 @@ from agent.core.approval_policy import is_scheduled_operation
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
 from agent.core.hf_tokens import resolve_hf_token
+from agent.core.local_models import is_local_model_id
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.messaging.gateway import NotificationGateway
@@ -77,6 +78,7 @@ def _configure_runtime_logging() -> None:
     logging.getLogger("LiteLLM").setLevel(logging.ERROR)
     logging.getLogger("litellm").setLevel(logging.ERROR)
 
+
 def _safe_get_args(arguments: dict) -> dict:
     """Safely extract args dict from arguments, handling cases where LLM passes string."""
     args = arguments.get("args", {})
@@ -92,6 +94,7 @@ def _get_hf_user(token: str | None) -> str | None:
         return None
     try:
         from huggingface_hub import HfApi
+
         return HfApi(token=token).whoami().get("name")
     except Exception:
         return None
@@ -134,9 +137,12 @@ async def _prompt_and_save_hf_token(prompt_session: PromptSession) -> str:
             login(token=token, add_to_git_credential=False)
             print("Token saved to ~/.cache/huggingface/token")
         except Exception as e:
-            print(f"Warning: could not persist token ({e}), using for this session only.")
+            print(
+                f"Warning: could not persist token ({e}), using for this session only."
+            )
 
         return token
+
 
 @dataclass
 class Operation:
@@ -162,9 +168,9 @@ def _create_rich_console():
 class _ThinkingShimmer:
     """Animated shiny/shimmer thinking indicator — a bright gradient sweeps across the text."""
 
-    _BASE = (90, 90, 110)       # dim base color
-    _HIGHLIGHT = (255, 200, 80) # bright shimmer highlight (warm gold)
-    _WIDTH = 5                  # shimmer width in characters
+    _BASE = (90, 90, 110)  # dim base color
+    _HIGHLIGHT = (255, 200, 80)  # bright shimmer highlight (warm gold)
+    _WIDTH = 5  # shimmer width in characters
     _FPS = 24
 
     def __init__(self, console):
@@ -245,7 +251,7 @@ class _StreamBuffer:
         if idx == -1:
             return None
         block = self._buffer[:idx]
-        self._buffer = self._buffer[idx + 2:]
+        self._buffer = self._buffer[idx + 2 :]
         return block
 
     async def flush_ready(
@@ -271,7 +277,9 @@ class _StreamBuffer:
         """Flush complete blocks, then render whatever incomplete tail remains."""
         await self.flush_ready(cancel_event=cancel_event, instant=instant)
         if self._buffer.strip():
-            await print_markdown(self._buffer, cancel_event=cancel_event, instant=instant)
+            await print_markdown(
+                self._buffer, cancel_event=cancel_event, instant=instant
+            )
         self._buffer = ""
 
     def discard(self):
@@ -372,7 +380,11 @@ async def event_listener(
             elif event.event_type == "error":
                 shimmer.stop()
                 stream_buf.discard()
-                error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
+                error = (
+                    event.data.get("error", "Unknown error")
+                    if event.data
+                    else "Unknown error"
+                )
                 print_error(error)
                 turn_complete_event.set()
             elif event.event_type == "shutdown":
@@ -392,8 +404,10 @@ async def event_listener(
 
                 # If yolo mode is active, auto-approve everything except
                 # scheduled HF jobs, whose recurring cost stays manual.
-                if config and config.yolo_mode and not any(
-                    _is_scheduled_hf_job_tool(t) for t in tools_data
+                if (
+                    config
+                    and config.yolo_mode
+                    and not any(_is_scheduled_hf_job_tool(t) for t in tools_data)
                 ):
                     approvals = [
                         {
@@ -637,7 +651,9 @@ async def event_listener(
                             f"Approve item {i}? (y=yes, yolo=approve all, n=no, or provide feedback): "
                         )
                     except (KeyboardInterrupt, EOFError):
-                        get_console().print("[dim]Approval cancelled — rejecting remaining items[/dim]")
+                        get_console().print(
+                            "[dim]Approval cancelled — rejecting remaining items[/dim]"
+                        )
                         approvals.append(
                             {
                                 "tool_call_id": tool_call_id,
@@ -770,7 +786,11 @@ async def _handle_slash_command(
         normalized = arg.removeprefix("huggingface/")
         session = session_holder[0] if session_holder else None
         await model_switcher.probe_and_switch_model(
-            normalized, config, session, console, resolve_hf_token(),
+            normalized,
+            config,
+            session,
+            console,
+            resolve_hf_token(),
         )
         return None
 
@@ -948,14 +968,14 @@ async def main(model: str | None = None):
     # Create prompt session for input (needed early for token prompt)
     prompt_session = PromptSession()
 
-    # HF token — required, prompt if missing
-    hf_token = resolve_hf_token()
-    if not hf_token:
-        hf_token = await _prompt_and_save_hf_token(prompt_session)
-
     config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     if model:
         config.model_name = model
+
+    # HF token — required for Hub-backed models/tools, but not for local LLMs.
+    hf_token = resolve_hf_token()
+    if not hf_token and not is_local_model_id(config.model_name):
+        hf_token = await _prompt_and_save_hf_token(prompt_session)
 
     # Resolve username for banner
     hf_user = _get_hf_user(hf_token)
@@ -965,6 +985,7 @@ async def main(model: str | None = None):
     # Pre-warm the HF router catalog in the background so /model switches
     # don't block on a network fetch.
     from agent.core import hf_router_catalog
+
     asyncio.create_task(asyncio.to_thread(hf_router_catalog.prewarm))
 
     # Create queues for communication
@@ -1110,7 +1131,11 @@ async def main(model: str | None = None):
             # Handle slash commands
             if user_input.strip().startswith("/"):
                 sub = await _handle_slash_command(
-                    user_input.strip(), config, session_holder, submission_queue, submission_id
+                    user_input.strip(),
+                    config,
+                    session_holder,
+                    submission_queue,
+                    submission_id,
                 )
                 if sub is None:
                     # Command handled locally, loop back for input
@@ -1174,21 +1199,26 @@ async def headless_main(
     logging.basicConfig(level=logging.WARNING)
     _configure_runtime_logging()
 
-    hf_token = resolve_hf_token()
-    if not hf_token:
-        print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"HF token loaded", file=sys.stderr)
-
     config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     config.yolo_mode = True  # Auto-approve everything in headless mode
-    notification_gateway = NotificationGateway(config.messaging)
-    await notification_gateway.start()
-    hf_user = _get_hf_user(hf_token)
 
     if model:
         config.model_name = model
+
+    hf_token = resolve_hf_token()
+    if not hf_token and not is_local_model_id(config.model_name):
+        print(
+            "ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if hf_token:
+        print("HF token loaded", file=sys.stderr)
+
+    notification_gateway = NotificationGateway(config.messaging)
+    await notification_gateway.start()
+    hf_user = _get_hf_user(hf_token)
 
     if max_iterations is not None:
         config.max_iterations = max_iterations
@@ -1327,26 +1357,35 @@ async def headless_main(
                 for t in tools_data
             ]
             _hl_sub_id[0] += 1
-            await submission_queue.put(Submission(
-                id=f"hl_approval_{_hl_sub_id[0]}",
-                operation=Operation(
-                    op_type=OpType.EXEC_APPROVAL,
-                    data={"approvals": approvals},
-                ),
-            ))
+            await submission_queue.put(
+                Submission(
+                    id=f"hl_approval_{_hl_sub_id[0]}",
+                    operation=Operation(
+                        op_type=OpType.EXEC_APPROVAL,
+                        data={"approvals": approvals},
+                    ),
+                )
+            )
         elif event.event_type == "compacted":
             old_tokens = event.data.get("old_tokens", 0) if event.data else 0
             new_tokens = event.data.get("new_tokens", 0) if event.data else 0
             print_compacted(old_tokens, new_tokens)
         elif event.event_type == "error":
             stream_buf.discard()
-            error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
+            error = (
+                event.data.get("error", "Unknown error")
+                if event.data
+                else "Unknown error"
+            )
             print_error(error)
             break
         elif event.event_type in ("turn_complete", "interrupted"):
             stream_buf.discard()
             history_size = event.data.get("history_size", "?") if event.data else "?"
-            print(f"\n--- Agent {event.event_type} (history_size={history_size}) ---", file=sys.stderr)
+            print(
+                f"\n--- Agent {event.event_type} (history_size={history_size}) ---",
+                file=sys.stderr,
+            )
             if event.event_type == "turn_complete":
                 session = session_holder[0] if session_holder else None
                 if session is not None:
@@ -1372,6 +1411,7 @@ def cli():
     """Entry point for the ml-intern CLI command."""
     import logging as _logging
     import warnings
+
     # Suppress aiohttp "Unclosed client session" noise during event loop teardown
     _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
     _configure_runtime_logging()
@@ -1381,12 +1421,23 @@ def cli():
     warnings.filterwarnings("ignore", category=SyntaxWarning, module="whoosh")
 
     parser = argparse.ArgumentParser(description="Hugging Face Agent CLI")
-    parser.add_argument("prompt", nargs="?", default=None, help="Run headlessly with this prompt")
-    parser.add_argument("--model", "-m", default=None, help=f"Model to use (default: from config)")
-    parser.add_argument("--max-iterations", type=int, default=None,
-                        help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
-    parser.add_argument("--no-stream", action="store_true",
-                        help="Disable token streaming (use non-streaming LLM calls)")
+    parser.add_argument(
+        "prompt", nargs="?", default=None, help="Run headlessly with this prompt"
+    )
+    parser.add_argument(
+        "--model", "-m", default=None, help="Model to use (default: from config)"
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="Max LLM requests per turn (default: 50, use -1 for unlimited)",
+    )
+    parser.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="Disable token streaming (use non-streaming LLM calls)",
+    )
     args = parser.parse_args()
 
     try:
@@ -1394,7 +1445,14 @@ def cli():
             max_iter = args.max_iterations
             if max_iter is not None and max_iter < 0:
                 max_iter = 10_000  # effectively unlimited
-            asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
+            asyncio.run(
+                headless_main(
+                    args.prompt,
+                    model=args.model,
+                    max_iterations=max_iter,
+                    stream=not args.no_stream,
+                )
+            )
         else:
             asyncio.run(main(model=args.model))
     except KeyboardInterrupt:

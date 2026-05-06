@@ -1,9 +1,21 @@
 """Provider adapters for runtime params and model-name validation."""
 
+import os
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
+from agent.core.local_models import (
+    LOCAL_MODEL_API_KEY_DEFAULT,
+    LOCAL_MODEL_API_KEY_ENV,
+    LOCAL_MODEL_BASE_URL_ENV,
+    LOCAL_MODEL_PREFIXES,
+    RESERVED_LOCAL_MODEL_PREFIXES,
+    is_local_model_id,
+    is_reserved_local_model_id,
+    local_model_name,
+    local_model_provider,
+)
 
 
 class UnsupportedEffortError(ValueError):
@@ -23,6 +35,10 @@ def _has_model_suffix(model_name: str, prefix: str) -> bool:
 
 def _is_hf_model_name(model_name: str) -> bool:
     if model_name.startswith(("anthropic/", "openai/", "bedrock/")):
+        return False
+    if model_name.startswith(LOCAL_MODEL_PREFIXES):
+        return False
+    if model_name.startswith(RESERVED_LOCAL_MODEL_PREFIXES):
         return False
     bare = model_name.removeprefix("huggingface/").split(":", 1)[0]
     parts = bare.split("/")
@@ -148,7 +164,13 @@ class HfRouterAdapter(ProviderAdapter):
     _EFFORTS: ClassVar[frozenset[str]] = frozenset({"low", "medium", "high"})
 
     def matches(self, model_name: str) -> bool:
-        return not model_name.startswith(("anthropic/", "openai/", "bedrock/"))
+        if model_name.startswith(("anthropic/", "openai/", "bedrock/")):
+            return False
+        if model_name.startswith(LOCAL_MODEL_PREFIXES):
+            return False
+        if model_name.startswith(RESERVED_LOCAL_MODEL_PREFIXES):
+            return False
+        return True
 
     def allows_model_name(self, model_name: str) -> bool:
         return _is_hf_model_name(model_name)
@@ -186,10 +208,70 @@ class HfRouterAdapter(ProviderAdapter):
         return params
 
 
+@dataclass(frozen=True)
+class LocalModelAdapter(ProviderAdapter):
+    """Local OpenAI-compatible endpoints (ollama / vllm / lm_studio / llamacpp).
+
+    The id prefix selects a configurable localhost base URL, and the model
+    suffix is sent to LiteLLM as ``openai/<model>``. Reserved prefixes
+    (e.g. ``openai-compat/``) are matched here so they reject cleanly
+    instead of falling through to the HF router.
+    """
+
+    prefixes: tuple[str, ...] = LOCAL_MODEL_PREFIXES
+
+    def matches(self, model_name: str) -> bool:
+        return model_name.startswith(self.prefixes) or model_name.startswith(
+            RESERVED_LOCAL_MODEL_PREFIXES
+        )
+
+    def allows_model_name(self, model_name: str) -> bool:
+        return is_local_model_id(model_name)
+
+    def build_params(
+        self,
+        model_name: str,
+        *,
+        session_hf_token: str | None = None,
+        reasoning_effort: str | None = None,
+        strict: bool = False,
+    ) -> dict:
+        if is_reserved_local_model_id(model_name) or not is_local_model_id(model_name):
+            raise ValueError(f"Unsupported local model id: {model_name}")
+
+        if reasoning_effort and strict:
+            raise UnsupportedEffortError(
+                "Local OpenAI-compatible endpoints don't accept reasoning_effort"
+            )
+
+        local_name = local_model_name(model_name)
+        provider = local_model_provider(model_name)
+        assert local_name is not None and provider is not None
+
+        raw_base = (
+            os.environ.get(provider["base_url_env"])
+            or os.environ.get(LOCAL_MODEL_BASE_URL_ENV)
+            or provider["base_url_default"]
+        )
+        api_key = (
+            os.environ.get(provider["api_key_env"])
+            or os.environ.get(LOCAL_MODEL_API_KEY_ENV)
+            or LOCAL_MODEL_API_KEY_DEFAULT
+        )
+        base = raw_base.strip().rstrip("/")
+        api_base = base if base.endswith("/v1") else f"{base}/v1"
+        return {
+            "model": f"openai/{local_name}",
+            "api_base": api_base,
+            "api_key": api_key,
+        }
+
+
 ADAPTERS: tuple[ProviderAdapter, ...] = (
     AnthropicAdapter(provider_id="anthropic"),
     BedrockAdapter(provider_id="bedrock"),
     OpenAIAdapter(provider_id="openai"),
+    LocalModelAdapter(provider_id="local"),
     HfRouterAdapter(provider_id="huggingface"),
 )
 

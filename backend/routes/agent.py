@@ -7,18 +7,23 @@ dependency. In dev mode (no OAUTH_CLIENT_ID), auth is bypassed automatically.
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
-from dependencies import get_current_user, require_huggingface_org_member
+from dependencies import (
+    INTERNAL_HF_TOKEN_KEY,
+    get_current_user,
+    require_huggingface_org_member,
+)
 from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
     Request,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from litellm import acompletion
+from pydantic import ValidationError
 from models import (
     ApprovalRequest,
     HealthResponse,
@@ -30,7 +35,12 @@ from models import (
     SubmitRequest,
     TruncateRequest,
 )
-from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, session_manager
+from session_manager import (
+    MAX_SESSIONS,
+    AgentSession,
+    SessionCapacityError,
+    session_manager,
+)
 
 import user_quotas
 
@@ -133,7 +143,7 @@ async def _require_hf_for_gated_model(request: Request, model_id: str) -> None:
     """403 if a non-``huggingface``-org user tries to select a gated model.
 
     Gated models are deployed paid endpoints backed by service-owned
-    credentials. The gate only fires for deployed paid models so non-HF users 
+    credentials. The gate only fires for deployed paid models so non-HF users
     can still freely switch between the free models.
     """
     if not _is_gated_model(model_id):
@@ -210,22 +220,37 @@ async def _enforce_gated_model_quota(
     await session_manager.persist_session_snapshot(agent_session)
 
 
+def _user_hf_token(user: dict[str, Any] | None) -> str | None:
+    if not isinstance(user, dict):
+        return None
+    return user.get(INTERNAL_HF_TOKEN_KEY)
+
+
 async def _check_session_access(
     session_id: str,
     user: dict[str, Any],
     request: Request | None = None,
+    preload_sandbox: bool = True,
 ) -> AgentSession:
     """Verify and lazily load the user's session. Raises 403 or 404."""
-    hf_token = resolve_hf_request_token(request) if request is not None else user.get("hf_token")
+    hf_token = (
+        resolve_hf_request_token(request)
+        if request is not None
+        else _user_hf_token(user)
+    )
     agent_session = await session_manager.ensure_session_loaded(
         session_id,
         user["user_id"],
         hf_token=hf_token,
         hf_username=user.get("username"),
+        preload_sandbox=preload_sandbox,
     )
     if not agent_session:
         raise HTTPException(status_code=404, detail="Session not found")
-    if user["user_id"] != "dev" and agent_session.user_id not in {user["user_id"], "dev"}:
+    if user["user_id"] != "dev" and agent_session.user_id not in {
+        user["user_id"],
+        "dev",
+    }:
         raise HTTPException(status_code=403, detail="Access denied to this session")
     return agent_session
 
@@ -295,9 +320,7 @@ async def generate_title(
     reasoning model — reasoning_effort=low keeps the reasoning budget small
     so the 60-token output budget isn't consumed before the title is written.
     """
-    api_key = resolve_hf_router_token(
-        user.get("hf_token") if isinstance(user, dict) else None
-    )
+    api_key = resolve_hf_router_token(_user_hf_token(user))
     try:
         response = await acompletion(
             # Double openai/ prefix: LiteLLM strips the first as its provider
@@ -331,7 +354,9 @@ async def generate_title(
             await _check_session_access(request.session_id, user)
             await session_manager.update_session_title(request.session_id, title)
         except Exception:
-            logger.debug("Skipping title persistence for missing session %s", request.session_id)
+            logger.debug(
+                "Skipping title persistence for missing session %s", request.session_id
+            )
         return {"title": title}
     except Exception as e:
         logger.warning(f"Title generation failed: {e}")
@@ -341,7 +366,10 @@ async def generate_title(
             await _check_session_access(request.session_id, user)
             await session_manager.update_session_title(request.session_id, title)
         except Exception:
-            logger.debug("Skipping fallback title persistence for missing session %s", request.session_id)
+            logger.debug(
+                "Skipping fallback title persistence for missing session %s",
+                request.session_id,
+            )
         return {"title": title}
 
 
@@ -555,7 +583,9 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
 
 
 @router.get("/user/jobs-access")
-async def get_jobs_access_info(request: Request, user: dict = Depends(get_current_user)) -> dict:
+async def get_jobs_access_info(
+    request: Request, user: dict = Depends(get_current_user)
+) -> dict:
     """Return the namespaces the current token can run HF Jobs under.
 
     Credits are enforced by the HF API at job-creation time, not here —
@@ -584,7 +614,7 @@ async def teardown_session_sandbox(
     session_id: str, user: dict = Depends(get_current_user)
 ) -> dict:
     """Best-effort sandbox teardown that preserves durable chat history."""
-    await _check_session_access(session_id, user)
+    await _check_session_access(session_id, user, preload_sandbox=False)
     task = asyncio.create_task(session_manager.teardown_sandbox(session_id))
     _background_teardown_tasks.add(task)
     task.add_done_callback(_background_teardown_tasks.discard)
@@ -596,7 +626,7 @@ async def delete_session(
     session_id: str, user: dict = Depends(get_current_user)
 ) -> dict:
     """Delete a session. Only accessible by the session owner."""
-    await _check_session_access(session_id, user)
+    await _check_session_access(session_id, user, preload_sandbox=False)
     success = await session_manager.delete_session(session_id)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -605,15 +635,41 @@ async def delete_session(
 
 @router.post("/submit")
 async def submit_input(
-    request: SubmitRequest, user: dict = Depends(get_current_user)
+    request: Request, user: dict = Depends(get_current_user)
 ) -> dict:
     """Submit user input to a session. Only accessible by the session owner."""
-    agent_session = await _check_session_access(request.session_id, user)
+    # Parse the body manually so session ownership can be checked before the
+    # text-length constraints fire — otherwise a non-owner sending an empty
+    # or oversized text gets a 422 leaking the constraint instead of the 404
+    # they'd get for any other access to a session they don't own.
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object")
+    raw_session_id = payload.get("session_id")
+    if not isinstance(raw_session_id, str) or not raw_session_id:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "missing",
+                    "loc": ("body", "session_id"),
+                    "msg": "Field required",
+                    "input": payload,
+                }
+            ]
+        )
+    agent_session = await _check_session_access(raw_session_id, user)
+    try:
+        body = SubmitRequest(**payload)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
     await _enforce_gated_model_quota(user, agent_session)
-    success = await session_manager.submit_user_input(request.session_id, request.text)
+    success = await session_manager.submit_user_input(body.session_id, body.text)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
-    return {"status": "submitted", "session_id": request.session_id}
+    return {"status": "submitted", "session_id": body.session_id}
 
 
 @router.post("/approve")
@@ -621,7 +677,7 @@ async def submit_approval(
     request: ApprovalRequest, user: dict = Depends(get_current_user)
 ) -> dict:
     """Submit tool approvals to a session. Only accessible by the session owner."""
-    agent_session = await _check_session_access(request.session_id, user)
+    await _check_session_access(request.session_id, user)
     approvals = [
         {
             "tool_call_id": a.tool_call_id,
@@ -688,7 +744,9 @@ async def chat_sse(
             success = await session_manager.submit_user_input(session_id, text)
         else:
             broadcaster.unsubscribe(sub_id)
-            raise HTTPException(status_code=400, detail="Must provide 'text' or 'approvals'")
+            raise HTTPException(
+                status_code=400, detail="Must provide 'text' or 'approvals'"
+            )
 
         if not success:
             broadcaster.unsubscribe(sub_id)
@@ -713,6 +771,7 @@ async def record_pro_click(
     agent_session = await _check_session_access(session_id, user)
 
     from agent.core import telemetry
+
     await telemetry.record_pro_cta_click(
         agent_session.session,
         source=str(body.get("source") or "unknown"),
@@ -728,12 +787,20 @@ async def record_pro_click(
 # ---------------------------------------------------------------------------
 # Shared SSE helpers
 # ---------------------------------------------------------------------------
-_TERMINAL_EVENTS = {"turn_complete", "approval_required", "error", "interrupted", "shutdown"}
+_TERMINAL_EVENTS = {
+    "turn_complete",
+    "approval_required",
+    "error",
+    "interrupted",
+    "shutdown",
+}
 _SSE_KEEPALIVE_SECONDS = 15
 
 
 def _last_event_seq(request: Request) -> int:
-    raw = request.headers.get("last-event-id") or request.query_params.get("after") or "0"
+    raw = (
+        request.headers.get("last-event-id") or request.query_params.get("after") or "0"
+    )
     try:
         return max(0, int(raw))
     except (TypeError, ValueError):
@@ -822,7 +889,9 @@ async def subscribe_events(
         raise HTTPException(status_code=404, detail="Session not found or inactive")
 
     after_seq = _last_event_seq(request)
-    replay_events = await session_manager._store().load_events_after(session_id, after_seq)
+    replay_events = await session_manager._store().load_events_after(
+        session_id, after_seq
+    )
     broadcaster = agent_session.broadcaster
     sub_id, event_queue = broadcaster.subscribe()
     return _sse_response(
@@ -854,7 +923,10 @@ async def get_session_messages(
     agent_session = await _check_session_access(session_id, user)
     if not agent_session or not agent_session.is_active:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
-    return [msg.model_dump(mode="json") for msg in agent_session.session.context_manager.items]
+    return [
+        msg.model_dump(mode="json")
+        for msg in agent_session.session.context_manager.items
+    ]
 
 
 @router.post("/undo/{session_id}")
@@ -869,13 +941,30 @@ async def undo_session(session_id: str, user: dict = Depends(get_current_user)) 
 
 @router.post("/truncate/{session_id}")
 async def truncate_session(
-    session_id: str, body: TruncateRequest, user: dict = Depends(get_current_user)
+    session_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """Truncate conversation to before a specific user message."""
+    # Check session ownership before parsing the request body so a 404 on a
+    # non-existent / non-owned session_id beats the 422 schema-validation error
+    # (otherwise the response leaks the required field name to non-owners).
     await _check_session_access(session_id, user)
+    try:
+        body = TruncateRequest(**(await request.json()))
+    except ValidationError as exc:
+        # Re-raise as RequestValidationError so FastAPI returns its standard
+        # structured 422 schema (`{"detail": [{"type":..., "loc":..., ...}]}`)
+        # instead of a string-stringified Pydantic dump.
+        raise RequestValidationError(exc.errors()) from exc
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     success = await session_manager.truncate(session_id, body.user_message_index)
     if not success:
-        raise HTTPException(status_code=404, detail="Session not found, inactive, or message index out of range")
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found, inactive, or message index out of range",
+        )
     return {"status": "truncated", "session_id": session_id}
 
 
@@ -902,6 +991,7 @@ async def shutdown_session(
         raise HTTPException(status_code=404, detail="Session not found or inactive")
     return {"status": "shutdown_requested", "session_id": session_id}
 
+
 @router.post("/feedback/{session_id}")
 async def submit_feedback(
     session_id: str,
@@ -921,6 +1011,7 @@ async def submit_feedback(
         raise HTTPException(status_code=400, detail="invalid rating")
 
     from agent.core import telemetry
+
     await telemetry.record_feedback(
         agent_session.session,
         rating=rating,

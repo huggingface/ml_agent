@@ -282,6 +282,7 @@ async def research_handler(
         _agent_id = tool_call_id
     else:
         import uuid
+
         _agent_id = uuid.uuid4().hex[:8]
     _agent_label = "research: " + (task[:50] + "…" if len(task) > 50 else task)
 
@@ -289,12 +290,15 @@ async def research_handler(
         """Send a progress event to the UI so it doesn't look frozen."""
         try:
             await session.send_event(
-                Event(event_type="tool_log", data={
-                    "tool": "research",
-                    "log": text,
-                    "agent_id": _agent_id,
-                    "label": _agent_label,
-                })
+                Event(
+                    event_type="tool_log",
+                    data={
+                        "tool": "research",
+                        "log": text,
+                        "agent_id": _agent_id,
+                        "label": _agent_label,
+                    },
+                )
             )
         except Exception:
             pass
@@ -323,15 +327,19 @@ async def research_handler(
                 "Research sub-agent hit context max (%d tokens) — forcing summary",
                 _total_tokens,
             )
-            await _log(f"Context limit reached ({_total_tokens} tokens) — forcing wrap-up")
+            await _log(
+                f"Context limit reached ({_total_tokens} tokens) — forcing wrap-up"
+            )
             # Ask for a final summary with no tools
-            messages.append(Message(
-                role="user",
-                content=(
-                    "[SYSTEM: CONTEXT LIMIT REACHED] You have used all available context. "
-                    "Summarize your findings NOW. Do NOT call any more tools."
-                ),
-            ))
+            messages.append(
+                Message(
+                    role="user",
+                    content=(
+                        "[SYSTEM: CONTEXT LIMIT REACHED] You have used all available context. "
+                        "Summarize your findings NOW. Do NOT call any more tools."
+                    ),
+                )
+            )
             try:
                 _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
                 _t0 = time.monotonic()
@@ -351,27 +359,34 @@ async def research_handler(
                         model=research_model,
                         response=response,
                         latency_ms=int((time.monotonic() - _t0) * 1000),
-                        finish_reason=response.choices[0].finish_reason if response.choices else None,
+                        finish_reason=response.choices[0].finish_reason
+                        if response.choices
+                        else None,
                         kind="research",
                     )
                 except Exception as _telem_err:
                     logger.debug("research telemetry failed: %s", _telem_err)
                 content = response.choices[0].message.content or ""
-                return content or "Research context exhausted — no summary produced.", bool(content)
+                return (
+                    content or "Research context exhausted — no summary produced.",
+                    bool(content),
+                )
             except Exception:
                 return "Research context exhausted and summary call failed.", False
 
         if not _warned_context and _total_tokens >= _RESEARCH_CONTEXT_WARN:
             _warned_context = True
             await _log(f"Context at {_total_tokens} tokens — nudging to wrap up")
-            messages.append(Message(
-                role="user",
-                content=(
-                    "[SYSTEM: You have used 75% of your context budget. "
-                    "Start wrapping up: finish any critical lookups, then "
-                    "produce your final summary within the next 1-2 iterations.]"
-                ),
-            ))
+            messages.append(
+                Message(
+                    role="user",
+                    content=(
+                        "[SYSTEM: You have used 75% of your context budget. "
+                        "Start wrapping up: finish any critical lookups, then "
+                        "produce your final summary within the next 1-2 iterations.]"
+                    ),
+                )
+            )
 
         try:
             _msgs, _tools = with_prompt_caching(
@@ -392,7 +407,9 @@ async def research_handler(
                     model=research_model,
                     response=response,
                     latency_ms=int((time.monotonic() - _t0) * 1000),
-                    finish_reason=response.choices[0].finish_reason if response.choices else None,
+                    finish_reason=response.choices[0].finish_reason
+                    if response.choices
+                    else None,
                     kind="research",
                 )
             except Exception as _telem_err:
@@ -420,11 +437,13 @@ async def research_handler(
         # LiteLLM's raw Message carries `provider_specific_fields` and
         # `reasoning_content`, which the HF router's OpenAI schema rejects
         # if we echo them back in the next request.
-        messages.append(Message(
-            role="assistant",
-            content=msg.content,
-            tool_calls=msg.tool_calls,
-        ))
+        messages.append(
+            Message(
+                role="assistant",
+                content=msg.content,
+                tool_calls=msg.tool_calls,
+            )
+        )
         for tc in msg.tool_calls:
             try:
                 tool_args = json.loads(tc.function.arguments)
@@ -479,13 +498,15 @@ async def research_handler(
 
     # ── Iteration limit: try to salvage findings ──
     await _log("Iteration limit reached — extracting summary")
-    messages.append(Message(
-        role="user",
-        content=(
-            "[SYSTEM: ITERATION LIMIT] You have reached the maximum number of research "
-            "iterations. Summarize ALL findings so far. Do NOT call any more tools."
-        ),
-    ))
+    messages.append(
+        Message(
+            role="user",
+            content=(
+                "[SYSTEM: ITERATION LIMIT] You have reached the maximum number of research "
+                "iterations. Summarize ALL findings so far. Do NOT call any more tools."
+            ),
+        )
+    )
     try:
         _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
         _t0 = time.monotonic()
@@ -502,7 +523,9 @@ async def research_handler(
                 model=research_model,
                 response=response,
                 latency_ms=int((time.monotonic() - _t0) * 1000),
-                finish_reason=response.choices[0].finish_reason if response.choices else None,
+                finish_reason=response.choices[0].finish_reason
+                if response.choices
+                else None,
                 kind="research",
             )
         except Exception as _telem_err:

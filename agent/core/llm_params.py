@@ -1,4 +1,9 @@
-"""LiteLLM kwargs resolution for the model ids this agent accepts."""
+"""LiteLLM kwargs resolution for the model ids this agent accepts.
+
+Kept separate from ``agent_loop`` so tools (research, context compaction, etc.)
+can import it without pulling in the whole agent loop / tool router and
+creating circular imports.
+"""
 
 from agent.core.hf_tokens import resolve_hf_router_token
 from agent.core.provider_adapters import (
@@ -40,9 +45,16 @@ def _patch_litellm_effort_validation() -> None:
         # to return True for families where "max" / "xhigh" are acceptable
         # at the API; the cascade handles the case when they're not.
         return any(
-            v in m for v in (
-                "opus-4-6", "opus_4_6", "opus-4.6", "opus_4.6",
-                "opus-4-7", "opus_4_7", "opus-4.7", "opus_4.7",
+            v in m
+            for v in (
+                "opus-4-6",
+                "opus_4_6",
+                "opus-4.6",
+                "opus_4.6",
+                "opus-4-7",
+                "opus_4_7",
+                "opus-4.7",
+                "opus_4.7",
             )
         )
 

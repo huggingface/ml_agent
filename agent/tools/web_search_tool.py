@@ -253,7 +253,10 @@ async def web_search_handler(
 ) -> tuple[str, bool]:
     query_value = arguments.get("query", "")
     if not isinstance(query_value, str):
-        return "Error: web_search requires a query string with at least 2 characters.", False
+        return (
+            "Error: web_search requires a query string with at least 2 characters.",
+            False,
+        )
 
     query = query_value.strip()
     if len(query) < 2:

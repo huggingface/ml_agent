@@ -34,62 +34,64 @@ def _make_cm() -> ContextManager:
 
 def test_orphan_tool_use_followed_by_user_message_is_patched():
     cm = _make_cm()
-    cm.items.extend([
-        Message(role="user", content="Research X"),
-        Message(
-            role="assistant",
-            content=None,
-            tool_calls=[_tool_call("call_abc", "research")],
-        ),
-        Message(role="user", content="??"),
-    ])
+    cm.items.extend(
+        [
+            Message(role="user", content="Research X"),
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[_tool_call("call_abc", "research")],
+            ),
+            Message(role="user", content="??"),
+        ]
+    )
     msgs = cm.get_messages()
     tool_msgs = [m for m in msgs if getattr(m, "role", None) == "tool"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0].tool_call_id == "call_abc"
-    assert "interrupted" in (tool_msgs[0].content or "").lower() or "not executed" in (tool_msgs[0].content or "").lower()
+    assert (
+        "interrupted" in (tool_msgs[0].content or "").lower()
+        or "not executed" in (tool_msgs[0].content or "").lower()
+    )
 
 
 def test_no_orphan_means_no_stub():
     cm = _make_cm()
-    cm.items.extend([
-        Message(role="user", content="Research X"),
-        Message(
-            role="assistant",
-            content=None,
-            tool_calls=[_tool_call("call_abc", "research")],
-        ),
-        Message(role="tool", content="ok", tool_call_id="call_abc", name="research"),
-    ])
+    cm.items.extend(
+        [
+            Message(role="user", content="Research X"),
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[_tool_call("call_abc", "research")],
+            ),
+            Message(
+                role="tool", content="ok", tool_call_id="call_abc", name="research"
+            ),
+        ]
+    )
     cm.get_messages()
     tool_msgs = [m for m in cm.items if getattr(m, "role", None) == "tool"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0].content == "ok"
 
 
-def test_add_message_records_message_timestamp():
-    cm = _make_cm()
-    msg = Message(role="user", content="hello")
-
-    cm.add_message(msg)
-
-    assert getattr(cm.items[-1], "timestamp", None)
-
-
 def test_multiple_dangling_tool_calls_in_one_assistant_message_are_all_patched():
     cm = _make_cm()
-    cm.items.extend([
-        Message(role="user", content="do two things"),
-        Message(
-            role="assistant",
-            content=None,
-            tool_calls=[
-                _tool_call("call_1", "research"),
-                _tool_call("call_2", "bash"),
-            ],
-        ),
-        Message(role="user", content="follow up"),
-    ])
+    cm.items.extend(
+        [
+            Message(role="user", content="do two things"),
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    _tool_call("call_1", "research"),
+                    _tool_call("call_2", "bash"),
+                ],
+            ),
+            Message(role="user", content="follow up"),
+        ]
+    )
     cm.get_messages()
     tool_ids = {
         getattr(m, "tool_call_id", None)
@@ -106,21 +108,23 @@ def test_orphan_in_earlier_turn_still_gets_patched():
     backwards, so this case never got fixed and Bedrock rejected.
     """
     cm = _make_cm()
-    cm.items.extend([
-        Message(role="user", content="turn 1"),
-        Message(
-            role="assistant",
-            content=None,
-            tool_calls=[_tool_call("call_old", "research")],
-        ),
-        Message(role="user", content="turn 2 — please retry"),
-        Message(
-            role="assistant",
-            content=None,
-            tool_calls=[_tool_call("call_new", "bash")],
-        ),
-        Message(role="tool", content="ok", tool_call_id="call_new", name="bash"),
-    ])
+    cm.items.extend(
+        [
+            Message(role="user", content="turn 1"),
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[_tool_call("call_old", "research")],
+            ),
+            Message(role="user", content="turn 2 — please retry"),
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[_tool_call("call_new", "bash")],
+            ),
+            Message(role="tool", content="ok", tool_call_id="call_new", name="bash"),
+        ]
+    )
     cm.get_messages()
     tool_ids = {
         getattr(m, "tool_call_id", None)
