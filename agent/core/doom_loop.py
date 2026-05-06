@@ -81,9 +81,11 @@ def extract_recent_tool_signatures(
             name = getattr(fn, "name", "") or ""
             args_str = getattr(fn, "arguments", "") or ""
             result_hash = None
-            for follow in recent[idx + 1:]:
+            for follow in recent[idx + 1 :]:
                 role = getattr(follow, "role", None)
-                if role == "tool" and getattr(follow, "tool_call_id", None) == getattr(tc, "id", None):
+                if role == "tool" and getattr(follow, "tool_call_id", None) == getattr(
+                    tc, "id", None
+                ):
                     result_hash = _hash_args(str(getattr(follow, "content", "") or ""))
                     break
                 if role in {"assistant", "user"}:
@@ -174,7 +176,9 @@ def check_for_doom_loop(messages: list[Message]) -> str | None:
     pattern = detect_repeating_sequence(signatures)
     if pattern:
         pattern_desc = " → ".join(s.name for s in pattern)
-        logger.warning("Repetition guard activated: repeating sequence [%s]", pattern_desc)
+        logger.warning(
+            "Repetition guard activated: repeating sequence [%s]", pattern_desc
+        )
         return (
             f"[SYSTEM: REPETITION GUARD] You are stuck in a repeating cycle of tool calls: "
             f"[{pattern_desc}]. This pattern has repeated multiple times without progress. "

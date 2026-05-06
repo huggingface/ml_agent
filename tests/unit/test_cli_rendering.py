@@ -12,7 +12,10 @@ from agent.utils import terminal_display
 
 
 def test_direct_anthropic_research_model_stays_off_bedrock():
-    assert _get_research_model("anthropic/claude-opus-4-6") == "anthropic/claude-sonnet-4-6"
+    assert (
+        _get_research_model("anthropic/claude-opus-4-6")
+        == "anthropic/claude-sonnet-4-6"
+    )
 
 
 def test_bedrock_anthropic_research_model_stays_on_bedrock():
@@ -42,7 +45,7 @@ def test_subagent_display_does_not_spawn_background_redraw(monkeypatch):
 
     mgr = terminal_display.SubAgentDisplayManager()
     mgr.start("agent-1", "research")
-    mgr.add_call("agent-1", "▸ hf_papers  {\"operation\": \"search\"}")
+    mgr.add_call("agent-1", '▸ hf_papers  {"operation": "search"}')
     mgr.clear("agent-1")
 
     assert calls == []

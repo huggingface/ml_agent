@@ -176,6 +176,9 @@ class MongoSessionStore(NoopSessionStore):
         pending_approval: list[dict[str, Any]] | None = None,
         claude_counted: bool = False,
         notification_destinations: list[str] | None = None,
+        auto_approval_enabled: bool = False,
+        auto_approval_cost_cap_usd: float | None = None,
+        auto_approval_estimated_spend_usd: float = 0.0,
     ) -> None:
         if not self._ready():
             return
@@ -204,6 +207,9 @@ class MongoSessionStore(NoopSessionStore):
                     "pending_approval": pending_approval or [],
                     "claude_counted": claude_counted,
                     "notification_destinations": notification_destinations or [],
+                    "auto_approval_enabled": auto_approval_enabled,
+                    "auto_approval_cost_cap_usd": auto_approval_cost_cap_usd,
+                    "auto_approval_estimated_spend_usd": auto_approval_estimated_spend_usd,
                 },
             },
             upsert=True,
@@ -224,6 +230,9 @@ class MongoSessionStore(NoopSessionStore):
         claude_counted: bool = False,
         created_at: datetime | None = None,
         notification_destinations: list[str] | None = None,
+        auto_approval_enabled: bool = False,
+        auto_approval_cost_cap_usd: float | None = None,
+        auto_approval_estimated_spend_usd: float = 0.0,
     ) -> None:
         if not self._ready():
             return
@@ -241,6 +250,9 @@ class MongoSessionStore(NoopSessionStore):
             pending_approval=pending_approval,
             claude_counted=claude_counted,
             notification_destinations=notification_destinations,
+            auto_approval_enabled=auto_approval_enabled,
+            auto_approval_cost_cap_usd=auto_approval_cost_cap_usd,
+            auto_approval_estimated_spend_usd=auto_approval_estimated_spend_usd,
         )
         ops: list[Any] = []
         for idx, raw in enumerate(messages):
@@ -259,7 +271,9 @@ class MongoSessionStore(NoopSessionStore):
                     upsert=True,
                 )
             )
-        ops.append(DeleteMany({"session_id": session_id, "idx": {"$gte": len(messages)}}))
+        ops.append(
+            DeleteMany({"session_id": session_id, "idx": {"$gte": len(messages)}})
+        )
         try:
             if ops:
                 await self.db.session_messages.bulk_write(ops, ordered=False)
@@ -276,7 +290,9 @@ class MongoSessionStore(NoopSessionStore):
             return None
         if meta.get("visibility") == "deleted" and not include_deleted:
             return None
-        cursor = self.db.session_messages.find({"session_id": session_id}).sort("idx", 1)
+        cursor = self.db.session_messages.find({"session_id": session_id}).sort(
+            "idx", 1
+        )
         messages = [row.get("message") async for row in cursor]
         return {"metadata": meta, "messages": messages}
 
@@ -344,7 +360,9 @@ class MongoSessionStore(NoopSessionStore):
             logger.debug("Failed to append event for %s: %s", session_id, e)
             return None
 
-    async def load_events_after(self, session_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
+    async def load_events_after(
+        self, session_id: str, after_seq: int = 0
+    ) -> list[dict[str, Any]]:
         if not self._ready():
             return []
         cursor = self.db.session_events.find(
@@ -484,6 +502,8 @@ def get_session_store() -> NoopSessionStore | MongoSessionStore:
     return _store
 
 
-def _reset_store_for_tests(store: NoopSessionStore | MongoSessionStore | None = None) -> None:
+def _reset_store_for_tests(
+    store: NoopSessionStore | MongoSessionStore | None = None,
+) -> None:
     global _store
     _store = store

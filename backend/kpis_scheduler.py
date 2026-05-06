@@ -58,7 +58,8 @@ def _resolve_token() -> Optional[str]:
 def _load_build_kpis():
     """Import ``scripts/build_kpis.py`` without putting ``scripts/`` on sys.path."""
     spec = importlib.util.spec_from_file_location(
-        "build_kpis", _PROJECT_ROOT / "scripts" / "build_kpis.py",
+        "build_kpis",
+        _PROJECT_ROOT / "scripts" / "build_kpis.py",
     )
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -75,6 +76,7 @@ async def _run_hour(hour_dt: datetime) -> None:
     try:
         mod = _load_build_kpis()
         from huggingface_hub import HfApi
+
         api = HfApi()
         source = os.environ.get("KPI_SOURCE_REPO", "smolagents/ml-intern-sessions")
         target = os.environ.get("KPI_TARGET_REPO", "smolagents/ml-intern-kpis")
@@ -118,7 +120,7 @@ def start(backfill_hours: int = 6) -> None:
         CronTrigger(minute=5),
         id="kpis_hourly",
         misfire_grace_time=600,  # tolerate a 10-min misfire window
-        coalesce=True,           # collapse multiple missed fires into one
+        coalesce=True,  # collapse multiple missed fires into one
         max_instances=1,
         replace_existing=True,
     )

@@ -26,7 +26,15 @@ export interface SideChannelCallbacks {
   onToolLog: (tool: string, log: string, agentId?: string, label?: string) => void;
   onConnectionChange: (connected: boolean) => void;
   onSessionDead: (sessionId: string) => void;
-  onApprovalRequired: (tools: Array<{ tool: string; arguments: Record<string, unknown>; tool_call_id: string }>) => void;
+  onApprovalRequired: (tools: Array<{
+    tool: string;
+    arguments: Record<string, unknown>;
+    tool_call_id: string;
+    auto_approval_blocked?: boolean;
+    block_reason?: string | null;
+    estimated_cost_usd?: number | null;
+    remaining_cap_usd?: number | null;
+  }>) => void;
   onToolCallPanel: (tool: string, args: Record<string, unknown>) => void;
   onToolOutputPanel: (tool: string, toolCallId: string, output: string, success: boolean) => void;
   onStreaming: () => void;
@@ -236,6 +244,10 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
             tool: string;
             arguments: Record<string, unknown>;
             tool_call_id: string;
+            auto_approval_blocked?: boolean;
+            block_reason?: string | null;
+            estimated_cost_usd?: number | null;
+            remaining_cap_usd?: number | null;
           }>;
           if (!tools) break;
 
@@ -402,7 +414,7 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       this.sideChannel.onSessionDead(sessionId);
     }
     if (response.status === 429) {
-      // Claude daily-quota gate tripped. The prefix is the detection marker
+      // Premium-model daily quota gate tripped. The prefix is the detection marker
       // for useAgentChat's onError handler, which surfaces the cap dialog
       // instead of a generic error banner.
       throw new Error('CLAUDE_QUOTA_EXHAUSTED');
