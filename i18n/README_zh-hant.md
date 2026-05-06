@@ -1,18 +1,18 @@
 <p align="center">
-  <img src="frontend/public/smolagents.webp" alt="smolagents logo" width="160" />
+  <img src="../frontend/public/smolagents.webp" alt="smolagents logo" width="160" />
 </p>
 
 <p align="center">
-  <strong>English | <a href="i18n/README_zh-hans.md">简体中文</a> | <a href="i18n/README_zh-hant.md">繁體中文</a> | <a href="i18n/README_ko.md">한국어</a> | <a href="i18n/README_es.md">Español</a> | <a href="i18n/README_ja.md">日本語</a> | <a href="i18n/README_ru.md">Русский</a> | <a href="i18n/README_fr.md">Français</a> | <a href="i18n/README_de.md">Deutsch</a> | <a href="i18n/README_it.md">Italiano</a></strong>
+  <strong><a href="../README.md">English</a> | <a href="README_zh-hans.md">简体中文</a> | 繁體中文 | <a href="i18n/README_ko.md">한국어</a> | <a href="i18n/README_es.md">Español</a> | <a href="i18n/README_ja.md">日本語</a> | <a href="i18n/README_ru.md">Русский</a> | <a href="i18n/README_fr.md">Français</a> | <a href="i18n/README_de.md">Deutsch</a> | <a href="i18n/README_it.md">Italiano</a></strong>
 </p>
 
 # ML Intern
 
-An ML intern that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
+一個能夠自主研究、撰寫並交付高品質機器學習相關程式碼的 ML 實習生，基於 Hugging Face 生態系打造，並可深度存取文件、論文、資料集與雲端運算資源。
 
-## Quick Start
+## 快速開始
 
-### Installation
+### 安裝
 
 ```bash
 git clone git@github.com:huggingface/ml-intern.git
@@ -21,136 +21,49 @@ uv sync
 uv tool install -e .
 ```
 
-#### That's it. Now `ml-intern` works from any directory:
+#### 就這樣。現在 `ml-intern` 可以在任意目錄中執行：
 
 ```bash
 ml-intern
 ```
 
-Create a `.env` file in the project root (or export these in your shell):
+在專案根目錄建立一個 `.env` 檔案（或在 shell 中匯出以下環境變數）：
 
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
 OPENAI_API_KEY=<your-openai-api-key> # if using openai models
 HF_TOKEN=<your-hugging-face-token>
-GITHUB_TOKEN=<github-personal-access-token> 
+GITHUB_TOKEN=<github-personal-access-token>
 ```
-If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
 
-### Usage
+如果沒有設定 `HF_TOKEN`，CLI 會在首次啟動時提示你貼上一個 token。要取得 `GITHUB_TOKEN`，請參考[這裡的教學](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)。
 
-**Interactive mode** (start a chat session):
+### 使用方式
+
+**互動模式**（啟動一個聊天工作階段）：
 
 ```bash
 ml-intern
 ```
 
-**Headless mode** (single prompt, auto-approve):
+**無頭模式**（單一提示詞，自動核准）：
 
 ```bash
 ml-intern "fine-tune llama on my dataset"
 ```
 
-**Options:**
+**可選參數：**
 
 ```bash
-ml-intern --model anthropic/claude-opus-4-7 "your prompt"   # requires ANTHROPIC_API_KEY
-ml-intern --model openai/gpt-5.5 "your prompt"              # requires OPENAI_API_KEY
+ml-intern --model anthropic/claude-opus-4-6 "your prompt"
+ml-intern --model openai/gpt-5.5 "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
 
-Run `ml-intern` then `/model` to see the full list of suggested model ids
-(Claude, GPT, and HF-router models like MiniMax, Kimi, GLM, DeepSeek).
+## 架構
 
-## Sharing Traces
-
-Every session is auto-uploaded to your **own private Hugging Face dataset**
-in [Claude Code JSONL format](https://huggingface.co/changelog/agent-trace-viewer),
-which the HF Agent Trace Viewer auto-detects so you can browse turns, tool
-calls, and model responses directly on the Hub.
-
-By default the dataset is named `{your-hf-username}/ml-intern-sessions` and is
-**created private**. You can flip it to public from inside the CLI:
-
-```bash
-/share-traces            # show current visibility + dataset URL
-/share-traces public     # publish (anyone can view)
-/share-traces private    # lock it back down
-```
-
-You can also flip visibility from the dataset page on huggingface.co — the
-agent honours whatever you set there for subsequent uploads.
-
-To opt out entirely, set in your CLI config (e.g. `configs/cli_agent_config.json`
-or `~/.config/ml-intern/cli_agent_config.json`):
-
-```json
-{ "share_traces": false }
-```
-
-To override the destination repo, set:
-
-```json
-{ "personal_trace_repo_template": "{hf_user}/my-custom-traces" }
-```
-
-The shared `smolagents/ml-intern-sessions` dataset is unrelated and only
-receives anonymized telemetry rows used by the backend KPI scheduler.
-
-## Supported Gateways
-
-ML Intern currently supports one-way notification gateways from CLI sessions.
-These gateways send out-of-band status updates; they do not accept inbound chat
-messages.
-
-### Slack
-
-Slack notifications use the Slack Web API to post messages when the agent needs
-approval, hits an error, or completes a turn. Create a Slack app with a bot token
-that has `chat:write`, invite the bot to the target channel, then set:
-
-```bash
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_CHANNEL_ID=C...
-```
-
-The CLI automatically creates a `slack.default` destination when both variables
-are present. Optional environment variables for the env-only default:
-
-```bash
-ML_INTERN_SLACK_NOTIFICATIONS=false
-ML_INTERN_SLACK_DESTINATION=slack.ops
-ML_INTERN_SLACK_AUTO_EVENTS=approval_required,error,turn_complete
-ML_INTERN_SLACK_ALLOW_AGENT_TOOL=true
-ML_INTERN_SLACK_ALLOW_AUTO_EVENTS=true
-```
-
-For a persistent user-level config, put overrides in
-`~/.config/ml-intern/cli_agent_config.json` or point `ML_INTERN_CLI_CONFIG` at a
-JSON file:
-
-```json
-{
-  "messaging": {
-    "enabled": true,
-    "auto_event_types": ["approval_required", "error", "turn_complete"],
-    "destinations": {
-      "slack.ops": {
-        "provider": "slack",
-        "token": "${SLACK_BOT_TOKEN}",
-        "channel": "${SLACK_CHANNEL_ID}",
-        "allow_agent_tool": true,
-        "allow_auto_events": true
-      }
-    }
-  }
-}
-```
-
-## Architecture
-
-### Component Overview
+### 元件總覽
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -220,7 +133,7 @@ JSON file:
 └────────────────────────────────────────────────────┴──┘
 ```
 
-### Agentic Loop Flow
+### Agentic Loop 流程
 
 ```
 User Message
@@ -256,44 +169,32 @@ User Message
      ╚═══════════════════════════════════════════╝
 ```
 
-## Events
+## 事件
 
-The agent emits the following events via `event_queue`:
+Agent 會透過 `event_queue` 發出以下事件：
 
-- `processing` - Starting to process user input
-- `ready` - Agent is ready for input
-- `assistant_chunk` - Streaming token chunk
-- `assistant_message` - Complete LLM response text
-- `assistant_stream_end` - Token stream finished
-- `tool_call` - Tool being called with arguments
-- `tool_output` - Tool execution result
-- `tool_log` - Informational tool log message
-- `tool_state_change` - Tool execution state transition
-- `approval_required` - Requesting user approval for sensitive operations
-- `turn_complete` - Agent finished processing
-- `error` - Error occurred during processing
-- `interrupted` - Agent was interrupted
-- `compacted` - Context was compacted
-- `undo_complete` - Undo operation completed
-- `shutdown` - Agent shutting down
+- `processing` - 開始處理使用者輸入
+- `ready` - Agent 已準備好接收輸入
+- `assistant_chunk` - 串流 token 片段
+- `assistant_message` - 完整的 LLM 回應文字
+- `assistant_stream_end` - token 串流結束
+- `tool_call` - 正在呼叫工具及其參數
+- `tool_output` - 工具執行結果
+- `tool_log` - 工具資訊日誌訊息
+- `tool_state_change` - 工具執行狀態變更
+- `approval_required` - 請求使用者核准敏感操作
+- `turn_complete` - Agent 完成目前輪次處理
+- `error` - 處理過程中發生錯誤
+- `interrupted` - Agent 被中斷
+- `compacted` - 上下文已壓縮
+- `undo_complete` - 復原操作完成
+- `shutdown` - Agent 正在關閉
 
-## Development
+## 開發
 
-### Pre-commit Checks
+### 新增內建工具
 
-Run Ruff before every commit:
-
-```bash
-uv run ruff check .
-uv run ruff format --check .
-```
-
-If the format check fails, run `uv run ruff format .` and re-run the checks
-before committing.
-
-### Adding Built-in Tools
-
-Edit `agent/core/tools.py`:
+編輯 `agent/core/tools.py`：
 
 ```python
 def create_builtin_tools() -> list[ToolSpec]:
@@ -314,10 +215,9 @@ def create_builtin_tools() -> list[ToolSpec]:
     ]
 ```
 
-### Adding MCP Servers
+### 新增 MCP 伺服器
 
-Edit `configs/cli_agent_config.json` for CLI defaults, or
-`configs/frontend_agent_config.json` for web-session defaults:
+編輯 `configs/cli_agent_config.json` 以設定 CLI 預設值，或編輯 `configs/frontend_agent_config.json` 以設定 Web 工作階段預設值：
 
 ```json
 {
@@ -334,4 +234,4 @@ Edit `configs/cli_agent_config.json` for CLI defaults, or
 }
 ```
 
-Note: Environment variables like `${YOUR_TOKEN}` are auto-substituted from `.env`.
+注意：像 `${YOUR_TOKEN}` 這樣的環境變數會自動從 `.env` 代入。
