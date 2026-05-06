@@ -15,7 +15,6 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -370,6 +369,32 @@ async def event_listener(
                 turn_complete_event.set()
             elif event.event_type == "undo_complete":
                 console.print("[dim]Undone.[/dim]")
+                turn_complete_event.set()
+            elif event.event_type == "resume_complete":
+                data = event.data or {}
+                path = data.get("path", "?")
+                count = data.get("restored_count", 0)
+                model = data.get("model_name", "?")
+                forked = bool(data.get("forked", False))
+                redacted = bool(data.get("had_redacted_content", False))
+                verb = "Forked from" if forked else "Resumed"
+                console.print(
+                    f"[green]{verb}[/green] {path} "
+                    f"([cyan]{count}[/cyan] messages, "
+                    f"model [cyan]{model}[/cyan])."
+                )
+                if forked:
+                    console.print(
+                        "[dim]Saved log belongs to a different user — kept "
+                        "current session id; future saves go to a fresh file.[/dim]"
+                    )
+                if redacted:
+                    console.print(
+                        "[yellow]Note:[/yellow] tokens/secrets in restored "
+                        "messages were scrubbed at save time. Your live tokens "
+                        "are used for this session; [REDACTED_*] markers in "
+                        "past messages are not re-injected."
+                    )
                 turn_complete_event.set()
             elif event.event_type == "tool_log":
                 tool = event.data.get("tool", "") if event.data else ""
@@ -742,271 +767,60 @@ async def get_user_input(prompt_session: PromptSession) -> str:
 # Slash commands are defined in terminal_display
 
 
-@dataclass
-class SessionLogEntry:
-    """Metadata for a locally saved session log."""
-
-    path: Path
-    session_id: str
-    session_start_time: str | None
-    session_end_time: str | None
-    model_name: str | None
-    message_count: int
-    preview: str
-    mtime: float
-
-
-def _message_preview(content: Any, max_chars: int = 72) -> str:
-    """Return a one-line preview for string or OpenAI-style block content."""
-    if isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict):
-                value = block.get("text") or block.get("content")
-                if isinstance(value, str):
-                    parts.append(value)
-            elif isinstance(block, str):
-                parts.append(block)
-        text = " ".join(parts)
-    else:
-        text = ""
-    text = " ".join(text.split())
-    if len(text) > max_chars:
-        return text[: max_chars - 1].rstrip() + "…"
-    return text
-
-
-def _session_log_preview(messages: list[Any]) -> str:
-    for raw in messages:
-        if not isinstance(raw, dict):
-            continue
-        if raw.get("role") != "user":
-            continue
-        preview = _message_preview(raw.get("content"))
-        if preview:
-            return preview
-    return "(no user prompt preview)"
-
-
-def _list_session_logs(directory: Path = Path("session_logs")) -> list[SessionLogEntry]:
-    """Return readable session logs under ``directory``, newest first."""
-    if not directory.exists():
-        return []
-
-    entries: list[SessionLogEntry] = []
-    for path in directory.glob("*.json"):
-        try:
-            with open(path) as f:
-                data = json.load(f)
-        except Exception:
-            continue
-
-        messages = data.get("messages") or []
-        if not isinstance(messages, list):
-            continue
-
-        session_id = data.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            session_id = path.stem
-
-        stat = path.stat()
-        entries.append(
-            SessionLogEntry(
-                path=path,
-                session_id=session_id,
-                session_start_time=data.get("session_start_time"),
-                session_end_time=data.get("session_end_time"),
-                model_name=data.get("model_name"),
-                message_count=len(messages),
-                preview=_session_log_preview(messages),
-                mtime=stat.st_mtime,
-            )
-        )
-
-    entries.sort(key=lambda item: item.mtime, reverse=True)
-    return entries
-
-
-def _format_session_log_entry(index: int, entry: SessionLogEntry) -> str:
-    timestamp = entry.session_end_time or entry.session_start_time
-    label = "unknown time"
-    if isinstance(timestamp, str) and timestamp:
-        try:
-            label = datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M")
-        except ValueError:
-            label = timestamp[:16]
-    short_id = entry.session_id[:8]
-    model = entry.model_name or "unknown model"
-    return (
-        f"{index:>2}. {label}  {short_id}  "
-        f"{entry.message_count} msgs  {model}\n"
-        f"    {entry.preview}"
-    )
-
-
-def _resolve_session_log_arg(
+async def _resume_picker(
     arg: str,
-    entries: list[SessionLogEntry],
-    directory: Path = Path("session_logs"),
+    prompt_session: PromptSession | None,
 ) -> Path | None:
-    """Resolve ``/resume <arg>`` as index, path, filename, or session id prefix."""
-    value = arg.strip()
-    if not value:
+    """Resolve a session log path via ``arg`` or interactive selection.
+
+    Returns ``None`` if the user cancels, no logs exist, or the argument
+    matches nothing — already prints the explanation in those cases.
+    """
+    from agent.core.session_resume import (
+        format_session_log_entry,
+        list_session_logs,
+        resolve_session_log_arg,
+    )
+    from agent.core.session import DEFAULT_SESSION_LOG_DIR
+
+    console = get_console()
+    directory = DEFAULT_SESSION_LOG_DIR
+    entries = list_session_logs(directory)
+    if not entries:
+        console.print(f"[yellow]No session logs found in ./{directory}.[/yellow]")
         return None
 
-    if value.isdigit():
-        idx = int(value)
-        if 1 <= idx <= len(entries):
-            return entries[idx - 1].path
-
-    candidate = Path(value).expanduser()
-    candidates = [candidate]
-    if not candidate.is_absolute():
-        candidates.append(directory / candidate)
-        if candidate.suffix != ".json":
-            candidates.append(directory / f"{value}.json")
-
-    for path in candidates:
-        if path.exists() and path.is_file():
-            return path
-
-    matches = [
-        entry.path
-        for entry in entries
-        if entry.session_id.startswith(value) or entry.path.name.startswith(value)
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    return None
-
-
-def _turn_count_from_messages(messages: list[Any]) -> int:
-    return sum(
-        1 for raw in messages if isinstance(raw, dict) and raw.get("role") == "user"
-    )
-
-
-def _restore_session_from_log(session: Any, path: Path) -> int:
-    """Replace the active session context with messages from a local log."""
-    from litellm import Message
-
-    with open(path) as f:
-        data = json.load(f)
-
-    raw_messages = data.get("messages")
-    if not isinstance(raw_messages, list):
-        raise ValueError("Selected log does not contain a messages array")
-
-    restored_messages: list[Message] = []
-    for raw in raw_messages:
-        if not isinstance(raw, dict) or raw.get("role") == "system":
-            continue
-        try:
-            restored_messages.append(Message.model_validate(raw))
-        except Exception as e:
-            logger.warning("Dropping malformed message from %s: %s", path, e)
-
-    if not restored_messages:
-        raise ValueError("Selected log has no restorable non-system messages")
-
-    cm = session.context_manager
-    system_msg = cm.items[0] if cm.items and cm.items[0].role == "system" else None
-    cm.items = ([system_msg] if system_msg else []) + restored_messages
-
-    saved_model = data.get("model_name")
-    if isinstance(saved_model, str) and saved_model:
-        if hasattr(session, "update_model"):
-            session.update_model(saved_model)
-        else:
-            session.config.model_name = saved_model
-
-    recompute = getattr(cm, "_recompute_usage", None)
-    if callable(recompute):
-        recompute(session.config.model_name)
-    else:
-        cm.running_context_usage = 0
-
-    saved_session_id = data.get("session_id")
-    if isinstance(saved_session_id, str) and saved_session_id:
-        session.session_id = saved_session_id
-
-    session.session_start_time = (
-        data.get("session_start_time") or session.session_start_time
-    )
-    events = data.get("events")
-    session.logged_events = events if isinstance(events, list) else []
-    session._local_save_path = str(path)
-    session.turn_count = _turn_count_from_messages(raw_messages)
-    session.last_auto_save_turn = session.turn_count
-    session.pending_approval = None
-    return len(restored_messages)
-
-
-async def _handle_resume_command(
-    arg: str,
-    session_holder: list,
-    prompt_session: PromptSession | None,
-) -> None:
-    """Interactive ``/resume`` picker for logs under ``session_logs``."""
-    console = get_console()
-    session = session_holder[0] if session_holder else None
-    if session is None:
-        console.print("[bold red]No active session to restore into.[/bold red]")
-        return
-
-    directory = Path("session_logs")
-    entries = _list_session_logs(directory)
-    if not entries:
-        console.print("[yellow]No session logs found in ./session_logs.[/yellow]")
-        return
-
-    selected_path: Path | None = None
     if arg:
-        selected_path = _resolve_session_log_arg(arg, entries, directory)
-        if selected_path is None:
+        selected = resolve_session_log_arg(arg, entries, directory)
+        if selected is None:
             console.print(f"[bold red]No matching session log:[/bold red] {arg}")
-            return
-    else:
-        console.print()
-        console.print("[bold]Saved sessions[/bold]")
-        for index, entry in enumerate(entries, start=1):
-            console.print(_format_session_log_entry(index, entry))
-        console.print()
+        return selected
 
-        if prompt_session is None:
-            console.print("[yellow]Cannot prompt for a selection here.[/yellow]")
-            return
+    console.print()
+    console.print("[bold]Saved sessions[/bold]")
+    for index, entry in enumerate(entries, start=1):
+        console.print(format_session_log_entry(index, entry))
+    console.print()
 
-        try:
-            choice = await prompt_session.prompt_async(
-                "Select session number (blank to cancel): "
-            )
-        except (EOFError, KeyboardInterrupt):
-            console.print("[dim]Resume cancelled.[/dim]")
-            return
-        choice = choice.strip()
-        if not choice:
-            console.print("[dim]Resume cancelled.[/dim]")
-            return
-        selected_path = _resolve_session_log_arg(choice, entries, directory)
-        if selected_path is None:
-            console.print(f"[bold red]Invalid selection:[/bold red] {choice}")
-            return
+    if prompt_session is None:
+        console.print("[yellow]Cannot prompt for a selection here.[/yellow]")
+        return None
 
     try:
-        restored = _restore_session_from_log(session, selected_path)
-    except Exception as e:
-        console.print(f"[bold red]Resume failed:[/bold red] {e}")
-        return
-
-    console.print(
-        "[green]Resumed[/green] "
-        f"{selected_path} "
-        f"([cyan]{restored}[/cyan] messages, "
-        f"model [cyan]{session.config.model_name}[/cyan])."
-    )
+        choice = await prompt_session.prompt_async(
+            "Select session number (blank to cancel): "
+        )
+    except (EOFError, KeyboardInterrupt):
+        console.print("[dim]Resume cancelled.[/dim]")
+        return None
+    choice = choice.strip()
+    if not choice:
+        console.print("[dim]Resume cancelled.[/dim]")
+        return None
+    selected = resolve_session_log_arg(choice, entries, directory)
+    if selected is None:
+        console.print(f"[bold red]Invalid selection:[/bold red] {choice}")
+    return selected
 
 
 async def _handle_slash_command(
@@ -1047,8 +861,22 @@ async def _handle_slash_command(
         )
 
     if command == "/resume":
-        await _handle_resume_command(arg, session_holder, prompt_session)
-        return None
+        session = session_holder[0] if session_holder else None
+        if session is None:
+            get_console().print(
+                "[bold red]No active session to restore into.[/bold red]"
+            )
+            return None
+        selected_path = await _resume_picker(arg, prompt_session)
+        if selected_path is None:
+            return None
+        submission_id[0] += 1
+        return Submission(
+            id=f"sub_{submission_id[0]}",
+            operation=Operation(
+                op_type=OpType.RESUME, data={"path": str(selected_path)}
+            ),
+        )
 
     if command == "/model":
         console = get_console()

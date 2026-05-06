@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from litellm import (
@@ -1668,6 +1669,20 @@ class Handlers:
         await session.send_event(Event(event_type="undo_complete"))
 
     @staticmethod
+    async def resume(session: Session, path: str) -> None:
+        """Reload context from a saved session log into the active session."""
+        from agent.core.session_resume import restore_session_from_log
+
+        try:
+            result = restore_session_from_log(session, Path(path))
+        except Exception as e:
+            await session.send_event(
+                Event(event_type="error", data={"error": f"Resume failed: {e}"})
+            )
+            return
+        await session.send_event(Event(event_type="resume_complete", data=result))
+
+    @staticmethod
     async def exec_approval(session: Session, approvals: list[dict]) -> None:
         """Handle batch job execution approval"""
         if not session.pending_approval:
@@ -1951,6 +1966,16 @@ async def process_submission(session: Session, submission) -> bool:
 
     if op.op_type == OpType.UNDO:
         await Handlers.undo(session)
+        return True
+
+    if op.op_type == OpType.RESUME:
+        path = op.data.get("path") if op.data else None
+        if path:
+            await Handlers.resume(session, path)
+        else:
+            await session.send_event(
+                Event(event_type="error", data={"error": "Resume requires a path"})
+            )
         return True
 
     if op.op_type == OpType.EXEC_APPROVAL:
