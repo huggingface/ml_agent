@@ -59,6 +59,9 @@ jobs:
             printf 'PROMPT_EOF\n'
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare Claude Code bin directory
+        run: mkdir -p "$HOME/.local/bin"
+
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
