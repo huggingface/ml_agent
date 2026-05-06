@@ -1,0 +1,1 @@
+﻿import os, litellm; from litellm import completion; from dotenv import load_dotenv; load_dotenv(); response = completion(model='openai/deepseek-chat', messages=[{'role': 'user', 'content': 'hello'}]); print(response)

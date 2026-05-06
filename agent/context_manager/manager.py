@@ -213,7 +213,7 @@ class ContextManager:
         """Load and render the system prompt from YAML file with Jinja2"""
         prompt_file = Path(__file__).parent.parent / "prompts" / f"{prompt_file_suffix}"
 
-        with open(prompt_file, "r") as f:
+        with open(prompt_file, "r", encoding="utf-8") as f:
             prompt_data = yaml.safe_load(f)
             template_str = prompt_data.get("system_prompt", "")
 

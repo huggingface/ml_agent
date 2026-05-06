@@ -682,8 +682,10 @@ def _extract_thinking_state(
 
 
 def _should_replay_thinking_state(model_name: str | None) -> bool:
-    """Only Anthropic's native adapter accepts replayed thinking metadata."""
-    return bool(model_name and model_name.startswith("anthropic/"))
+    """Only Anthropic and DeepSeek accept/require replayed thinking metadata."""
+    if not model_name:
+        return False
+    return model_name.startswith("anthropic/") or "deepseek" in model_name.lower()
 
 
 def _is_invalid_thinking_signature_error(exc: Exception) -> bool:
