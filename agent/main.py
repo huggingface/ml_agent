@@ -21,6 +21,7 @@ import litellm
 from prompt_toolkit import PromptSession
 
 from agent.config import load_config
+from agent.core.approval_policy import is_scheduled_operation
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
 from agent.core.hf_tokens import resolve_hf_token
@@ -55,12 +56,27 @@ litellm.suppress_debug_info = True
 CLI_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cli_agent_config.json"
 
 
+def _is_scheduled_hf_job_tool(tool_info: dict[str, Any]) -> bool:
+    if tool_info.get("tool") != "hf_jobs":
+        return False
+    arguments = tool_info.get("arguments") or {}
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(arguments, dict):
+        return False
+    return is_scheduled_operation(arguments.get("operation"))
+
+
 def _configure_runtime_logging() -> None:
     """Keep third-party warning spam from punching through the interactive UI."""
     import logging
 
     logging.getLogger("LiteLLM").setLevel(logging.ERROR)
     logging.getLogger("litellm").setLevel(logging.ERROR)
+
 
 def _safe_get_args(arguments: dict) -> dict:
     """Safely extract args dict from arguments, handling cases where LLM passes string."""
@@ -77,6 +93,7 @@ def _get_hf_user(token: str | None) -> str | None:
         return None
     try:
         from huggingface_hub import HfApi
+
         return HfApi(token=token).whoami().get("name")
     except Exception:
         return None
@@ -119,9 +136,12 @@ async def _prompt_and_save_hf_token(prompt_session: PromptSession) -> str:
             login(token=token, add_to_git_credential=False)
             print("Token saved to ~/.cache/huggingface/token")
         except Exception as e:
-            print(f"Warning: could not persist token ({e}), using for this session only.")
+            print(
+                f"Warning: could not persist token ({e}), using for this session only."
+            )
 
         return token
+
 
 @dataclass
 class Operation:
@@ -147,9 +167,9 @@ def _create_rich_console():
 class _ThinkingShimmer:
     """Animated shiny/shimmer thinking indicator — a bright gradient sweeps across the text."""
 
-    _BASE = (90, 90, 110)       # dim base color
-    _HIGHLIGHT = (255, 200, 80) # bright shimmer highlight (warm gold)
-    _WIDTH = 5                  # shimmer width in characters
+    _BASE = (90, 90, 110)  # dim base color
+    _HIGHLIGHT = (255, 200, 80)  # bright shimmer highlight (warm gold)
+    _WIDTH = 5  # shimmer width in characters
     _FPS = 24
 
     def __init__(self, console):
@@ -230,7 +250,7 @@ class _StreamBuffer:
         if idx == -1:
             return None
         block = self._buffer[:idx]
-        self._buffer = self._buffer[idx + 2:]
+        self._buffer = self._buffer[idx + 2 :]
         return block
 
     async def flush_ready(
@@ -256,7 +276,9 @@ class _StreamBuffer:
         """Flush complete blocks, then render whatever incomplete tail remains."""
         await self.flush_ready(cancel_event=cancel_event, instant=instant)
         if self._buffer.strip():
-            await print_markdown(self._buffer, cancel_event=cancel_event, instant=instant)
+            await print_markdown(
+                self._buffer, cancel_event=cancel_event, instant=instant
+            )
         self._buffer = ""
 
     def discard(self):
@@ -357,7 +379,11 @@ async def event_listener(
             elif event.event_type == "error":
                 shimmer.stop()
                 stream_buf.discard()
-                error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
+                error = (
+                    event.data.get("error", "Unknown error")
+                    if event.data
+                    else "Unknown error"
+                )
                 print_error(error)
                 turn_complete_event.set()
             elif event.event_type == "shutdown":
@@ -375,8 +401,13 @@ async def event_listener(
                 tools_data = event.data.get("tools", []) if event.data else []
                 count = event.data.get("count", 0) if event.data else 0
 
-                # If yolo mode is active, auto-approve everything
-                if config and config.yolo_mode:
+                # If yolo mode is active, auto-approve everything except
+                # scheduled HF jobs, whose recurring cost stays manual.
+                if (
+                    config
+                    and config.yolo_mode
+                    and not any(_is_scheduled_hf_job_tool(t) for t in tools_data)
+                ):
                     approvals = [
                         {
                             "tool_call_id": t.get("tool_call_id", ""),
@@ -619,7 +650,9 @@ async def event_listener(
                             f"Approve item {i}? (y=yes, yolo=approve all, n=no, or provide feedback): "
                         )
                     except (KeyboardInterrupt, EOFError):
-                        get_console().print("[dim]Approval cancelled — rejecting remaining items[/dim]")
+                        get_console().print(
+                            "[dim]Approval cancelled — rejecting remaining items[/dim]"
+                        )
                         approvals.append(
                             {
                                 "tool_call_id": tool_call_id,
@@ -752,7 +785,11 @@ async def _handle_slash_command(
         normalized = arg.removeprefix("huggingface/")
         session = session_holder[0] if session_holder else None
         await model_switcher.probe_and_switch_model(
-            normalized, config, session, console, resolve_hf_token(),
+            normalized,
+            config,
+            session,
+            console,
+            resolve_hf_token(),
         )
         return None
 
@@ -807,8 +844,118 @@ async def _handle_slash_command(
             print(f"Context items: {len(session.context_manager.items)}")
         return None
 
+    if command == "/share-traces":
+        session = session_holder[0] if session_holder else None
+        await _handle_share_traces_command(arg, config, session)
+        return None
+
     print(f"Unknown command: {command}. Type /help for available commands.")
     return None
+
+
+async def _handle_share_traces_command(arg: str, config, session) -> None:
+    """Show or flip visibility of the user's personal trace dataset.
+
+    Uses the user's own HF_TOKEN (write-scoped to their namespace). Only
+    operates on the personal trace repo configured via
+    ``personal_trace_repo_template`` — never touches the shared org dataset.
+    """
+    from huggingface_hub import HfApi
+    from huggingface_hub.utils import HfHubHTTPError
+
+    console = get_console()
+    if session is None:
+        console.print("[bold red]No active session.[/bold red]")
+        return
+
+    repo_id = session._personal_trace_repo_id() if session is not None else None
+    if not repo_id:
+        if not getattr(config, "share_traces", False):
+            console.print(
+                "[yellow]share_traces is disabled in config. "
+                "Set it to true to publish per-session traces to your HF dataset."
+                "[/yellow]"
+            )
+            return
+        if not session.user_id:
+            console.print(
+                "[yellow]No HF username resolved \u2014 cannot pick a personal "
+                "trace repo. Set HF_TOKEN to a token tied to your account.[/yellow]"
+            )
+            return
+        console.print(
+            "[yellow]personal_trace_repo_template is unset \u2014 nothing to do.[/yellow]"
+        )
+        return
+
+    token = session.hf_token or resolve_hf_token()
+    if not token:
+        console.print(
+            "[bold red]No HF_TOKEN available.[/bold red] Cannot read or change "
+            "dataset visibility."
+        )
+        return
+
+    api = HfApi(token=token)
+    url = f"https://huggingface.co/datasets/{repo_id}"
+    target = arg.strip().lower()
+
+    if not target:
+        try:
+            info = await asyncio.to_thread(
+                api.repo_info, repo_id=repo_id, repo_type="dataset"
+            )
+            visibility = "private" if getattr(info, "private", False) else "public"
+            console.print(f"[bold]Trace dataset:[/bold] {url}")
+            console.print(f"[bold]Visibility:[/bold] {visibility}")
+            console.print(
+                "[dim]Use '/share-traces public' to publish, "
+                "'/share-traces private' to lock it back down.[/dim]"
+            )
+        except HfHubHTTPError as e:
+            if getattr(e.response, "status_code", None) == 404:
+                console.print(
+                    f"[dim]Dataset {repo_id} doesn't exist yet \u2014 it'll be "
+                    "created (private) on the next session save.[/dim]"
+                )
+            else:
+                console.print(f"[bold red]Hub error:[/bold red] {e}")
+        except Exception as e:
+            console.print(f"[bold red]Could not fetch dataset info:[/bold red] {e}")
+        return
+
+    if target not in {"public", "private"}:
+        console.print(
+            f"[bold red]Unknown argument:[/bold red] {target}. "
+            "Expected 'public' or 'private'."
+        )
+        return
+
+    private = target == "private"
+    try:
+        # Idempotent — create if missing so first-flip works even before any
+        # session has been saved yet.
+        await asyncio.to_thread(
+            api.create_repo,
+            repo_id=repo_id,
+            repo_type="dataset",
+            private=private,
+            token=token,
+            exist_ok=True,
+        )
+        await asyncio.to_thread(
+            api.update_repo_settings,
+            repo_id=repo_id,
+            repo_type="dataset",
+            private=private,
+            token=token,
+        )
+    except Exception as e:
+        console.print(f"[bold red]Failed to update visibility:[/bold red] {e}")
+        return
+
+    label = "PUBLIC" if not private else "private"
+    console.print(f"[green]Dataset is now {label}.[/green] {url}")
 
 
 async def main(model: str | None = None):
@@ -837,6 +984,7 @@ async def main(model: str | None = None):
     # Pre-warm the HF router catalog in the background so /model switches
     # don't block on a network fetch.
     from agent.core import hf_router_catalog
+
     asyncio.create_task(asyncio.to_thread(hf_router_catalog.prewarm))
 
     # Create queues for communication
@@ -982,7 +1130,11 @@ async def main(model: str | None = None):
             # Handle slash commands
             if user_input.strip().startswith("/"):
                 sub = await _handle_slash_command(
-                    user_input.strip(), config, session_holder, submission_queue, submission_id
+                    user_input.strip(),
+                    config,
+                    session_holder,
+                    submission_queue,
+                    submission_id,
                 )
                 if sub is None:
                     # Command handled locally, loop back for input
@@ -1048,10 +1200,13 @@ async def headless_main(
 
     hf_token = resolve_hf_token()
     if not hf_token:
-        print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
+        print(
+            "ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print(f"HF token loaded", file=sys.stderr)
+    print("HF token loaded", file=sys.stderr)
 
     config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     config.yolo_mode = True  # Auto-approve everything in headless mode
@@ -1183,38 +1338,51 @@ async def headless_main(
             else:
                 print_tool_log(tool, log)
         elif event.event_type == "approval_required":
-            # Auto-approve everything in headless mode (safety net if yolo_mode
-            # didn't prevent the approval event for some reason)
+            # Auto-approve in headless mode, except scheduled HF jobs. Those
+            # are rejected because their recurring cost needs manual approval.
             tools_data = event.data.get("tools", []) if event.data else []
             approvals = [
                 {
                     "tool_call_id": t.get("tool_call_id", ""),
-                    "approved": True,
-                    "feedback": None,
+                    "approved": not _is_scheduled_hf_job_tool(t),
+                    "feedback": (
+                        "Scheduled HF jobs require manual approval."
+                        if _is_scheduled_hf_job_tool(t)
+                        else None
+                    ),
                 }
                 for t in tools_data
             ]
             _hl_sub_id[0] += 1
-            await submission_queue.put(Submission(
-                id=f"hl_approval_{_hl_sub_id[0]}",
-                operation=Operation(
-                    op_type=OpType.EXEC_APPROVAL,
-                    data={"approvals": approvals},
-                ),
-            ))
+            await submission_queue.put(
+                Submission(
+                    id=f"hl_approval_{_hl_sub_id[0]}",
+                    operation=Operation(
+                        op_type=OpType.EXEC_APPROVAL,
+                        data={"approvals": approvals},
+                    ),
+                )
+            )
         elif event.event_type == "compacted":
             old_tokens = event.data.get("old_tokens", 0) if event.data else 0
             new_tokens = event.data.get("new_tokens", 0) if event.data else 0
             print_compacted(old_tokens, new_tokens)
         elif event.event_type == "error":
             stream_buf.discard()
-            error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
+            error = (
+                event.data.get("error", "Unknown error")
+                if event.data
+                else "Unknown error"
+            )
             print_error(error)
             break
         elif event.event_type in ("turn_complete", "interrupted"):
             stream_buf.discard()
             history_size = event.data.get("history_size", "?") if event.data else "?"
-            print(f"\n--- Agent {event.event_type} (history_size={history_size}) ---", file=sys.stderr)
+            print(
+                f"\n--- Agent {event.event_type} (history_size={history_size}) ---",
+                file=sys.stderr,
+            )
             if event.event_type == "turn_complete":
                 session = session_holder[0] if session_holder else None
                 if session is not None:
@@ -1240,6 +1408,7 @@ def cli():
     """Entry point for the ml-intern CLI command."""
     import logging as _logging
     import warnings
+
     # Suppress aiohttp "Unclosed client session" noise during event loop teardown
     _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
     _configure_runtime_logging()
@@ -1249,12 +1418,23 @@ def cli():
     warnings.filterwarnings("ignore", category=SyntaxWarning, module="whoosh")
 
     parser = argparse.ArgumentParser(description="Hugging Face Agent CLI")
-    parser.add_argument("prompt", nargs="?", default=None, help="Run headlessly with this prompt")
-    parser.add_argument("--model", "-m", default=None, help=f"Model to use (default: from config)")
-    parser.add_argument("--max-iterations", type=int, default=None,
-                        help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
-    parser.add_argument("--no-stream", action="store_true",
-                        help="Disable token streaming (use non-streaming LLM calls)")
+    parser.add_argument(
+        "prompt", nargs="?", default=None, help="Run headlessly with this prompt"
+    )
+    parser.add_argument(
+        "--model", "-m", default=None, help="Model to use (default: from config)"
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="Max LLM requests per turn (default: 50, use -1 for unlimited)",
+    )
+    parser.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="Disable token streaming (use non-streaming LLM calls)",
+    )
     args = parser.parse_args()
 
     try:
@@ -1262,7 +1442,14 @@ def cli():
             max_iter = args.max_iterations
             if max_iter is not None and max_iter < 0:
                 max_iter = 10_000  # effectively unlimited
-            asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
+            asyncio.run(
+                headless_main(
+                    args.prompt,
+                    model=args.model,
+                    max_iterations=max_iter,
+                    stream=not args.no_stream,
+                )
+            )
         else:
             asyncio.run(main(model=args.model))
     except KeyboardInterrupt:

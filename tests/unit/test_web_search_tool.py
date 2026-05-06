@@ -38,7 +38,9 @@ def test_web_search_extracts_duckduckgo_results_and_filters_domains(monkeypatch)
             url,
         )
 
-    monkeypatch.setenv(web_search_tool.WEB_SEARCH_BASE_URL_ENV, "http://search.test/search")
+    monkeypatch.setenv(
+        web_search_tool.WEB_SEARCH_BASE_URL_ENV, "http://search.test/search"
+    )
     monkeypatch.setattr(web_search_tool.requests, "get", fake_get)
 
     output = web_search_tool.execute_web_search(
@@ -91,7 +93,9 @@ def test_web_search_generic_fallback_dedupes_and_rejects_bad_base_url(monkeypatc
             url,
         )
 
-    monkeypatch.setenv(web_search_tool.WEB_SEARCH_BASE_URL_ENV, "http://search.test/fallback")
+    monkeypatch.setenv(
+        web_search_tool.WEB_SEARCH_BASE_URL_ENV, "http://search.test/fallback"
+    )
     monkeypatch.setattr(web_search_tool.requests, "get", fake_get)
 
     output = web_search_tool.execute_web_search("generic links")
@@ -119,7 +123,10 @@ async def test_web_search_handler_returns_pretty_json(monkeypatch):
         "execute_web_search",
         lambda **kwargs: {
             "query": kwargs["query"],
-            "results": ["No web search results matched the query 'x'.", {"content": []}],
+            "results": [
+                "No web search results matched the query 'x'.",
+                {"content": []},
+            ],
             "durationSeconds": 0.1,
         },
     )

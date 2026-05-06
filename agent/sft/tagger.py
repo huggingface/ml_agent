@@ -27,19 +27,29 @@ Tags are deduplicated before returning.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Iterable
 
 # Flavor → GPU-family mapping. Keep conservative; unknown flavors → "none".
 _GPU_FAMILY = {
-    "cpu-basic": "none", "cpu-upgrade": "none",
-    "t4-small": "t4", "t4-medium": "t4",
-    "l4x1": "l40s", "l4x4": "l40s",
-    "l40sx1": "l40s", "l40sx4": "l40s", "l40sx8": "l40s",
-    "a10g-small": "a10g", "a10g-large": "a10g",
-    "a10g-largex2": "a10g", "a10g-largex4": "a10g",
-    "a100-large": "a100", "a100x2": "a100",
-    "a100x4": "a100", "a100x8": "a100",
-    "h100": "h100", "h100x8": "h100",
+    "cpu-basic": "none",
+    "cpu-upgrade": "none",
+    "t4-small": "t4",
+    "t4-medium": "t4",
+    "l4x1": "l40s",
+    "l4x4": "l40s",
+    "l40sx1": "l40s",
+    "l40sx4": "l40s",
+    "l40sx8": "l40s",
+    "a10g-small": "a10g",
+    "a10g-large": "a10g",
+    "a10g-largex2": "a10g",
+    "a10g-largex4": "a10g",
+    "a100-large": "a100",
+    "a100x2": "a100",
+    "a100x4": "a100",
+    "a100x8": "a100",
+    "h100": "h100",
+    "h100x8": "h100",
 }
 
 # Substrings that count a flavor as multi-GPU.
@@ -48,9 +58,17 @@ _MULTI_GPU_MARKERS = ("x2", "x4", "x8")
 # Tool names that don't touch training/inference or sandbox/jobs. If a session
 # only used these, we tag it research_only.
 _RESEARCH_ONLY_TOOLS = {
-    "research", "github_find_examples", "github_read_file", "github_list_repos",
-    "hf_papers", "explore_hf_docs", "fetch_hf_docs", "hub_repo_details",
-    "plan", "hf_inspect_dataset", "web_search",
+    "research",
+    "github_find_examples",
+    "github_read_file",
+    "github_list_repos",
+    "hf_papers",
+    "explore_hf_docs",
+    "fetch_hf_docs",
+    "hub_repo_details",
+    "plan",
+    "hf_inspect_dataset",
+    "web_search",
 }
 
 # Tool names that signal data manipulation workflows.
@@ -126,11 +144,22 @@ def _infer_task_tag(
     # hf_jobs at all and a script mentions training APIs.
     for script in hf_job_submit_scripts:
         low = script.lower()
-        if any(k in low for k in (
-            "sftconfig", "sfttrainer", "trainer(", "trainingarguments",
-            "grpo", "dpo", ".train(", "transformers import",
-            "trainer import", "fine-tune", "finetune",
-        )):
+        if any(
+            k in low
+            for k in (
+                "sftconfig",
+                "sfttrainer",
+                "trainer(",
+                "trainingarguments",
+                "grpo",
+                "dpo",
+                ".train(",
+                "transformers import",
+                "trainer import",
+                "fine-tune",
+                "finetune",
+            )
+        ):
             return "training"
 
     # inference: sessions that use inference tools but never hf_jobs/sandbox

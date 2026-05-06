@@ -62,9 +62,13 @@ def _iter_session_files(api, repo_id: str, day: date, token: str) -> Iterable[st
 
 def _download_and_parse(repo_id: str, path: str, token: str) -> dict | None:
     from huggingface_hub import hf_hub_download
+
     try:
         local = hf_hub_download(
-            repo_id=repo_id, filename=path, repo_type="dataset", token=token,
+            repo_id=repo_id,
+            filename=path,
+            repo_type="dataset",
+            token=token,
         )
     except Exception as e:
         logger.warning("hf_hub_download(%s) failed: %s", path, e)
@@ -118,7 +122,10 @@ def _upload_row(api, row: dict, day: date, target_repo: str, token: str) -> None
         tmp_path = tmp.name
     try:
         api.create_repo(
-            repo_id=target_repo, repo_type="dataset", exist_ok=True, token=token,
+            repo_id=target_repo,
+            repo_type="dataset",
+            exist_ok=True,
+            token=token,
         )
         api.upload_file(
             path_or_fileobj=tmp_path,
@@ -136,7 +143,11 @@ def _upload_row(api, row: dict, day: date, target_repo: str, token: str) -> None
 
 
 def run_for_day(
-    api, source_repo: str, target_repo: str, day: date, token: str,
+    api,
+    source_repo: str,
+    target_repo: str,
+    day: date,
+    token: str,
 ) -> int:
     paths = _iter_session_files(api, source_repo, day, token)
     n = 0
@@ -162,11 +173,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--source", default="smolagents/ml-intern-sessions")
     ap.add_argument("--target", default="smolagents/ml-intern-sft")
     ap.add_argument(
-        "--days", type=int, default=1,
+        "--days",
+        type=int,
+        default=1,
         help="Number of trailing days to export (default: 1 = yesterday).",
     )
     ap.add_argument(
-        "--date", type=str, default=None,
+        "--date",
+        type=str,
+        default=None,
         help="Single YYYY-MM-DD to export; overrides --days.",
     )
     args = ap.parse_args(argv)
@@ -185,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     from huggingface_hub import HfApi
+
     api = HfApi()
 
     if args.date:
