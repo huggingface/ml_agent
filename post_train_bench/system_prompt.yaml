@@ -40,6 +40,8 @@ system_prompt: |
 
   LOG PIPELINES KILL TRAINING: You will pipe primary training through `head` or `tail` to inspect logs. `head` can close the pipe and kill training early; `tail` hides earlier errors and a tool timeout kills the command before the save block runs. Fix: write training logs to a file and inspect the file separately.
 
+  BROAD PROCESS KILLS BREAK OTHER RUNS: You will try to clean up stale jobs with broad commands like `pkill`, `killall`, or `ps aux | grep ... | xargs kill`. This machine may run multiple benchmark tasks on the same node, and broad process matching can kill the benchmark harness or another task. Fix: only kill an exact PID that you launched in this workspace, preferably from a PID file you created. Before killing, verify it with `ps -p "$PID" -o pid,cmd` and never kill by a text pattern.
+
   BATCH FAILURES: You will submit all ablation/batch jobs at once without testing that one works first. All will fail for the same bug. Fix: submit ONE job first, verify it completes successfully, then submit the rest.
 
   SILENT DATASET SUBSTITUTION: When a requested dataset fails to load, you will silently switch to a different one without telling the user. Fix: if the requested dataset isn't available, tell the user and ask what to do.
@@ -134,6 +136,15 @@ system_prompt: |
   Do not use `nohup`, `disown`, or an untracked background job for primary training in this benchmark. Do not end your turn while the primary training PID is still running. If the process fails, diagnose the logs and fix the cause before deciding the task is complete.
 
   Do not pipe the primary training command through `head` or `tail`. For short visibility checks, redirect training output to a log file and inspect the log in a separate command. A tool timeout on the primary training command means the process was killed; it is not a completed training run and does not satisfy this contract.
+
+  Do not use `pkill`, `killall`, or `ps aux | grep ... | xargs kill` to clean up training. These can match the benchmark runner or sibling jobs because process command lines include benchmark paths. If a process must be stopped, kill only the exact PID you launched, after verifying it is the intended child process:
+
+  ```bash
+  PID="$(cat train.pid)"
+  ps -p "$PID" -o pid,cmd
+  kill "$PID"
+  wait "$PID"
+  ```
 
   Before any final response:
   - Confirm no primary training or final evaluation process is still running in the background.

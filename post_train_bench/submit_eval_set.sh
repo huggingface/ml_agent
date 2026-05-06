@@ -8,6 +8,8 @@ Usage:
 
   bash post_train_bench/submit_eval_set.sh smoke10 --dry-run
 
+  bash post_train_bench/submit_eval_set.sh rerun-failed-22112222 --dry-run
+
   bash post_train_bench/submit_eval_set.sh model-validation --dry-run
 
   bash post_train_bench/submit_eval_set.sh validation --dry-run
@@ -18,6 +20,9 @@ Modes:
   smoke  Submit one 10-minute validation job.
   smoke10
          Submit ten 2-hour artifact-validity jobs across models and benchmarks.
+  rerun-failed-22112222
+         Submit the three 10-hour rows from full run 22112222 that were killed
+         by broad process cleanup on a shared node.
   model-validation
          Submit one 2-hour GSM8K artifact-validity job per full-matrix model.
   validation
@@ -222,6 +227,20 @@ rows = [
 Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 PY
         ;;
+    rerun-failed-22112222)
+        python3 - "$MATRIX_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+rows = [
+    {"benchmark": "healthbench", "model_to_train": "google/gemma-3-4b-pt", "num_hours": 10},
+    {"benchmark": "aime2025", "model_to_train": "Qwen/Qwen3-4B-Base", "num_hours": 10},
+    {"benchmark": "arenahardwriting", "model_to_train": "Qwen/Qwen3-4B-Base", "num_hours": 10},
+]
+Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+PY
+        ;;
     validation)
         python3 - "$MATRIX_FILE" <<'PY'
 import json
@@ -330,6 +349,9 @@ case "$MODE" in
         ;;
     model-validation)
         DEFAULT_SLURM_TIME="03:00:00"
+        ;;
+    rerun-failed-22112222)
+        DEFAULT_SLURM_TIME="14:00:00"
         ;;
     full)
         DEFAULT_SLURM_TIME="14:00:00"
