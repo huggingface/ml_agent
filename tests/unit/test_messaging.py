@@ -64,9 +64,7 @@ def _config_with_messaging(**destination_overrides) -> Config:
     )
 
 
-def _test_session(
-    config: Config, gateway, session_id: str = "session-test"
-) -> Session:
+def _test_session(config: Config, gateway, session_id: str = "session-test") -> Session:
     return Session(
         asyncio.Queue(),
         config=config,
@@ -485,7 +483,9 @@ async def test_turn_complete_can_be_disabled_by_custom_auto_event_config():
 
 def test_session_manager_updates_notification_destinations_in_session_info():
     config = _config_with_messaging(allow_auto_events=True)
-    manager = SessionManager(str(Path(__file__).resolve().parents[2] / "configs" / "cli_agent_config.json"))
+    manager = SessionManager(
+        str(Path(__file__).resolve().parents[2] / "configs" / "cli_agent_config.json")
+    )
     manager.config = config
     manager.sessions = {}
 

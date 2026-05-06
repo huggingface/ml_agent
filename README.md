@@ -50,8 +50,8 @@ ml-intern "fine-tune llama on my dataset"
 **Options:**
 
 ```bash
-ml-intern --model anthropic/claude-opus-4-6 "your prompt"
-ml-intern --model openai/gpt-5.5 "your prompt"
+ml-intern --model anthropic/claude-opus-4-7 "your prompt"   # requires ANTHROPIC_API_KEY
+ml-intern --model openai/gpt-5.5 "your prompt"              # requires OPENAI_API_KEY
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ml-intern --notify-on-block --notify-method auto
@@ -61,6 +61,44 @@ ml-intern --notify-on-block --notify-method auto
 waiting for approval. `--notify-method auto` prefers desktop notifications when
 supported (`osascript` on macOS, `notify-send` on Linux) and falls back to the
 terminal bell.
+
+Run `ml-intern` then `/model` to see the full list of suggested model ids
+(Claude, GPT, and HF-router models like MiniMax, Kimi, GLM, DeepSeek).
+
+## Sharing Traces
+
+Every session is auto-uploaded to your **own private Hugging Face dataset**
+in [Claude Code JSONL format](https://huggingface.co/changelog/agent-trace-viewer),
+which the HF Agent Trace Viewer auto-detects so you can browse turns, tool
+calls, and model responses directly on the Hub.
+
+By default the dataset is named `{your-hf-username}/ml-intern-sessions` and is
+**created private**. You can flip it to public from inside the CLI:
+
+```bash
+/share-traces            # show current visibility + dataset URL
+/share-traces public     # publish (anyone can view)
+/share-traces private    # lock it back down
+```
+
+You can also flip visibility from the dataset page on huggingface.co — the
+agent honours whatever you set there for subsequent uploads.
+
+To opt out entirely, set in your CLI config (e.g. `configs/cli_agent_config.json`
+or `~/.config/ml-intern/cli_agent_config.json`):
+
+```json
+{ "share_traces": false }
+```
+
+To override the destination repo, set:
+
+```json
+{ "personal_trace_repo_template": "{hf_user}/my-custom-traces" }
+```
+
+The shared `smolagents/ml-intern-sessions` dataset is unrelated and only
+receives anonymized telemetry rows used by the backend KPI scheduler.
 
 ## Supported Gateways
 
@@ -242,6 +280,18 @@ The agent emits the following events via `event_queue`:
 - `shutdown` - Agent shutting down
 
 ## Development
+
+### Pre-commit Checks
+
+Run Ruff before every commit:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+```
+
+If the format check fails, run `uv run ruff format .` and re-run the checks
+before committing.
 
 ### Adding Built-in Tools
 

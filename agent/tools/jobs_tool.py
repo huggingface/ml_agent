@@ -7,28 +7,32 @@ Refactored to use official huggingface-hub library instead of custom HTTP client
 import asyncio
 import base64
 import http.client
-import os
-import re
-from typing import Any, Dict, Literal, Optional, Callable, Awaitable
-
 import logging
+import re
+import shlex
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 import httpx
 from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
 
-from agent.core.hf_access import JobsAccessError, resolve_jobs_namespace
+from agent.core.hf_access import (
+    JobsAccessError,
+    is_billing_error,
+    resolve_jobs_namespace,
+)
+from agent.core.hub_artifacts import build_hub_artifact_sitecustomize
 from agent.core.session import Event
 from agent.tools.trackio_seed import ensure_trackio_dashboard
 from agent.tools.types import ToolResult
-
-logger = logging.getLogger(__name__)
 from agent.tools.utilities import (
     format_job_details,
     format_jobs_table,
     format_scheduled_job_details,
     format_scheduled_jobs_table,
 )
+
+logger = logging.getLogger(__name__)
 
 # Hardware flavors
 CPU_FLAVORS = ["cpu-basic", "cpu-upgrade"]
@@ -119,11 +123,11 @@ def _filter_uv_install_output(logs: list[str]) -> list[str]:
     return logs
 
 
-_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07')
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07")
 
 
 def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub('', text)
+    return _ANSI_RE.sub("", text)
 
 
 _DEFAULT_ENV = {
@@ -233,6 +237,26 @@ def _resolve_uv_command(
 
     # Otherwise, treat as file path
     return _build_uv_command(script, with_deps, python, script_args)
+
+
+def _wrap_command_with_artifact_bootstrap(
+    command: list[str], session: Any = None
+) -> list[str]:
+    """Install sitecustomize hooks before the user command runs in HF Jobs."""
+    sitecustomize = build_hub_artifact_sitecustomize(session)
+    if not sitecustomize:
+        return command
+
+    encoded = base64.b64encode(sitecustomize.encode("utf-8")).decode("ascii")
+    original_command = shlex.join(command)
+    shell = (
+        'set -e; _ml_intern_artifacts_dir="$(mktemp -d)"; '
+        f"printf %s {shlex.quote(encoded)} | base64 -d "
+        '> "$_ml_intern_artifacts_dir/sitecustomize.py"; '
+        'export PYTHONPATH="$_ml_intern_artifacts_dir${PYTHONPATH:+:$PYTHONPATH}"; '
+        f"exec {original_command}"
+    )
+    return ["/bin/sh", "-lc", shell]
 
 
 async def _async_call(func, *args, **kwargs):
@@ -432,7 +456,9 @@ class HfJobsTool:
                 def log_producer():
                     try:
                         # fetch_job_logs is a blocking sync generator
-                        logs_gen = self.api.fetch_job_logs(job_id=job_id, namespace=namespace)
+                        logs_gen = self.api.fetch_job_logs(
+                            job_id=job_id, namespace=namespace
+                        )
                         for line in logs_gen:
                             # Push line to queue thread-safely
                             loop.call_soon_threadsafe(queue.put_nowait, line)
@@ -556,6 +582,8 @@ class HfJobsTool:
                 image = args.get("image", "python:3.12")
                 job_type = "Docker"
 
+            command = _wrap_command_with_artifact_bootstrap(command, self.session)
+
             # Run the job
             flavor = args.get("hardware_flavor", "cpu-basic")
             timeout_str = args.get("timeout", "30m")
@@ -572,16 +600,47 @@ class HfJobsTool:
             if trackio_project:
                 env_dict["TRACKIO_PROJECT"] = trackio_project
 
-            job = await _async_call(
-                self.api.run_job,
-                image=image,
-                command=command,
-                env=env_dict,
-                secrets=_add_environment_variables(args.get("secrets"), self.hf_token),
-                flavor=flavor,
-                timeout=timeout_str,
-                namespace=self.namespace,
-            )
+            try:
+                job = await _async_call(
+                    self.api.run_job,
+                    image=image,
+                    command=command,
+                    env=env_dict,
+                    secrets=_add_environment_variables(
+                        args.get("secrets"), self.hf_token
+                    ),
+                    flavor=flavor,
+                    timeout=timeout_str,
+                    namespace=self.namespace,
+                )
+            except HfHubHTTPError as e:
+                if is_billing_error(str(e)):
+                    if self.session and self.tool_call_id:
+                        await self.session.send_event(
+                            Event(
+                                event_type="tool_state_change",
+                                data={
+                                    "tool_call_id": self.tool_call_id,
+                                    "tool": "hf_jobs",
+                                    "state": "billing_required",
+                                    "namespace": self.namespace,
+                                },
+                            )
+                        )
+                    return {
+                        "formatted": (
+                            f"Hugging Face Jobs rejected this run because the "
+                            f"namespace `{self.namespace}` has no available credits. "
+                            "Tell the user to add credits at "
+                            "https://huggingface.co/settings/billing — once topped up, "
+                            "re-run this same job. (Switching namespaces is fine if "
+                            "another wallet has credits.)"
+                        ),
+                        "totalResults": 0,
+                        "resultsShared": 0,
+                        "isError": True,
+                    }
+                raise
 
             # Track job ID for cancellation on interrupt
             if self.session:
@@ -607,11 +666,37 @@ class HfJobsTool:
             submit_ts = None
             if self.session:
                 from agent.core import telemetry
+
                 submit_ts = await telemetry.record_hf_job_submit(
-                    self.session, job,
-                    {**args, "hardware_flavor": flavor, "timeout": timeout_str, "namespace": self.namespace},
-                    image=image, job_type=job_type,
+                    self.session,
+                    job,
+                    {
+                        **args,
+                        "hardware_flavor": flavor,
+                        "timeout": timeout_str,
+                        "namespace": self.namespace,
+                    },
+                    image=image,
+                    job_type=job_type,
                 )
+                # Top-up signal: this submit succeeded after a prior billing
+                # block in the same session, and we haven't fired the event
+                # yet — the user came back from the HF billing flow.
+                events = self.session.logged_events
+                already_fired = any(
+                    e.get("event_type") == "credits_topped_up" for e in events
+                )
+                if not already_fired:
+                    blocked = any(
+                        e.get("event_type") == "tool_state_change"
+                        and (e.get("data") or {}).get("state") == "billing_required"
+                        for e in events
+                    )
+                    if blocked:
+                        await telemetry.record_credits_topped_up(
+                            self.session,
+                            namespace=self.namespace,
+                        )
 
             # Wait for completion and stream logs
             logger.info(f"{job_type} job started: {job.url}")
@@ -624,9 +709,13 @@ class HfJobsTool:
 
             if self.session and submit_ts is not None:
                 from agent.core import telemetry
+
                 await telemetry.record_hf_job_complete(
-                    self.session, job,
-                    flavor=flavor, final_status=final_status, submit_ts=submit_ts,
+                    self.session,
+                    job,
+                    flavor=flavor,
+                    final_status=final_status,
+                    submit_ts=submit_ts,
                 )
 
             # Untrack job ID (completed or failed, no longer needs cancellation)
@@ -653,7 +742,9 @@ class HfJobsTool:
             filtered_logs = _filter_uv_install_output(all_logs)
 
             # Format all logs for the agent
-            log_text = _strip_ansi("\n".join(filtered_logs)) if filtered_logs else "(no logs)"
+            log_text = (
+                _strip_ansi("\n".join(filtered_logs)) if filtered_logs else "(no logs)"
+            )
 
             response = f"""{job_type} job completed!
 
@@ -844,6 +935,8 @@ To verify, call this tool with `{{"operation": "inspect", "job_id": "{job_id}"}}
             else:
                 image = args.get("image", "python:3.12")
                 job_type = "Docker"
+
+            command = _wrap_command_with_artifact_bootstrap(command, self.session)
 
             # Create scheduled job
             scheduled_job = await _async_call(
@@ -1129,9 +1222,9 @@ HF_JOBS_TOOL_SPEC = {
             "namespace": {
                 "type": "string",
                 "description": (
-                    "Optional namespace to run the job under. Must be your own Pro account "
-                    "or a paid org you belong to. If omitted, the tool prefers your personal "
-                    "account when eligible, otherwise the first eligible paid org."
+                    "Optional namespace to run the job under. Must be the caller's own "
+                    "account or an org they belong to. If omitted, defaults to the "
+                    "caller's personal account. Credits are billed against this namespace."
                 ),
             },
             "job_id": {
@@ -1169,6 +1262,7 @@ async def hf_jobs_handler(
         sandbox = getattr(session, "sandbox", None) if session else None
         if sandbox and script:
             from agent.tools.sandbox_tool import resolve_sandbox_script
+
             content, error = await resolve_sandbox_script(sandbox, script)
             if error:
                 return error, False

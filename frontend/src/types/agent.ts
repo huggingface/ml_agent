@@ -16,11 +16,16 @@ export interface SessionMeta {
   createdAt: string;
   isActive: boolean;
   needsAttention: boolean;
+  model?: string | null;
   /** True when the backend no longer recognizes this session id (e.g.
    *  after a backend restart). The UI shows a recovery banner and
    *  disables input until the user chooses to restore-with-summary or
    *  start fresh. */
   expired?: boolean;
+  autoApprovalEnabled?: boolean;
+  autoApprovalCostCapUsd?: number | null;
+  autoApprovalEstimatedSpendUsd?: number;
+  autoApprovalRemainingUsd?: number | null;
 }
 
 export interface ToolApproval {
@@ -35,5 +40,4 @@ export interface User {
   username?: string;
   name?: string;
   picture?: string;
-  orgMember?: boolean;
 }

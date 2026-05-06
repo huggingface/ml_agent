@@ -55,7 +55,10 @@ def run_boot_sequence(console: Console, boot_lines: list[tuple[str, str]]) -> No
                 # Render previously completed lines
                 for prev_text, prev_style in displayed_lines:
                     if rng.random() < prev_glitch_chance:
-                        result.append(_glitch_text(prev_text, prev_glitch_intensity, rng), style=prev_style)
+                        result.append(
+                            _glitch_text(prev_text, prev_glitch_intensity, rng),
+                            style=prev_style,
+                        )
                     else:
                         result.append(prev_text, style=prev_style)
                     result.append("\n")
@@ -86,7 +89,7 @@ def run_boot_sequence(console: Console, boot_lines: list[tuple[str, str]]) -> No
                 live.update(result)
 
                 # Variable typing speed
-                if line_text[char_idx - 1:char_idx] in " .":
+                if line_text[char_idx - 1 : char_idx] in " .":
                     time.sleep(0.025)
                 else:
                     time.sleep(0.010)

@@ -2,7 +2,11 @@ from abc import ABC, abstractmethod
 
 import httpx
 
-from agent.messaging.models import DestinationConfig, NotificationRequest, NotificationResult
+from agent.messaging.models import (
+    DestinationConfig,
+    NotificationRequest,
+    NotificationResult,
+)
 
 
 class NotificationError(Exception):

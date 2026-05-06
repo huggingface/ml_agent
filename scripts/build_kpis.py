@@ -99,7 +99,6 @@ import sys
 import tempfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
 logger = logging.getLogger("build_kpis")
@@ -107,13 +106,25 @@ logger = logging.getLogger("build_kpis")
 # Rough gpu-hour pricing for hf_jobs flavor strings. Keep conservative; used
 # only to compute gpu-hours (not dollars) — wall_time_s * flavor_gpu_count.
 _FLAVOR_GPU_COUNT = {
-    "cpu-basic": 0, "cpu-upgrade": 0,
-    "t4-small": 1, "t4-medium": 1,
-    "l4x1": 1, "l4x4": 4,
-    "l40sx1": 1, "l40sx4": 4, "l40sx8": 8,
-    "a10g-small": 1, "a10g-large": 1, "a10g-largex2": 2, "a10g-largex4": 4,
-    "a100-large": 1, "a100x2": 2, "a100x4": 4, "a100x8": 8,
-    "h100": 1, "h100x8": 8,
+    "cpu-basic": 0,
+    "cpu-upgrade": 0,
+    "t4-small": 1,
+    "t4-medium": 1,
+    "l4x1": 1,
+    "l4x4": 4,
+    "l40sx1": 1,
+    "l40sx4": 4,
+    "l40sx8": 8,
+    "a10g-small": 1,
+    "a10g-large": 1,
+    "a10g-largex2": 2,
+    "a10g-largex4": 4,
+    "a100-large": 1,
+    "a100x2": 2,
+    "a100x4": 4,
+    "a100x8": 8,
+    "h100": 1,
+    "h100x8": 8,
 }
 
 
@@ -160,9 +171,13 @@ def _download_session(repo_id: str, path: str, token: str) -> dict | None:
     directory is near-free.
     """
     from huggingface_hub import hf_hub_download
+
     try:
         local = hf_hub_download(
-            repo_id=repo_id, filename=path, repo_type="dataset", token=token,
+            repo_id=repo_id,
+            filename=path,
+            repo_type="dataset",
+            token=token,
         )
     except Exception as e:
         logger.warning("hf_hub_download(%s) failed: %s", path, e)
@@ -188,7 +203,9 @@ def _download_session(repo_id: str, path: str, token: str) -> dict | None:
 
 
 def _filter_session_to_window(
-    session: dict, start: datetime, end: datetime,
+    session: dict,
+    start: datetime,
+    end: datetime,
 ) -> dict | None:
     """Return a copy of ``session`` whose events are only those in ``[start, end)``.
 
@@ -216,16 +233,29 @@ def _session_metrics(session: dict) -> dict:
     # Pre-seed every numeric key so downstream aggregation can sum without
     # having to special-case empty sessions.
     out: dict = {
-        "sessions": 0, "turns": 0, "llm_calls": 0,
-        "tokens_prompt": 0, "tokens_completion": 0,
-        "tokens_cache_read": 0, "tokens_cache_creation": 0,
+        "sessions": 0,
+        "turns": 0,
+        "llm_calls": 0,
+        "tokens_prompt": 0,
+        "tokens_completion": 0,
+        "tokens_cache_read": 0,
+        "tokens_cache_creation": 0,
         "cost_usd": 0.0,
-        "tool_calls_total": 0, "tool_calls_success": 0,
-        "failures": 0, "regenerate_sessions": 0,
-        "thumbs_up": 0, "thumbs_down": 0,
-        "hf_jobs_submitted": 0, "hf_jobs_succeeded": 0, "hf_jobs_blocked": 0,
+        "tool_calls_total": 0,
+        "tool_calls_success": 0,
+        "failures": 0,
+        "regenerate_sessions": 0,
+        "thumbs_up": 0,
+        "thumbs_down": 0,
+        "hf_jobs_submitted": 0,
+        "hf_jobs_succeeded": 0,
+        "hf_jobs_blocked": 0,
         "pro_cta_clicks": 0,
-        "sandboxes_created": 0, "sandboxes_cpu": 0, "sandboxes_gpu": 0,
+        "pro_conversions": 0,
+        "credits_topped_up": 0,
+        "sandboxes_created": 0,
+        "sandboxes_cpu": 0,
+        "sandboxes_gpu": 0,
         "first_tool_s": -1,
     }
     events = session.get("events") or []
@@ -251,6 +281,8 @@ def _session_metrics(session: dict) -> dict:
     sandboxes_gpu = 0
     jobs_blocked = 0
     pro_cta_clicks = 0
+    pro_conversions = 0
+    credits_topped_up = 0
     pro_cta_by_source: dict[str, int] = defaultdict(int)
     # Per-tool counters from tool_call events. Counted off tool_call (which
     # carries data["tool"]) rather than tool_output (which only carries
@@ -321,6 +353,12 @@ def _session_metrics(session: dict) -> dict:
             source = str(data.get("source") or "unknown")
             pro_cta_by_source[source] += 1
 
+        elif et == "pro_conversion":
+            pro_conversions += 1
+
+        elif et == "credits_topped_up":
+            credits_topped_up += 1
+
         elif et == "sandbox_create":
             sandboxes_created += 1
             hardware = (data.get("hardware") or "").lower()
@@ -347,6 +385,8 @@ def _session_metrics(session: dict) -> dict:
     out["sandboxes_gpu"] = sandboxes_gpu
     out["hf_jobs_blocked"] = jobs_blocked
     out["pro_cta_clicks"] = pro_cta_clicks
+    out["pro_conversions"] = pro_conversions
+    out["credits_topped_up"] = credits_topped_up
     out["first_tool_s"] = first_tool_ts if first_tool_ts is not None else -1
     out["_gpu_hours_by_flavor"] = dict(gpu_hours_by_flavor)
     out["_pro_cta_by_source"] = dict(pro_cta_by_source)
@@ -363,7 +403,9 @@ def _session_metrics(session: dict) -> dict:
 
 def _aggregate(per_session: list[dict]) -> dict:
     """Collapse a bucket's worth of session rollups into the final KPI row."""
-    ttfa_values = [s["first_tool_s"] for s in per_session if s.get("first_tool_s", -1) >= 0]
+    ttfa_values = [
+        s["first_tool_s"] for s in per_session if s.get("first_tool_s", -1) >= 0
+    ]
     gpu_hours: dict[str, float] = defaultdict(float)
     for s in per_session:
         for f, h in (s.get("_gpu_hours_by_flavor") or {}).items():
@@ -385,9 +427,21 @@ def _aggregate(per_session: list[dict]) -> dict:
     # never reached for the relevant signal — otherwise quiet hours
     # (status-check sessions, abandoned new conversations) drag every median
     # to 0 and the chart tells you nothing.
-    research_calls_nz = [s.get("_research_calls", 0) for s in per_session if s.get("_research_calls", 0) > 0]
-    distinct_tools_values = [s.get("_distinct_tools_used", 0) for s in per_session if s.get("_distinct_tools_used", 0) > 0]
-    total_calls_values = [s.get("_total_named_tool_calls", 0) for s in per_session if s.get("_total_named_tool_calls", 0) > 0]
+    research_calls_nz = [
+        s.get("_research_calls", 0)
+        for s in per_session
+        if s.get("_research_calls", 0) > 0
+    ]
+    distinct_tools_values = [
+        s.get("_distinct_tools_used", 0)
+        for s in per_session
+        if s.get("_distinct_tools_used", 0) > 0
+    ]
+    total_calls_values = [
+        s.get("_total_named_tool_calls", 0)
+        for s in per_session
+        if s.get("_total_named_tool_calls", 0) > 0
+    ]
     # Per-turn intensity: turns>0 is the natural filter here (a session with
     # 5 turns and 0 tools is a meaningful 0). Don't strip those.
     calls_per_turn_values = [
@@ -405,7 +459,9 @@ def _aggregate(per_session: list[dict]) -> dict:
     failures = int(sum(s["failures"] for s in per_session))
     regenerates = int(sum(s["regenerate_sessions"] for s in per_session))
     research_calls_total = int(sum(s.get("_research_calls", 0) for s in per_session))
-    sessions_with_research = sum(1 for s in per_session if s.get("_research_calls", 0) > 0)
+    sessions_with_research = sum(
+        1 for s in per_session if s.get("_research_calls", 0) > 0
+    )
 
     # Per-session cost percentiles — chart "median session cost" alongside the
     # mean so a few $700 outliers don't make you think every session is pricey.
@@ -423,17 +479,23 @@ def _aggregate(per_session: list[dict]) -> dict:
         "tokens_prompt": int(tokens_prompt),
         "tokens_completion": int(sum(s["tokens_completion"] for s in per_session)),
         "tokens_cache_read": int(tokens_cache_read),
-        "tokens_cache_creation": int(sum(s["tokens_cache_creation"] for s in per_session)),
+        "tokens_cache_creation": int(
+            sum(s["tokens_cache_creation"] for s in per_session)
+        ),
         "cost_usd": round(sum(s["cost_usd"] for s in per_session), 4),
         # Per-session cost summaries.
         "cost_per_session_mean": round(
             sum(s["cost_usd"] for s in per_session) / total_sessions, 6
-        ) if total_sessions > 0 else 0.0,
+        )
+        if total_sessions > 0
+        else 0.0,
         "cost_per_session_p50": round(cost_p50, 6),
         "cost_per_session_p95": round(cost_p95, 6),
         "cache_hit_ratio": round(
             tokens_cache_read / (tokens_cache_read + tokens_prompt), 4
-        ) if (tokens_cache_read + tokens_prompt) > 0 else 0.0,
+        )
+        if (tokens_cache_read + tokens_prompt) > 0
+        else 0.0,
         # Raw reliability COUNTS (these are what the dashboard shows directly).
         "tool_calls_total": int(tool_total),
         "tool_calls_succeeded": int(tool_success),
@@ -448,36 +510,56 @@ def _aggregate(per_session: list[dict]) -> dict:
         "regenerated_sessions": regenerates,
         # Rates kept for backwards compatibility with anything reading the
         # KPI dataset directly.
-        "tool_success_rate": round(tool_success / tool_total, 4) if tool_total > 0 else 0.0,
-        "failure_rate": round(failures / total_sessions, 4) if total_sessions > 0 else 0.0,
-        "regenerate_rate": round(regenerates / total_sessions, 4) if total_sessions > 0 else 0.0,
+        "tool_success_rate": round(tool_success / tool_total, 4)
+        if tool_total > 0
+        else 0.0,
+        "failure_rate": round(failures / total_sessions, 4)
+        if total_sessions > 0
+        else 0.0,
+        "regenerate_rate": round(regenerates / total_sessions, 4)
+        if total_sessions > 0
+        else 0.0,
         "time_to_first_action_s_p50": round(_percentile(ttfa_values, 0.5), 2),
         "time_to_first_action_s_p95": round(_percentile(ttfa_values, 0.95), 2),
         "thumbs_up": int(sum(s["thumbs_up"] for s in per_session)),
         "thumbs_down": int(sum(s["thumbs_down"] for s in per_session)),
         "hf_jobs_submitted": int(sum(s["hf_jobs_submitted"] for s in per_session)),
         "hf_jobs_succeeded": int(sum(s["hf_jobs_succeeded"] for s in per_session)),
-        "sandboxes_created": int(sum(s.get("sandboxes_created", 0) for s in per_session)),
+        "sandboxes_created": int(
+            sum(s.get("sandboxes_created", 0) for s in per_session)
+        ),
         "sandboxes_cpu": int(sum(s.get("sandboxes_cpu", 0) for s in per_session)),
         "sandboxes_gpu": int(sum(s.get("sandboxes_gpu", 0) for s in per_session)),
         "hf_jobs_blocked": int(sum(s.get("hf_jobs_blocked", 0) for s in per_session)),
         "pro_cta_clicks": int(sum(s.get("pro_cta_clicks", 0) for s in per_session)),
+        "pro_conversions": int(sum(s.get("pro_conversions", 0) for s in per_session)),
+        "credits_topped_up": int(
+            sum(s.get("credits_topped_up", 0) for s in per_session)
+        ),
         "gpu_hours_by_flavor_json": json.dumps(dict(gpu_hours), sort_keys=True),
         # Research KPIs — answer "is the agent reaching for research?".
         "research_calls": research_calls_total,
         "sessions_with_research": int(sessions_with_research),
         "research_calls_per_session_p50": round(_percentile(research_calls_nz, 0.5), 2),
-        "research_calls_per_session_p95": round(_percentile(research_calls_nz, 0.95), 2),
+        "research_calls_per_session_p95": round(
+            _percentile(research_calls_nz, 0.95), 2
+        ),
         # Intra-session breadth + intensity. p50 + p95 over per-session values.
-        "distinct_tools_per_session_p50": round(_percentile(distinct_tools_values, 0.5), 2),
-        "distinct_tools_per_session_p95": round(_percentile(distinct_tools_values, 0.95), 2),
+        "distinct_tools_per_session_p50": round(
+            _percentile(distinct_tools_values, 0.5), 2
+        ),
+        "distinct_tools_per_session_p95": round(
+            _percentile(distinct_tools_values, 0.95), 2
+        ),
         "tool_calls_per_session_p50": round(_percentile(total_calls_values, 0.5), 2),
         "tool_calls_per_session_p95": round(_percentile(total_calls_values, 0.95), 2),
         "tool_calls_per_turn_p50": round(_percentile(calls_per_turn_values, 0.5), 2),
         "tool_calls_per_turn_p95": round(_percentile(calls_per_turn_values, 0.95), 2),
         # JSON columns let the dashboard add/remove tools without schema churn.
         "tool_calls_by_name_json": json.dumps(dict(tool_calls_by_name), sort_keys=True),
-        "sessions_using_tool_json": json.dumps(dict(sessions_using_tool), sort_keys=True),
+        "sessions_using_tool_json": json.dumps(
+            dict(sessions_using_tool), sort_keys=True
+        ),
         # Surface split — answers "is research dropping on Bedrock specifically?".
         "sessions_by_model_json": json.dumps(dict(sessions_by_model), sort_keys=True),
     }
@@ -495,7 +577,12 @@ def _csv_cell(v: Any) -> str:
 
 
 def _write_csv(
-    api, row: dict, bucket_key: str, path_in_repo: str, target_repo: str, token: str,
+    api,
+    row: dict,
+    bucket_key: str,
+    path_in_repo: str,
+    target_repo: str,
+    token: str,
 ) -> None:
     """Render ``row`` to CSV with a leading ``bucket`` column and upload.
 
@@ -515,7 +602,10 @@ def _write_csv(
 
     try:
         api.create_repo(
-            repo_id=target_repo, repo_type="dataset", exist_ok=True, token=token,
+            repo_id=target_repo,
+            repo_type="dataset",
+            exist_ok=True,
+            token=token,
         )
         api.upload_file(
             path_or_fileobj=tmp_path,
@@ -533,7 +623,11 @@ def _write_csv(
 
 
 def run_for_hour(
-    api, source_repo: str, target_repo: str, hour_dt: datetime, token: str,
+    api,
+    source_repo: str,
+    target_repo: str,
+    hour_dt: datetime,
+    token: str,
 ) -> dict:
     """Roll up one UTC hour [hour_dt, hour_dt+1h).
 
@@ -567,10 +661,16 @@ def run_for_hour(
 
     row = _aggregate(per_session)
     bucket_key = window_start.strftime("%Y-%m-%dT%H")
-    path_in_repo = f"hourly/{window_start.strftime('%Y-%m-%d')}/{window_start.strftime('%H')}.csv"
+    path_in_repo = (
+        f"hourly/{window_start.strftime('%Y-%m-%d')}/{window_start.strftime('%H')}.csv"
+    )
     _write_csv(api, row, bucket_key, path_in_repo, target_repo, token)
-    logger.info("Wrote KPIs for %s (%d sessions): %s",
-                bucket_key, per_session and len(per_session), row)
+    logger.info(
+        "Wrote KPIs for %s (%d sessions): %s",
+        bucket_key,
+        per_session and len(per_session),
+        row,
+    )
     return row
 
 
@@ -606,17 +706,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--source", default="smolagents/ml-intern-sessions")
     ap.add_argument("--target", default="smolagents/ml-intern-kpis")
     ap.add_argument(
-        "--hours", type=int, default=1,
+        "--hours",
+        type=int,
+        default=1,
         help="Number of trailing hours to roll up (default: 1 = last completed hour).",
     )
     ap.add_argument(
-        "--datetime", type=str, default=None,
+        "--datetime",
+        type=str,
+        default=None,
         help="Single hour, ISO ``YYYY-MM-DDTHH`` (UTC); overrides --hours.",
     )
     ap.add_argument(
-        "--daily-backfill", type=str, default=None,
+        "--daily-backfill",
+        type=str,
+        default=None,
         help="Escape hatch: aggregate a whole day at once (YYYY-MM-DD). "
-             "Writes to daily/<date>.csv. Use for historical backfill only.",
+        "Writes to daily/<date>.csv. Use for historical backfill only.",
     )
     args = ap.parse_args(argv)
 
@@ -634,10 +740,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     from huggingface_hub import HfApi
+
     api = HfApi()
 
     if args.daily_backfill:
-        run_for_day(api, args.source, args.target, date.fromisoformat(args.daily_backfill), token)
+        run_for_day(
+            api,
+            args.source,
+            args.target,
+            date.fromisoformat(args.daily_backfill),
+            token,
+        )
         return 0
 
     if args.datetime:

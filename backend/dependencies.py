@@ -12,9 +12,9 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, Request, status
 
-from agent.core.hf_tokens import bearer_token_from_header
+from agent.core.hf_tokens import bearer_token_from_header, clean_hf_token
 
-from agent.core.hf_access import fetch_whoami_v2, jobs_access_from_whoami
+from agent.core.hf_access import fetch_whoami_v2
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,8 @@ DEV_USER: dict[str, Any] = {
     "authenticated": True,
     "plan": "org",  # Dev runs at the Pro/Org quota tier so local testing isn't capped.
 }
+
+INTERNAL_HF_TOKEN_KEY = "_hf_token"
 
 # Plan field discovery — log the whoami-v2 shape once at DEBUG so we can
 # confirm the actual key in production without hammering the HF API.
@@ -100,7 +102,9 @@ async def _fetch_user_plan(token: str) -> str:
         _WHOAMI_SHAPE_LOGGED = True
         logger.debug(
             "whoami-v2 payload keys: %s (sample values: plan=%r type=%r isPro=%r)",
-            sorted(whoami.keys()) if isinstance(whoami, dict) else type(whoami).__name__,
+            sorted(whoami.keys())
+            if isinstance(whoami, dict)
+            else type(whoami).__name__,
             whoami.get("plan") if isinstance(whoami, dict) else None,
             whoami.get("type") if isinstance(whoami, dict) else None,
             whoami.get("isPro") if isinstance(whoami, dict) else None,
@@ -108,7 +112,24 @@ async def _fetch_user_plan(token: str) -> str:
 
     if not isinstance(whoami, dict):
         return "free"
-    return jobs_access_from_whoami(whoami).plan
+
+    # OAuth whoami sets `type: "user"` and surfaces Pro via the `isPro` boolean
+    # — see Space discussion #21. HF-Jobs eligibility (PR #172) ignores plan
+    # entirely; the premium-model daily-cap tier is still a free vs pro/org split.
+    if whoami.get("isPro") is True or whoami.get("is_pro") is True:
+        return "pro"
+    plan_str = ""
+    for key in ("plan", "type", "accountType"):
+        value = whoami.get(key)
+        if isinstance(value, str) and value:
+            plan_str = value.lower()
+            break
+    if any(tag in plan_str for tag in ("pro", "enterprise", "team")):
+        return "pro"
+    orgs = whoami.get("orgs") or []
+    if isinstance(orgs, list) and orgs:
+        return "org"
+    return "free"
 
 
 async def _extract_user_from_token(token: str) -> dict[str, Any] | None:
@@ -118,7 +139,41 @@ async def _extract_user_from_token(token: str) -> dict[str, Any] | None:
         return None
     user = _user_from_info(user_info)
     user["plan"] = await _fetch_user_plan(token)
+    user[INTERNAL_HF_TOKEN_KEY] = clean_hf_token(token)
     return user
+
+
+async def _dev_user_from_env() -> dict[str, Any]:
+    """Use HF_TOKEN as the dev identity when available.
+
+    Local dev often runs without OAuth, but session trace uploads still need a
+    real HF namespace. Deriving the dev user from HF_TOKEN keeps local uploads
+    pointed at the token owner's dataset instead of dev/ml-intern-sessions.
+    """
+    token = clean_hf_token(os.environ.get("HF_TOKEN", ""))
+    if not token:
+        return dict(DEV_USER)
+
+    whoami = await fetch_whoami_v2(token)
+    if not isinstance(whoami, dict):
+        return dict(DEV_USER)
+
+    username = None
+    for key in ("name", "user", "preferred_username"):
+        value = whoami.get(key)
+        if isinstance(value, str) and value:
+            username = value
+            break
+    if not username:
+        return dict(DEV_USER)
+
+    return {
+        "user_id": username,
+        "username": username,
+        "authenticated": True,
+        "plan": await _fetch_user_plan(token),
+        INTERNAL_HF_TOKEN_KEY: token,
+    }
 
 
 async def check_org_membership(token: str, org_name: str) -> bool:
@@ -153,10 +208,10 @@ async def get_current_user(request: Request) -> dict[str, Any]:
     1. Authorization: Bearer <token> header
     2. hf_access_token cookie
 
-    In dev mode (AUTH_ENABLED=False), returns a default dev user.
+    In dev mode (AUTH_ENABLED=False), uses HF_TOKEN as the user when possible.
     """
     if not AUTH_ENABLED:
-        return DEV_USER
+        return await _dev_user_from_env()
 
     # Try Authorization header
     token = bearer_token_from_header(request.headers.get("Authorization", ""))

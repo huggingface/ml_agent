@@ -8,7 +8,14 @@ import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
 import JobsUpgradeDialog from '@/components/JobsUpgradeDialog';
 import { useAgentStore } from '@/store/agentStore';
-import { CLAUDE_MODEL_PATH, FIRST_FREE_MODEL_PATH, isClaudePath } from '@/utils/model';
+import { useSessionStore } from '@/store/sessionStore';
+import {
+  CLAUDE_MODEL_PATH,
+  FIRST_FREE_MODEL_PATH,
+  GPT_55_MODEL_PATH,
+  isClaudePath,
+  isPremiumPath,
+} from '@/utils/model';
 
 // Model configuration
 interface ModelOption {
@@ -25,7 +32,7 @@ const getHfAvatarUrl = (modelId: string) => {
   return `https://huggingface.co/api/avatars/${org}`;
 };
 
-const MODEL_OPTIONS: ModelOption[] = [
+const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
   {
     id: 'kimi-k2.6',
     name: 'Kimi K2.6',
@@ -43,6 +50,13 @@ const MODEL_OPTIONS: ModelOption[] = [
     recommended: true,
   },
   {
+    id: 'gpt-5.5',
+    name: 'GPT-5.5',
+    description: 'OpenAI',
+    modelPath: GPT_55_MODEL_PATH,
+    avatarUrl: 'https://huggingface.co/api/avatars/openai',
+  },
+  {
     id: 'minimax-m2.7',
     name: 'MiniMax M2.7',
     description: 'Novita',
@@ -56,34 +70,50 @@ const MODEL_OPTIONS: ModelOption[] = [
     modelPath: 'zai-org/GLM-5.1',
     avatarUrl: getHfAvatarUrl('zai-org/GLM-5.1'),
   },
+  {
+    id: 'deepseek-v4-pro',
+    name: 'DeepSeek V4 Pro',
+    description: 'DeepInfra',
+    modelPath: 'deepseek-ai/DeepSeek-V4-Pro:deepinfra',
+    avatarUrl: getHfAvatarUrl('deepseek-ai/DeepSeek-V4-Pro'),
+  },
 ];
 
-const findModelByPath = (path: string): ModelOption | undefined => {
-  return MODEL_OPTIONS.find(m => m.modelPath === path || path?.includes(m.id));
+const findModelByPath = (path: string, options: ModelOption[]): ModelOption | undefined => {
+  if (isClaudePath(path)) {
+    const claude = options.find(isClaudeModel);
+    if (claude) return claude;
+  }
+  return options.find(m => m.modelPath === path || path?.includes(m.id));
 };
 
 interface ChatInputProps {
   sessionId?: string;
+  initialModelPath?: string | null;
   onSend: (text: string) => void;
   onStop?: () => void;
-  onDeclineBlockedJobs?: () => Promise<boolean>;
-  onContinueBlockedJobsWithNamespace?: (namespace: string) => Promise<boolean>;
   isProcessing?: boolean;
   disabled?: boolean;
   placeholder?: string;
 }
 
 const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
-const firstFreeModel = () => MODEL_OPTIONS.find(m => !isClaudeModel(m)) ?? MODEL_OPTIONS[0];
+const isPremiumModel = (m: ModelOption) => isPremiumPath(m.modelPath);
+const firstFreeModel = (options: ModelOption[]) => options.find(m => !isPremiumModel(m)) ?? options[0];
 
-export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJobs, onContinueBlockedJobsWithNamespace, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
+export default function ChatInput({ sessionId, initialModelPath, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [selectedModelId, setSelectedModelId] = useState<string>(MODEL_OPTIONS[0].id);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
+  const modelOptionsRef = useRef<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
+  const sessionIdRef = useRef<string | undefined>(sessionId);
+  const [selectedModelId, setSelectedModelId] = useState<string>(
+    () => findModelByPath(initialModelPath ?? '', DEFAULT_MODEL_OPTIONS)?.id ?? DEFAULT_MODEL_OPTIONS[0].id,
+  );
   const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
   const { quota, refresh: refreshQuota } = useUserQuota();
   // The daily-cap dialog is triggered from two places: (a) a 429 returned
-  // from the chat transport when the user tries to send on Opus over cap —
+  // from the chat transport when the user tries to send on a premium model over cap —
   // surfaced via the agent-store flag — and (b) nothing else right now
   // (switching models is free). Keeping the open state in the store means
   // the hook layer can flip it without threading props through.
@@ -91,7 +121,44 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
   const jobsUpgradeRequired = useAgentStore((s) => s.jobsUpgradeRequired);
   const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
+  const updateSessionModel = useSessionStore((s) => s.updateSessionModel);
+  const [awaitingTopUp, setAwaitingTopUp] = useState(false);
   const lastSentRef = useRef<string>('');
+
+  useEffect(() => {
+    modelOptionsRef.current = modelOptions;
+  }, [modelOptions]);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/api/config/model')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.available) return;
+        const claude = data.available.find((m: { provider?: string; id?: string }) => (
+          m.provider === 'anthropic' && m.id
+        ));
+        if (!claude?.id) return;
+
+        const next = DEFAULT_MODEL_OPTIONS.map((option) => (
+          isClaudeModel(option)
+            ? { ...option, modelPath: claude.id, name: claude.label ?? option.name }
+            : option
+        ));
+        modelOptionsRef.current = next;
+        setModelOptions(next);
+        if (!sessionIdRef.current) {
+          const current = data.current ? findModelByPath(data.current, next) : null;
+          if (current) setSelectedModelId(current.id);
+        }
+      })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Model is per-session: fetch this tab's current model every time the
   // session changes. Other tabs keep their own selections independently.
@@ -103,15 +170,16 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
       .then((data) => {
         if (cancelled) return;
         if (data?.model) {
-          const model = findModelByPath(data.model);
+          const model = findModelByPath(data.model, modelOptionsRef.current);
           if (model) setSelectedModelId(model.id);
+          updateSessionModel(sessionId, data.model);
         }
       })
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
-  }, [sessionId]);
+  }, [sessionId, updateSessionModel]);
 
-  const selectedModel = MODEL_OPTIONS.find(m => m.id === selectedModelId) || MODEL_OPTIONS[0];
+  const selectedModel = modelOptions.find(m => m.id === selectedModelId) || modelOptions[0];
 
   // Auto-focus the textarea when the session becomes ready
   useEffect(() => {
@@ -128,7 +196,7 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
     }
   }, [input, disabled, onSend]);
 
-  // When the chat transport reports a Claude-quota 429, restore the typed
+  // When the chat transport reports a premium-model quota 429, restore the typed
   // text so the user doesn't lose their message.
   useEffect(() => {
     if (claudeQuotaExhausted && lastSentRef.current) {
@@ -169,7 +237,10 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
         method: 'POST',
         body: JSON.stringify({ model: model.modelPath }),
       });
-      if (res.ok) setSelectedModelId(model.id);
+      if (res.ok) {
+        setSelectedModelId(model.id);
+        updateSessionModel(sessionId, model.modelPath);
+      }
     } catch { /* ignore */ }
   };
 
@@ -179,12 +250,12 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
   }, [setClaudeQuotaExhausted]);
 
   // "Use a free model" — switch the current session to Kimi (or the first
-  // non-Anthropic option) and auto-retry the send that tripped the cap.
+  // non-premium option) and auto-retry the send that tripped the cap.
   const handleUseFreeModel = useCallback(async () => {
     setClaudeQuotaExhausted(false);
     if (!sessionId) return;
-    const free = MODEL_OPTIONS.find(m => m.modelPath === FIRST_FREE_MODEL_PATH)
-      ?? firstFreeModel();
+    const free = modelOptions.find(m => m.modelPath === FIRST_FREE_MODEL_PATH)
+      ?? firstFreeModel(modelOptions);
     try {
       const res = await apiFetch(`/api/session/${sessionId}/model`, {
         method: 'POST',
@@ -192,6 +263,7 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
       });
       if (res.ok) {
         setSelectedModelId(free.id);
+        updateSessionModel(sessionId, free.modelPath);
         const retryText = lastSentRef.current;
         if (retryText) {
           onSend(retryText);
@@ -200,14 +272,14 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
         }
       }
     } catch { /* ignore */ }
-  }, [sessionId, onSend, setClaudeQuotaExhausted]);
+  }, [sessionId, onSend, setClaudeQuotaExhausted, modelOptions, updateSessionModel]);
 
-  const handleClaudeUpgradeClick = useCallback(async () => {
+  const handlePremiumUpgradeClick = useCallback(async () => {
     if (!sessionId) return;
     try {
       await apiFetch(`/api/pro-click/${sessionId}`, {
         method: 'POST',
-        body: JSON.stringify({ source: 'claude_cap_dialog', target: 'pro_pricing' }),
+        body: JSON.stringify({ source: 'premium_cap_dialog', target: 'pro_pricing' }),
       });
     } catch {
       /* tracking is best-effort */
@@ -216,38 +288,53 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
 
   const handleJobsUpgradeClose = useCallback(() => {
     setJobsUpgradeRequired(null);
+    setAwaitingTopUp(false);
   }, [setJobsUpgradeRequired]);
 
   const handleJobsUpgradeClick = useCallback(async () => {
+    setAwaitingTopUp(true);
     if (!sessionId || !jobsUpgradeRequired) return;
     try {
       await apiFetch(`/api/pro-click/${sessionId}`, {
         method: 'POST',
-        body: JSON.stringify({ source: 'hf_jobs_upgrade_dialog', target: 'pro_pricing' }),
+        body: JSON.stringify({ source: 'hf_jobs_billing_dialog', target: 'hf_billing' }),
       });
     } catch {
       /* tracking is best-effort */
     }
   }, [sessionId, jobsUpgradeRequired]);
 
-  const handleDeclineBlockedJobs = useCallback(async () => {
-    if (!onDeclineBlockedJobs) return;
-    await onDeclineBlockedJobs();
-  }, [onDeclineBlockedJobs]);
+  const handleJobsRetry = useCallback(() => {
+    const namespace = jobsUpgradeRequired?.namespace;
+    setJobsUpgradeRequired(null);
+    setAwaitingTopUp(false);
+    const msg = namespace
+      ? `I just added credits to the \`${namespace}\` namespace. Please retry the previous job.`
+      : "I just added credits. Please retry the previous job.";
+    onSend(msg);
+  }, [jobsUpgradeRequired, setJobsUpgradeRequired, onSend]);
 
-  const handleContinueBlockedJobsWithNamespace = useCallback(async (namespace: string) => {
-    if (!onContinueBlockedJobsWithNamespace) return;
-    await onContinueBlockedJobsWithNamespace(namespace);
-  }, [onContinueBlockedJobsWithNamespace]);
+  // Auto-retry when the user comes back to this tab after clicking "Add credits".
+  // Browsers fire visibilitychange when the tab regains focus from a sibling tab.
+  useEffect(() => {
+    if (!awaitingTopUp || !jobsUpgradeRequired) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        handleJobsRetry();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [awaitingTopUp, jobsUpgradeRequired, handleJobsRetry]);
 
-  // Hide the chip until the user has actually burned quota — an unused
-  // Opus session shouldn't populate a counter.
-  const claudeChip = (() => {
-    if (!quota || quota.claudeUsedToday === 0) return null;
+  // Hide the chip until the user has actually burned quota; opening a
+  // premium-model session without sending should not populate a counter.
+  const premiumChip = (() => {
+    if (!quota || quota.premiumUsedToday === 0) return null;
     if (quota.plan === 'free') {
-      return quota.claudeRemaining > 0 ? 'Free today' : 'Pro only';
+      return quota.premiumRemaining > 0 ? 'Free today' : 'Pro only';
     }
-    return `${quota.claudeUsedToday}/${quota.claudeDailyCap} today`;
+    return `${quota.premiumUsedToday}/${quota.premiumDailyCap} today`;
   })();
 
   return (
@@ -412,7 +499,7 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
             }
           }}
         >
-          {MODEL_OPTIONS.map((model) => (
+          {modelOptions.map((model) => (
             <MenuItem
               key={model.id}
               onClick={() => handleSelectModel(model)}
@@ -448,9 +535,9 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
                         }}
                       />
                     )}
-                    {isClaudeModel(model) && claudeChip && (
+                    {isPremiumModel(model) && premiumChip && (
                       <Chip
-                        label={claudeChip}
+                        label={premiumChip}
                         size="small"
                         sx={{
                           height: '18px',
@@ -475,20 +562,18 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
         <ClaudeCapDialog
           open={claudeQuotaExhausted}
           plan={quota?.plan ?? 'free'}
-          cap={quota?.claudeDailyCap ?? 1}
+          cap={quota?.premiumDailyCap ?? 1}
           onClose={handleCapDialogClose}
           onUseFreeModel={handleUseFreeModel}
-          onUpgrade={handleClaudeUpgradeClick}
+          onUpgrade={handlePremiumUpgradeClick}
         />
         <JobsUpgradeDialog
           open={!!jobsUpgradeRequired}
-          mode={jobsUpgradeRequired?.mode || 'upgrade'}
           message={jobsUpgradeRequired?.message || ''}
-          eligibleNamespaces={jobsUpgradeRequired?.eligibleNamespaces || []}
+          awaitingTopUp={awaitingTopUp}
           onClose={handleJobsUpgradeClose}
           onUpgrade={handleJobsUpgradeClick}
-          onDecline={handleDeclineBlockedJobs}
-          onContinueWithNamespace={handleContinueBlockedJobsWithNamespace}
+          onRetry={handleJobsRetry}
         />
       </Box>
     </Box>

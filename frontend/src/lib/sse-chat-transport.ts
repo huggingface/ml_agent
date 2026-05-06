@@ -26,7 +26,15 @@ export interface SideChannelCallbacks {
   onToolLog: (tool: string, log: string, agentId?: string, label?: string) => void;
   onConnectionChange: (connected: boolean) => void;
   onSessionDead: (sessionId: string) => void;
-  onApprovalRequired: (tools: Array<{ tool: string; arguments: Record<string, unknown>; tool_call_id: string }>) => void;
+  onApprovalRequired: (tools: Array<{
+    tool: string;
+    arguments: Record<string, unknown>;
+    tool_call_id: string;
+    auto_approval_blocked?: boolean;
+    block_reason?: string | null;
+    estimated_cost_usd?: number | null;
+    remaining_cap_usd?: number | null;
+  }>) => void;
   onToolCallPanel: (tool: string, args: Record<string, unknown>) => void;
   onToolOutputPanel: (tool: string, toolCallId: string, output: string, success: boolean) => void;
   onStreaming: () => void;
@@ -42,35 +50,66 @@ function nextPartId(prefix: string): string {
   return `${prefix}-${Date.now()}-${++partIdCounter}`;
 }
 
+function lastEventKey(sessionId: string): string {
+  return `hf-agent-last-event:${sessionId}`;
+}
+
 /** Parse an SSE text stream into AgentEvent objects. */
-function createSSEParserStream(): TransformStream<string, AgentEvent> {
+function createSSEParserStream(sessionId: string): TransformStream<string, AgentEvent> {
   let buffer = '';
+  let eventId: string | null = null;
+  let data = '';
+
+  const dispatch = (controller: TransformStreamDefaultController<AgentEvent>) => {
+    if (!data.trim()) {
+      eventId = null;
+      data = '';
+      return;
+    }
+    try {
+      const json = JSON.parse(data.trim()) as AgentEvent;
+      const seq = json.seq ?? (eventId ? Number(eventId) : undefined);
+      if (Number.isFinite(seq)) {
+        json.seq = seq;
+        localStorage.setItem(lastEventKey(sessionId), String(seq));
+      }
+      controller.enqueue(json);
+    } catch {
+      logger.warn('SSE parse error:', data.trim());
+    } finally {
+      eventId = null;
+      data = '';
+    }
+  };
+
   return new TransformStream<string, AgentEvent>({
     transform(chunk, controller) {
       buffer += chunk;
       const lines = buffer.split('\n');
       // Keep the last (possibly incomplete) line in the buffer
       buffer = lines.pop() || '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('data: ')) {
-          try {
-            const json = JSON.parse(trimmed.slice(6));
-            controller.enqueue(json as AgentEvent);
-          } catch {
-            logger.warn('SSE parse error:', trimmed);
-          }
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, '');
+        if (line === '') {
+          dispatch(controller);
+          continue;
+        }
+        if (line.startsWith(':')) continue;
+        if (line.startsWith('id:')) {
+          eventId = line.slice(3).trim();
+        } else if (line.startsWith('data:')) {
+          data += line.slice(5).trimStart() + '\n';
         }
       }
     },
     flush(controller) {
-      // Process any remaining data in buffer
-      if (buffer.trim().startsWith('data: ')) {
-        try {
-          const json = JSON.parse(buffer.trim().slice(6));
-          controller.enqueue(json as AgentEvent);
-        } catch { /* ignore incomplete */ }
+      const line = buffer.replace(/\r$/, '');
+      if (line.startsWith('id:')) {
+        eventId = line.slice(3).trim();
+      } else if (line.startsWith('data:')) {
+        data += line.slice(5).trimStart() + '\n';
       }
+      dispatch(controller);
     },
   });
 }
@@ -205,6 +244,10 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
             tool: string;
             arguments: Record<string, unknown>;
             tool_call_id: string;
+            auto_approval_blocked?: boolean;
+            block_reason?: string | null;
+            estimated_cost_usd?: number | null;
+            remaining_cap_usd?: number | null;
           }>;
           if (!tools) break;
 
@@ -245,6 +288,15 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           }
           if (state === 'cancelled') {
             controller.enqueue({ type: 'tool-output-error', toolCallId: tcId, errorText: 'Cancelled by user', dynamic: true });
+          }
+          if (state === 'billing_required') {
+            const namespace = (event.data?.namespace as string) || '';
+            useAgentStore.getState().setJobsUpgradeRequired({
+              namespace: namespace || null,
+              message: namespace
+                ? `Hugging Face Jobs need credits on the "${namespace}" namespace. Add some, then re-run the same job — the agent will pick it back up.`
+                : 'Hugging Face Jobs need credits on this namespace. Add some, then re-run the same job — the agent will pick it back up.',
+            });
           }
           break;
         }
@@ -323,22 +375,13 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       const approvals = approvedParts.map((p) => {
         if (p.type !== 'dynamic-tool') return null;
         const approved = p.approval?.approved ?? true;
-        // Get edited script from agentStore if available
         const editedScript = useAgentStore.getState().getEditedScript(p.toolCallId);
-        const explicitNamespace = useAgentStore.getState().getApprovalNamespace(p.toolCallId);
-        // Fall back to the user's persisted choice so we don't re-prompt
-        // every hf_jobs call.  Backend will 400 if the saved namespace is
-        // no longer valid; the error handler clears the preference and
-        // reopens the picker.
-        const preferred = useAgentStore.getState().preferredJobsNamespace;
-        const namespace = explicitNamespace
-          ?? (approved && p.toolName === 'hf_jobs' ? preferred ?? null : null);
         return {
           tool_call_id: p.toolCallId,
           approved,
           feedback: approved ? null : (p.approval?.reason || 'Rejected by user'),
           edited_script: editedScript ?? null,
-          namespace: namespace ?? null,
+          namespace: null,
         };
       }).filter(Boolean);
       body = { approvals };
@@ -371,48 +414,10 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       this.sideChannel.onSessionDead(sessionId);
     }
     if (response.status === 429) {
-      // Claude daily-quota gate tripped. The prefix is the detection marker
+      // Premium-model daily quota gate tripped. The prefix is the detection marker
       // for useAgentChat's onError handler, which surfaces the cap dialog
       // instead of a generic error banner.
       throw new Error('CLAUDE_QUOTA_EXHAUSTED');
-    }
-    if (response.status === 402) {
-      const payload = await response.json().catch(() => null);
-      if (payload?.detail?.error === 'hf_jobs_upgrade_required') {
-        const err = new Error('HF_JOBS_UPGRADE_REQUIRED') as Error & {
-          detail?: Record<string, unknown>;
-          approvals?: Array<Record<string, unknown>>;
-        };
-        err.detail = payload.detail as Record<string, unknown>;
-        err.approvals = (body.approvals as Array<Record<string, unknown>> | undefined) || [];
-        throw err;
-      }
-    }
-    if (response.status === 409) {
-      const payload = await response.json().catch(() => null);
-      if (payload?.detail?.error === 'hf_jobs_namespace_required') {
-        const err = new Error('HF_JOBS_NAMESPACE_REQUIRED') as Error & {
-          detail?: Record<string, unknown>;
-          approvals?: Array<Record<string, unknown>>;
-        };
-        err.detail = payload.detail as Record<string, unknown>;
-        err.approvals = (body.approvals as Array<Record<string, unknown>> | undefined) || [];
-        throw err;
-      }
-    }
-    if (response.status === 400) {
-      const payload = await response.json().catch(() => null);
-      if (payload?.detail?.error === 'hf_jobs_invalid_namespace') {
-        // Stored namespace is no longer eligible — surface so the UI can
-        // clear the saved preference and reopen the picker.
-        const err = new Error('HF_JOBS_INVALID_NAMESPACE') as Error & {
-          detail?: Record<string, unknown>;
-          approvals?: Array<Record<string, unknown>>;
-        };
-        err.detail = payload.detail as Record<string, unknown>;
-        err.approvals = (body.approvals as Array<Record<string, unknown>> | undefined) || [];
-        throw err;
-      }
     }
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Request failed');
@@ -426,7 +431,7 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
     // Pipe: response bytes → text → SSE events → UIMessageChunks
     return response.body
       .pipeThrough(new TextDecoderStream())
-      .pipeThrough(createSSEParserStream())
+      .pipeThrough(createSSEParserStream(sessionId))
       .pipeThrough(createEventToChunkStream(this.sideChannel));
   }
 
@@ -441,7 +446,9 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       if (!info.is_processing) return null;
 
       // Session is mid-turn — subscribe to its event broadcast.
-      const response = await apiFetch(`/api/events/${this.sessionId}`, {
+      const lastSeq = localStorage.getItem(lastEventKey(this.sessionId));
+      const qs = lastSeq ? `?after=${encodeURIComponent(lastSeq)}` : '';
+      const response = await apiFetch(`/api/events/${this.sessionId}${qs}`, {
         headers: { 'Accept': 'text/event-stream' },
       });
       if (!response.ok || !response.body) return null;
@@ -450,7 +457,7 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
 
       return response.body
         .pipeThrough(new TextDecoderStream())
-        .pipeThrough(createSSEParserStream())
+        .pipeThrough(createSSEParserStream(this.sessionId))
         .pipeThrough(createEventToChunkStream(this.sideChannel));
     } catch {
       return null;
