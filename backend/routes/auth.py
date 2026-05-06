@@ -4,6 +4,7 @@ Handles the OAuth 2.0 authorization code flow with HF as provider.
 After successful auth, sets an HttpOnly cookie with the access token.
 """
 
+import logging
 import os
 import secrets
 import time
@@ -22,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 # OAuth configuration from environment
 OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "")
@@ -37,6 +39,7 @@ oauth_states: dict[str, dict] = {}
 def _missing_required_scopes(token_data: dict) -> set[str]:
     raw_scopes = token_data.get("scope")
     if not isinstance(raw_scopes, str) or not raw_scopes.strip():
+        logger.debug("OAuth token response omitted a usable scope field")
         return set()
     granted = set(raw_scopes.split())
     return set(REQUIRED_OAUTH_SCOPES) - granted

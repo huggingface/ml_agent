@@ -130,6 +130,10 @@ def test_oauth_callback_detects_missing_required_collection_scope():
     }
 
 
+def test_oauth_callback_treats_absent_scope_as_full_grant():
+    assert auth._missing_required_scopes({}) == set()
+
+
 @pytest.mark.asyncio
 async def test_oauth_callback_sets_scope_marker_cookie(monkeypatch):
     monkeypatch.setenv("SPACE_HOST", "example.hf.space")

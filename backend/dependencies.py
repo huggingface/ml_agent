@@ -263,7 +263,8 @@ async def get_current_user(request: Request) -> dict[str, Any]:
     if not AUTH_ENABLED:
         return await _dev_user_from_env()
 
-    # Try Authorization header
+    # Bearer callers manage token lifecycle themselves; only browser cookie
+    # auth is forced through the scope-freshness marker below.
     token = bearer_token_from_header(request.headers.get("Authorization", ""))
     if token:
         user = await _extract_user_from_token(token)
