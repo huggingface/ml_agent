@@ -60,15 +60,21 @@ def _get_sandbox_create_lock(owner: str) -> asyncio.Lock:
 
 def _looks_like_path(script: str) -> bool:
     """Return True if the script string looks like a file path (not inline code)."""
-    return (
+    if not (
         isinstance(script, str)
         and script.strip() == script
         and not any(c in script for c in "\r\n\0")
-        and (
-            script.startswith("/")
-            or script.startswith("./")
-            or script.startswith("../")
-        )
+    ):
+        return False
+
+    if script.startswith("http://") or script.startswith("https://"):
+        return False
+
+    return (
+        script.startswith("/")
+        or script.startswith("./")
+        or script.startswith("../")
+        or (script.endswith(".py") and not any(c.isspace() for c in script))
     )
 
 
