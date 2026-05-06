@@ -28,10 +28,14 @@ Create a `.env` file in the project root (or export these in your shell):
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
 OPENAI_API_KEY=<your-openai-api-key> # if using openai models
+LOCAL_LLM_BASE_URL=http://localhost:8000 # shared fallback for local model prefixes
+LOCAL_LLM_API_KEY=<optional-local-api-key> # optional shared local API key
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
-If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
+If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch
+unless you start on a local model. To get a GITHUB_TOKEN follow the tutorial
+[here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
 
 ### Usage
 
@@ -50,11 +54,43 @@ ml-intern "fine-tune llama on my dataset"
 **Options:**
 
 ```bash
-ml-intern --model anthropic/claude-opus-4-6 "your prompt"
-ml-intern --model openai/gpt-5.5 "your prompt"
+ml-intern --model anthropic/claude-opus-4-7 "your prompt"   # requires ANTHROPIC_API_KEY
+ml-intern --model openai/gpt-5.5 "your prompt"              # requires OPENAI_API_KEY
+ml-intern --model ollama/llama3.1:8b "your prompt"
+ml-intern --model vllm/meta-llama/Llama-3.1-8B-Instruct "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
+
+Run `ml-intern` then `/model` to see the full list of suggested model ids
+(Claude, GPT, HF-router models like MiniMax, Kimi, GLM, DeepSeek, and local
+model prefixes).
+
+**Local models:**
+
+Local model support uses OpenAI-compatible HTTP endpoints through LiteLLM. The
+agent does not load model weights directly from disk; start your inference
+server first, then select it with a provider-specific model prefix:
+
+```bash
+ml-intern --model ollama/llama3.1:8b "your prompt"
+ml-intern --model vllm/meta-llama/Llama-3.1-8B-Instruct "your prompt"
+```
+
+Inside interactive mode, switch with `/model`:
+
+```text
+/model ollama/llama3.1:8b
+/model lm_studio/google/gemma-3-4b
+/model llamacpp/llama-3.1-8b-instruct
+```
+
+Supported local prefixes are `ollama/`, `vllm/`, `lm_studio/`, and
+`llamacpp/`. Set `LOCAL_LLM_BASE_URL` and optional `LOCAL_LLM_API_KEY` to use
+one shared local endpoint, or override a specific provider with its matching
+`*_BASE_URL` / `*_API_KEY` variable, such as `OLLAMA_BASE_URL` or
+`VLLM_API_KEY`. Provider-specific variables take precedence over the shared
+local variables. Base URLs may include or omit `/v1`.
 
 ## Sharing Traces
 

@@ -20,8 +20,10 @@ from fastapi import (
     HTTPException,
     Request,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from litellm import acompletion
+from pydantic import ValidationError
 from models import (
     ApprovalRequest,
     HealthResponse,
@@ -654,15 +656,41 @@ async def delete_session(
 
 @router.post("/submit")
 async def submit_input(
-    request: SubmitRequest, user: dict = Depends(get_current_user)
+    request: Request, user: dict = Depends(get_current_user)
 ) -> dict:
     """Submit user input to a session. Only accessible by the session owner."""
-    agent_session = await _check_session_access(request.session_id, user)
+    # Parse the body manually so session ownership can be checked before the
+    # text-length constraints fire — otherwise a non-owner sending an empty
+    # or oversized text gets a 422 leaking the constraint instead of the 404
+    # they'd get for any other access to a session they don't own.
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object")
+    raw_session_id = payload.get("session_id")
+    if not isinstance(raw_session_id, str) or not raw_session_id:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "missing",
+                    "loc": ("body", "session_id"),
+                    "msg": "Field required",
+                    "input": payload,
+                }
+            ]
+        )
+    agent_session = await _check_session_access(raw_session_id, user)
+    try:
+        body = SubmitRequest(**payload)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
     await _enforce_gated_model_quota(user, agent_session)
-    success = await session_manager.submit_user_input(request.session_id, request.text)
+    success = await session_manager.submit_user_input(body.session_id, body.text)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
-    return {"status": "submitted", "session_id": request.session_id}
+    return {"status": "submitted", "session_id": body.session_id}
 
 
 @router.post("/approve")
@@ -934,10 +962,24 @@ async def undo_session(session_id: str, user: dict = Depends(get_current_user)) 
 
 @router.post("/truncate/{session_id}")
 async def truncate_session(
-    session_id: str, body: TruncateRequest, user: dict = Depends(get_current_user)
+    session_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """Truncate conversation to before a specific user message."""
+    # Check session ownership before parsing the request body so a 404 on a
+    # non-existent / non-owned session_id beats the 422 schema-validation error
+    # (otherwise the response leaks the required field name to non-owners).
     await _check_session_access(session_id, user)
+    try:
+        body = TruncateRequest(**(await request.json()))
+    except ValidationError as exc:
+        # Re-raise as RequestValidationError so FastAPI returns its standard
+        # structured 422 schema (`{"detail": [{"type":..., "loc":..., ...}]}`)
+        # instead of a string-stringified Pydantic dump.
+        raise RequestValidationError(exc.errors()) from exc
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     success = await session_manager.truncate(session_id, body.user_message_index)
     if not success:
         raise HTTPException(

@@ -15,6 +15,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from agent.core.hub_artifacts import wrap_shell_command_with_hub_artifact_bootstrap
+
 
 MAX_OUTPUT_CHARS = 25_000
 MAX_LINE_LENGTH = 4000
@@ -98,10 +100,13 @@ def _truncate_output(
 # ── Handlers ────────────────────────────────────────────────────────────
 
 
-async def _bash_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
+async def _bash_handler(
+    args: dict[str, Any], session: Any = None, **_kw
+) -> tuple[str, bool]:
     command = args.get("command", "")
     if not command:
         return "No command provided.", False
+    command = wrap_shell_command_with_hub_artifact_bootstrap(command, session)
     work_dir = args.get("work_dir", ".")
     timeout = min(args.get("timeout") or DEFAULT_TIMEOUT, MAX_TIMEOUT)
     try:

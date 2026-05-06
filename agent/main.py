@@ -26,6 +26,7 @@ from agent.core.approval_policy import is_scheduled_operation
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
 from agent.core.hf_tokens import resolve_hf_token
+from agent.core.local_models import is_local_model_id
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.messaging.gateway import NotificationGateway
@@ -971,14 +972,14 @@ async def main(model: str | None = None):
     # Create prompt session for input (needed early for token prompt)
     prompt_session = PromptSession()
 
-    # HF token — required, prompt if missing
-    hf_token = resolve_hf_token()
-    if not hf_token:
-        hf_token = await _prompt_and_save_hf_token(prompt_session)
-
     config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     if model:
         config.model_name = model
+
+    # HF token — required for Hub-backed models/tools, but not for local LLMs.
+    hf_token = resolve_hf_token()
+    if not hf_token and not is_local_model_id(config.model_name):
+        hf_token = await _prompt_and_save_hf_token(prompt_session)
 
     # Resolve username for banner
     hf_user = _get_hf_user(hf_token)
@@ -1202,24 +1203,26 @@ async def headless_main(
     logging.basicConfig(level=logging.WARNING)
     _configure_runtime_logging()
 
+    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
+    config.yolo_mode = True  # Auto-approve everything in headless mode
+
+    if model:
+        config.model_name = model
+
     hf_token = resolve_hf_token()
-    if not hf_token:
+    if not hf_token and not is_local_model_id(config.model_name):
         print(
             "ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    print("HF token loaded", file=sys.stderr)
+    if hf_token:
+        print("HF token loaded", file=sys.stderr)
 
-    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
-    config.yolo_mode = True  # Auto-approve everything in headless mode
     notification_gateway = NotificationGateway(config.messaging)
     await notification_gateway.start()
     hf_user = _get_hf_user(hf_token)
-
-    if model:
-        config.model_name = model
 
     if max_iterations is not None:
         config.max_iterations = max_iterations
