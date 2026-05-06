@@ -9,6 +9,7 @@ import base64
 import http.client
 import logging
 import re
+import shlex
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 import httpx
@@ -20,6 +21,7 @@ from agent.core.hf_access import (
     is_billing_error,
     resolve_jobs_namespace,
 )
+from agent.core.hub_artifacts import build_hub_artifact_sitecustomize
 from agent.core.session import Event
 from agent.tools.trackio_seed import ensure_trackio_dashboard
 from agent.tools.types import ToolResult
@@ -235,6 +237,26 @@ def _resolve_uv_command(
 
     # Otherwise, treat as file path
     return _build_uv_command(script, with_deps, python, script_args)
+
+
+def _wrap_command_with_artifact_bootstrap(
+    command: list[str], session: Any = None
+) -> list[str]:
+    """Install sitecustomize hooks before the user command runs in HF Jobs."""
+    sitecustomize = build_hub_artifact_sitecustomize(session)
+    if not sitecustomize:
+        return command
+
+    encoded = base64.b64encode(sitecustomize.encode("utf-8")).decode("ascii")
+    original_command = shlex.join(command)
+    shell = (
+        'set -e; _ml_intern_artifacts_dir="$(mktemp -d)"; '
+        f"printf %s {shlex.quote(encoded)} | base64 -d "
+        '> "$_ml_intern_artifacts_dir/sitecustomize.py"; '
+        'export PYTHONPATH="$_ml_intern_artifacts_dir${PYTHONPATH:+:$PYTHONPATH}"; '
+        f"exec {original_command}"
+    )
+    return ["/bin/sh", "-lc", shell]
 
 
 async def _async_call(func, *args, **kwargs):
@@ -559,6 +581,8 @@ class HfJobsTool:
             else:
                 image = args.get("image", "python:3.12")
                 job_type = "Docker"
+
+            command = _wrap_command_with_artifact_bootstrap(command, self.session)
 
             # Run the job
             flavor = args.get("hardware_flavor", "cpu-basic")
@@ -911,6 +935,8 @@ To verify, call this tool with `{{"operation": "inspect", "job_id": "{job_id}"}}
             else:
                 image = args.get("image", "python:3.12")
                 job_type = "Docker"
+
+            command = _wrap_command_with_artifact_bootstrap(command, self.session)
 
             # Create scheduled job
             scheduled_job = await _async_call(
