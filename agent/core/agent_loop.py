@@ -30,7 +30,7 @@ from agent.core.doom_loop import check_for_doom_loop
 from agent.core.hub_artifacts import start_session_artifact_collection_task
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
-from agent.core.session import Event, OpType, Session
+from agent.core.session import DEFAULT_SESSION_LOG_DIR, Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.tools.jobs_tool import CPU_FLAVORS
 from agent.tools.sandbox_tool import DEFAULT_CPU_SANDBOX_HARDWARE
@@ -2032,7 +2032,7 @@ async def submission_loop(
     # to publish to the user's HF dataset gets a fresh attempt on next run.
     if config and config.save_sessions:
         Session.retry_failed_uploads_detached(
-            directory="session_logs",
+            directory=str(DEFAULT_SESSION_LOG_DIR),
             repo_id=config.session_dataset_repo,
             personal_repo_id=session._personal_trace_repo_id(),
         )

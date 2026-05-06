@@ -238,9 +238,7 @@ def restore_session_from_log(session: Any, path: Path) -> dict[str, Any]:
         session._local_save_path = None
 
     saved_event_count = (
-        len(data.get("events", []))
-        if isinstance(data.get("events"), list)
-        else 0
+        len(data.get("events", [])) if isinstance(data.get("events"), list) else 0
     )
     session.logged_events = [
         {
