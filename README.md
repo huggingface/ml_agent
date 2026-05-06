@@ -28,10 +28,8 @@ Create a `.env` file in the project root (or export these in your shell):
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
 OPENAI_API_KEY=<your-openai-api-key> # if using openai models
-OLLAMA_BASE_URL=http://localhost:11434 # if using ollama/ local models
-VLLM_BASE_URL=http://localhost:8000 # if using vllm/ local models
-LMSTUDIO_BASE_URL=http://127.0.0.1:1234 # if using lm_studio/ local models
-LLAMACPP_BASE_URL=http://localhost:8080 # if using llamacpp/ local models
+LOCAL_LLM_BASE_URL=http://localhost:8000 # shared fallback for local model prefixes
+LOCAL_LLM_API_KEY=<optional-local-api-key> # optional shared local API key
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
@@ -88,8 +86,11 @@ Inside interactive mode, switch with `/model`:
 ```
 
 Supported local prefixes are `ollama/`, `vllm/`, `lm_studio/`, and
-`llamacpp/`. Each prefix has a matching `*_BASE_URL` and optional `*_API_KEY`
-environment variable. Base URLs may include or omit `/v1`.
+`llamacpp/`. Set `LOCAL_LLM_BASE_URL` and optional `LOCAL_LLM_API_KEY` to use
+one shared local endpoint, or override a specific provider with its matching
+`*_BASE_URL` / `*_API_KEY` variable, such as `OLLAMA_BASE_URL` or
+`VLLM_API_KEY`. Provider-specific variables take precedence over the shared
+local variables. Base URLs may include or omit `/v1`.
 
 ## Sharing Traces
 

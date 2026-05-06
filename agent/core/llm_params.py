@@ -10,6 +10,8 @@ import os
 from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
 from agent.core.local_models import (
     LOCAL_MODEL_API_KEY_DEFAULT,
+    LOCAL_MODEL_API_KEY_ENV,
+    LOCAL_MODEL_BASE_URL_ENV,
     is_local_model_id,
     is_reserved_local_model_id,
     local_model_name,
@@ -127,8 +129,16 @@ def _resolve_local_model_params(
     if provider is None or local_name is None or not is_local_model_id(model_name):
         raise ValueError(f"Unsupported local model id: {model_name}")
 
-    raw_base = os.environ.get(provider["base_url_env"]) or provider["base_url_default"]
-    api_key = os.environ.get(provider["api_key_env"]) or LOCAL_MODEL_API_KEY_DEFAULT
+    raw_base = (
+        os.environ.get(provider["base_url_env"])
+        or os.environ.get(LOCAL_MODEL_BASE_URL_ENV)
+        or provider["base_url_default"]
+    )
+    api_key = (
+        os.environ.get(provider["api_key_env"])
+        or os.environ.get(LOCAL_MODEL_API_KEY_ENV)
+        or LOCAL_MODEL_API_KEY_DEFAULT
+    )
     return {
         "model": f"openai/{local_name}",
         "api_base": _local_api_base(raw_base),

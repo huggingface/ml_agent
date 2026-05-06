@@ -59,12 +59,27 @@ def test_resolve_vllm_params_keeps_existing_v1_and_trims_slash(monkeypatch):
 def test_resolve_lm_studio_params_uses_api_key_override(monkeypatch):
     monkeypatch.setenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234")
     monkeypatch.setenv("LMSTUDIO_API_KEY", "local-secret")
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", "http://localhost:9999")
+    monkeypatch.setenv("LOCAL_LLM_API_KEY", "shared-secret")
 
     params = _resolve_llm_params("lm_studio/google/gemma-3-4b")
 
     assert params["model"] == "openai/google/gemma-3-4b"
     assert params["api_base"] == "http://127.0.0.1:1234/v1"
     assert params["api_key"] == "local-secret"
+
+
+def test_resolve_local_params_uses_shared_fallback_env(monkeypatch):
+    monkeypatch.delenv("VLLM_BASE_URL", raising=False)
+    monkeypatch.delenv("VLLM_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", "http://localhost:9000/v1/")
+    monkeypatch.setenv("LOCAL_LLM_API_KEY", "shared-local-secret")
+
+    params = _resolve_llm_params("vllm/custom-model")
+
+    assert params["model"] == "openai/custom-model"
+    assert params["api_base"] == "http://localhost:9000/v1"
+    assert params["api_key"] == "shared-local-secret"
 
 
 def test_resolve_llamacpp_params_strips_provider_prefix(monkeypatch):
