@@ -10,6 +10,8 @@ Usage:
 
   bash post_train_bench/submit_eval_set.sh rerun-failed-22112222 --dry-run
 
+  bash post_train_bench/submit_eval_set.sh rerun-overload-22112543 --dry-run
+
   bash post_train_bench/submit_eval_set.sh model-validation --dry-run
 
   bash post_train_bench/submit_eval_set.sh validation --dry-run
@@ -23,6 +25,9 @@ Modes:
   rerun-failed-22112222
          Submit the three 10-hour rows from full run 22112222 that were killed
          by broad process cleanup on a shared node.
+  rerun-overload-22112543
+         Submit the two 10-hour rerun rows that failed from Anthropic overload
+         before saving final_model.
   model-validation
          Submit one 2-hour GSM8K artifact-validity job per full-matrix model.
   validation
@@ -241,6 +246,19 @@ rows = [
 Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 PY
         ;;
+    rerun-overload-22112543)
+        python3 - "$MATRIX_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+rows = [
+    {"benchmark": "healthbench", "model_to_train": "google/gemma-3-4b-pt", "num_hours": 10},
+    {"benchmark": "arenahardwriting", "model_to_train": "Qwen/Qwen3-4B-Base", "num_hours": 10},
+]
+Path(sys.argv[1]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+PY
+        ;;
     validation)
         python3 - "$MATRIX_FILE" <<'PY'
 import json
@@ -351,6 +369,9 @@ case "$MODE" in
         DEFAULT_SLURM_TIME="03:00:00"
         ;;
     rerun-failed-22112222)
+        DEFAULT_SLURM_TIME="14:00:00"
+        ;;
+    rerun-overload-22112543)
         DEFAULT_SLURM_TIME="14:00:00"
         ;;
     full)
