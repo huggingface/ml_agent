@@ -79,6 +79,7 @@ _patch_litellm_effort_validation()
 # Effort levels accepted on the wire.
 #   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
 #   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
+#   OpenRouter:        minimal | low | medium | high | xhigh (reasoning_effort top-level)
 #   HF router:         low | medium | high                 (extra_body.reasoning_effort)
 #
 # We validate *shape* here and let the probe cascade walk down on rejection;
@@ -121,6 +122,12 @@ def _resolve_llm_params(
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
 
+    • ``openrouter/<provider>/<model>`` — preserved as-is so LiteLLM routes via
+      its native OpenRouter provider. LiteLLM uses ``OPENROUTER_API_KEY`` and
+      optionally ``OPENROUTER_API_BASE``, ``OR_SITE_URL``, and ``OR_APP_NAME``.
+      ``reasoning_effort`` is forwarded as a top-level kwarg for providers that
+      accept the OpenAI-compatible shape.
+
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
       ``https://router.huggingface.co/v1``. The id can be bare or carry an
@@ -138,6 +145,8 @@ def _resolve_llm_params(
     can't crash a turn — it just doesn't get sent.
 
     Token precedence (first non-empty wins):
+      For ``openrouter/...``, LiteLLM handles OpenRouter-specific env vars.
+      For Hugging Face Router ids:
       1. INFERENCE_TOKEN env — shared key on the hosted Space (inference is
          free for users, billed to the Space owner via ``X-HF-Bill-To``).
       2. session.hf_token — the user's own token (CLI / OAuth / cache file).
@@ -182,6 +191,18 @@ def _resolve_llm_params(
                 if strict:
                     raise UnsupportedEffortError(
                         f"OpenAI doesn't accept effort={reasoning_effort!r}"
+                    )
+            else:
+                params["reasoning_effort"] = reasoning_effort
+        return params
+
+    if model_name.startswith("openrouter/"):
+        params = {"model": model_name}
+        if reasoning_effort:
+            if reasoning_effort not in _OPENAI_EFFORTS:
+                if strict:
+                    raise UnsupportedEffortError(
+                        f"OpenRouter doesn't accept effort={reasoning_effort!r}"
                     )
             else:
                 params["reasoning_effort"] = reasoning_effort

@@ -28,6 +28,7 @@ Create a `.env` file in the project root (or export these in your shell):
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
 OPENAI_API_KEY=<your-openai-api-key> # if using openai models
+OPENROUTER_API_KEY=<your-openrouter-api-key> # if using openrouter models
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
@@ -52,12 +53,17 @@ ml-intern "fine-tune llama on my dataset"
 ```bash
 ml-intern --model anthropic/claude-opus-4-7 "your prompt"   # requires ANTHROPIC_API_KEY
 ml-intern --model openai/gpt-5.5 "your prompt"              # requires OPENAI_API_KEY
+ml-intern --model openrouter/anthropic/claude-opus-4.7 "your prompt" # requires OPENROUTER_API_KEY
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
 
 Run `ml-intern` then `/model` to see the full list of suggested model ids
-(Claude, GPT, and HF-router models like MiniMax, Kimi, GLM, DeepSeek).
+(Claude, GPT, OpenRouter, and HF-router models like MiniMax, Kimi, GLM, DeepSeek).
+OpenRouter models must use the explicit `openrouter/<provider>/<model>` prefix.
+Optional OpenRouter env vars `OPENROUTER_API_BASE`, `OR_SITE_URL`, and
+`OR_APP_NAME` are passed through by LiteLLM. `OPENAI_BASE_URL` is not used;
+`openai/...` remains reserved for direct OpenAI models.
 
 ## Sharing Traces
 

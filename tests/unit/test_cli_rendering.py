@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import agent.main as main_mod
+from agent.core import model_switcher
 from agent.tools.research_tool import _get_research_model
 from agent.utils import terminal_display
 
@@ -27,6 +28,20 @@ def test_bedrock_anthropic_research_model_stays_on_bedrock():
 
 def test_non_anthropic_research_model_is_unchanged():
     assert _get_research_model("openai/gpt-5.4") == "openai/gpt-5.4"
+
+
+def test_openrouter_model_switch_bypasses_hf_router_catalog(monkeypatch):
+    def fail_lookup(_model_id):
+        raise AssertionError("OpenRouter ids should not query the HF router catalog")
+
+    monkeypatch.setattr("agent.core.hf_router_catalog.lookup", fail_lookup)
+
+    console = SimpleNamespace(print=lambda *_args, **_kwargs: None)
+
+    assert model_switcher._print_hf_routing_info(
+        "openrouter/anthropic/claude-opus-4.7",
+        console,
+    )
 
 
 def test_subagent_display_does_not_spawn_background_redraw(monkeypatch):

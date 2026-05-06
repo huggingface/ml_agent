@@ -18,9 +18,10 @@ from __future__ import annotations
 from agent.core.effort_probe import ProbeInconclusive, probe_effort
 
 
-# Suggested models shown by `/model` (not a gate). Users can paste any HF
-# model id (e.g. "MiniMaxAI/MiniMax-M2.7") or an `anthropic/` / `openai/`
-# prefix for direct API access. For HF ids, append ":fastest" /
+# Suggested models shown by `/model` (not a gate). Users can paste any HF model
+# id (e.g. "MiniMaxAI/MiniMax-M2.7") or an `anthropic/` / `openai/` /
+# `openrouter/` / `bedrock/` prefix for direct provider access. For HF ids,
+# append ":fastest" /
 # ":cheapest" / ":preferred" / ":<provider>" to override the default
 # routing policy (auto = fastest with failover).
 SUGGESTED_MODELS = [
@@ -48,6 +49,8 @@ def is_valid_model_id(model_id: str) -> bool:
     Accepts:
       • anthropic/<model>
       • openai/<model>
+      • openrouter/<provider>/<model>
+      • bedrock/<model>
       • <org>/<model>[:<tag>]            (HF router; tag = provider or policy)
       • huggingface/<org>/<model>[:<tag>] (same, accepts legacy prefix)
 
@@ -67,10 +70,10 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     proceed with the switch, ``False`` to indicate a hard problem the user
     should notice before we fire the effort probe.
 
-    Anthropic / OpenAI ids return ``True`` without printing anything —
-    the probe below covers "does this model exist".
+    Direct provider ids return ``True`` without printing anything — the probe
+    below covers "does this model exist".
     """
-    if model_id.startswith(("anthropic/", "openai/")):
+    if model_id.startswith(("anthropic/", "openai/", "openrouter/", "bedrock/")):
         return True
 
     from agent.core import hf_router_catalog as cat
@@ -141,7 +144,8 @@ def print_model_listing(config, console) -> None:
     console.print(
         "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
         "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
-        "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.[/dim]"
+        "Use 'anthropic/<model>', 'openai/<model>', 'openrouter/<provider>/<model>', "
+        "or 'bedrock/<model>' for direct provider access.[/dim]"
     )
 
 
@@ -151,7 +155,9 @@ def print_invalid_id(arg: str, console) -> None:
         "[dim]Expected:\n"
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
         "  • anthropic/<model>\n"
-        "  • openai/<model>[/dim]"
+        "  • openai/<model>\n"
+        "  • openrouter/<provider>/<model>\n"
+        "  • bedrock/<model>[/dim]"
     )
 
 
