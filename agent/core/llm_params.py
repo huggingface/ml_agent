@@ -7,6 +7,21 @@ creating circular imports.
 
 import os
 
+from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
+from agent.core.local_models import (
+    LOCAL_MODEL_API_KEY_DEFAULT,
+    LOCAL_MODEL_API_KEY_ENV,
+    LOCAL_MODEL_BASE_URL_ENV,
+    is_reserved_local_model_id,
+    local_model_name,
+    local_model_provider,
+)
+
+
+def _resolve_hf_router_token(session_hf_token: str | None = None) -> str | None:
+    """Backward-compatible private wrapper used by tests and older imports."""
+    return resolve_hf_router_token(session_hf_token)
+
 
 def _patch_litellm_effort_validation() -> None:
     """Neuter LiteLLM 1.83's hardcoded effort-level validation.
@@ -51,9 +66,16 @@ def _patch_litellm_effort_validation() -> None:
         # to return True for families where "max" / "xhigh" are acceptable
         # at the API; the cascade handles the case when they're not.
         return any(
-            v in m for v in (
-                "opus-4-6", "opus_4_6", "opus-4.6", "opus_4.6",
-                "opus-4-7", "opus_4_7", "opus-4.7", "opus_4.7",
+            v in m
+            for v in (
+                "opus-4-6",
+                "opus_4_6",
+                "opus-4.6",
+                "opus_4.6",
+                "opus-4-7",
+                "opus_4_7",
+                "opus-4.7",
+                "opus_4.7",
             )
         )
 
@@ -66,13 +88,13 @@ _patch_litellm_effort_validation()
 
 # Effort levels accepted on the wire.
 #   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
-#   OpenAI direct:     minimal | low | medium | high       (reasoning_effort top-level)
+#   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
 #   HF router:         low | medium | high                 (extra_body.reasoning_effort)
 #
 # We validate *shape* here and let the probe cascade walk down on rejection;
 # we deliberately do NOT maintain a per-model capability table.
 _ANTHROPIC_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
-_OPENAI_EFFORTS = {"minimal", "low", "medium", "high"}
+_OPENAI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 _HF_EFFORTS = {"low", "medium", "high"}
 
 
@@ -82,6 +104,46 @@ class UnsupportedEffortError(ValueError):
     Raised synchronously before any network call so the probe cascade can
     skip levels the provider can't accept (e.g. ``max`` on HF router).
     """
+
+
+def _local_api_base(base_url: str) -> str:
+    base = base_url.strip().rstrip("/")
+    if base.endswith("/v1"):
+        return base
+    return f"{base}/v1"
+
+
+def _resolve_local_model_params(
+    model_name: str,
+    reasoning_effort: str | None = None,
+    strict: bool = False,
+) -> dict:
+    if reasoning_effort and strict:
+        raise UnsupportedEffortError(
+            "Local OpenAI-compatible endpoints don't accept reasoning_effort"
+        )
+
+    local_name = local_model_name(model_name)
+    if local_name is None:
+        raise ValueError(f"Unsupported local model id: {model_name}")
+
+    provider = local_model_provider(model_name)
+    assert provider is not None
+    raw_base = (
+        os.environ.get(provider["base_url_env"])
+        or os.environ.get(LOCAL_MODEL_BASE_URL_ENV)
+        or provider["base_url_default"]
+    )
+    api_key = (
+        os.environ.get(provider["api_key_env"])
+        or os.environ.get(LOCAL_MODEL_API_KEY_ENV)
+        or LOCAL_MODEL_API_KEY_DEFAULT
+    )
+    return {
+        "model": f"openai/{local_name}",
+        "api_base": _local_api_base(raw_base),
+        "api_key": api_key,
+    }
 
 
 def _resolve_llm_params(
@@ -109,6 +171,12 @@ def _resolve_llm_params(
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
 
+    • ``ollama/<model>``, ``vllm/<model>``, ``lm_studio/<model>``, and
+      ``llamacpp/<model>`` — local OpenAI-compatible endpoints. The id prefix
+      selects a configurable localhost base URL, and the model suffix is sent
+      to LiteLLM as ``openai/<model>``. These endpoints don't receive
+      ``reasoning_effort``.
+
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
       ``https://router.huggingface.co/v1``. The id can be bare or carry an
@@ -129,7 +197,8 @@ def _resolve_llm_params(
       1. INFERENCE_TOKEN env — shared key on the hosted Space (inference is
          free for users, billed to the Space owner via ``X-HF-Bill-To``).
       2. session.hf_token — the user's own token (CLI / OAuth / cache file).
-      3. HF_TOKEN env — belt-and-suspenders fallback for CLI users.
+      3. huggingface_hub cache — ``HF_TOKEN`` / ``HUGGING_FACE_HUB_TOKEN`` /
+         local ``hf auth login`` cache.
     """
     if model_name.startswith("anthropic/"):
         params: dict = {"model": model_name}
@@ -174,19 +243,20 @@ def _resolve_llm_params(
                 params["reasoning_effort"] = reasoning_effort
         return params
 
+    if is_reserved_local_model_id(model_name):
+        raise ValueError(f"Unsupported local model id: {model_name}")
+
+    if local_model_provider(model_name) is not None:
+        return _resolve_local_model_params(model_name, reasoning_effort, strict)
+
     hf_model = model_name.removeprefix("huggingface/")
-    api_key = (
-        os.environ.get("INFERENCE_TOKEN")
-        or session_hf_token
-        or os.environ.get("HF_TOKEN")
-    )
+    api_key = _resolve_hf_router_token(session_hf_token)
     params = {
         "model": f"openai/{hf_model}",
         "api_base": "https://router.huggingface.co/v1",
         "api_key": api_key,
     }
-    if os.environ.get("INFERENCE_TOKEN"):
-        bill_to = os.environ.get("HF_BILL_TO", "smolagents")
+    if bill_to := get_hf_bill_to():
         params["extra_headers"] = {"X-HF-Bill-To": bill_to}
     if reasoning_effort:
         hf_level = "low" if reasoning_effort == "minimal" else reasoning_effort

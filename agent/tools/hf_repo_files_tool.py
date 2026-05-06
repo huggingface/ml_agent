@@ -10,6 +10,7 @@ from typing import Any, Dict, Literal, Optional
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
+from agent.core.hub_artifacts import is_known_hub_artifact, register_hub_artifact
 from agent.tools.types import ToolResult
 
 OperationType = Literal["list", "read", "upload", "delete"]
@@ -39,8 +40,9 @@ def _format_size(size_bytes: int) -> str:
 class HfRepoFilesTool:
     """Tool for file operations on HF repos."""
 
-    def __init__(self, hf_token: Optional[str] = None):
+    def __init__(self, hf_token: Optional[str] = None, session: Any = None):
         self.api = HfApi(token=hf_token)
+        self.session = session
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the specified operation."""
@@ -61,7 +63,9 @@ class HfRepoFilesTool:
             if handler:
                 return await handler(args)
             else:
-                return self._error(f"Unknown operation: {operation}. Valid: list, read, upload, delete")
+                return self._error(
+                    f"Unknown operation: {operation}. Valid: list, read, upload, delete"
+                )
 
         except RepositoryNotFoundError:
             return self._error(f"Repository not found: {args.get('repo_id')}")
@@ -96,17 +100,23 @@ class HfRepoFilesTool:
         revision = args.get("revision", "main")
         path = args.get("path", "")
 
-        items = list(await _async_call(
-            self.api.list_repo_tree,
-            repo_id=repo_id,
-            repo_type=repo_type,
-            revision=revision,
-            path_in_repo=path,
-            recursive=True,
-        ))
+        items = list(
+            await _async_call(
+                self.api.list_repo_tree,
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+                path_in_repo=path,
+                recursive=True,
+            )
+        )
 
         if not items:
-            return {"formatted": f"No files in {repo_id}", "totalResults": 0, "resultsShared": 0}
+            return {
+                "formatted": f"No files in {repo_id}",
+                "totalResults": 0,
+                "resultsShared": 0,
+            }
 
         lines = []
         total_size = 0
@@ -118,9 +128,16 @@ class HfRepoFilesTool:
                 lines.append(f"{item.path}/")
 
         url = _build_repo_url(repo_id, repo_type)
-        response = f"**{repo_id}** ({len(items)} files, {_format_size(total_size)})\n{url}/tree/{revision}\n\n" + "\n".join(lines)
+        response = (
+            f"**{repo_id}** ({len(items)} files, {_format_size(total_size)})\n{url}/tree/{revision}\n\n"
+            + "\n".join(lines)
+        )
 
-        return {"formatted": response, "totalResults": len(items), "resultsShared": len(items)}
+        return {
+            "formatted": response,
+            "totalResults": len(items),
+            "resultsShared": len(items),
+        }
 
     async def _read(self, args: Dict[str, Any]) -> ToolResult:
         """Read file content from a repository."""
@@ -160,8 +177,13 @@ class HfRepoFilesTool:
 
         except UnicodeDecodeError:
             import os
+
             size = os.path.getsize(file_path)
-            return {"formatted": f"Binary file ({_format_size(size)})", "totalResults": 1, "resultsShared": 1}
+            return {
+                "formatted": f"Binary file ({_format_size(size)})",
+                "totalResults": 1,
+                "resultsShared": 1,
+            }
 
     async def _upload(self, args: Dict[str, Any]) -> ToolResult:
         """Upload content to a repository."""
@@ -193,6 +215,16 @@ class HfRepoFilesTool:
             commit_message=commit_message,
             create_pr=create_pr,
         )
+
+        if not create_pr and is_known_hub_artifact(self.session, repo_id, repo_type):
+            await _async_call(
+                register_hub_artifact,
+                self.api,
+                repo_id,
+                repo_type,
+                session=self.session,
+                force=path == "README.md",
+            )
 
         url = _build_repo_url(repo_id, repo_type)
         if create_pr and hasattr(result, "pr_url"):
@@ -235,7 +267,12 @@ class HfRepoFilesTool:
 
     def _error(self, message: str) -> ToolResult:
         """Return an error result."""
-        return {"formatted": message, "totalResults": 0, "resultsShared": 0, "isError": True}
+        return {
+            "formatted": message,
+            "totalResults": 0,
+            "resultsShared": 0,
+            "isError": True,
+        }
 
 
 # Tool specification
@@ -312,11 +349,13 @@ HF_REPO_FILES_TOOL_SPEC = {
 }
 
 
-async def hf_repo_files_handler(arguments: Dict[str, Any], session=None) -> tuple[str, bool]:
+async def hf_repo_files_handler(
+    arguments: Dict[str, Any], session=None
+) -> tuple[str, bool]:
     """Handler for agent tool router."""
     try:
         hf_token = session.hf_token if session else None
-        tool = HfRepoFilesTool(hf_token=hf_token)
+        tool = HfRepoFilesTool(hf_token=hf_token, session=session)
         result = await tool.execute(arguments)
         return result["formatted"], not result.get("isError", False)
     except Exception as e:

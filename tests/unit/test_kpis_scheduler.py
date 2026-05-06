@@ -28,7 +28,12 @@ def _load():
 
 def test_token_resolution_order(monkeypatch):
     mod = _load()
-    for var in ("HF_KPI_WRITE_TOKEN", "HF_SESSION_UPLOAD_TOKEN", "HF_TOKEN", "HF_ADMIN_TOKEN"):
+    for var in (
+        "HF_KPI_WRITE_TOKEN",
+        "HF_SESSION_UPLOAD_TOKEN",
+        "HF_TOKEN",
+        "HF_ADMIN_TOKEN",
+    ):
         monkeypatch.delenv(var, raising=False)
     assert mod._resolve_token() is None
 
@@ -86,7 +91,11 @@ def test_start_skips_cleanly_without_apscheduler(monkeypatch):
     monkeypatch.delenv("ML_INTERN_KPIS_DISABLED", raising=False)
 
     # Force the apscheduler import to fail — start() should log and return.
-    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+    real_import = (
+        __builtins__["__import__"]
+        if isinstance(__builtins__, dict)
+        else __builtins__.__import__
+    )
 
     def fake_import(name, *args, **kwargs):
         if name.startswith("apscheduler"):

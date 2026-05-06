@@ -41,8 +41,7 @@ class BrailleCanvas:
         for row in range(self.term_height):
             offset = row * self.term_width
             line = "".join(
-                chr(0x2800 + self._buf[offset + col])
-                for col in range(self.term_width)
+                chr(0x2800 + self._buf[offset + col]) for col in range(self.term_width)
             )
             lines.append(line)
         return lines
@@ -51,6 +50,7 @@ class BrailleCanvas:
 # ── Bitmap font (5×7 uppercase + digits) ──────────────────────────────
 
 _FONT: dict[str, list[str]] = {}
+
 
 def _define_font() -> None:
     """Define a simple 5×7 bitmap font for uppercase ASCII."""
@@ -113,8 +113,9 @@ def text_to_pixels(text: str, scale: int = 1) -> list[tuple[int, int]]:
                 if cell == "#":
                     for sy in range(scale):
                         for sx in range(scale):
-                            pixels.append((cursor_x + col_idx * scale + sx,
-                                           row_idx * scale + sy))
+                            pixels.append(
+                                (cursor_x + col_idx * scale + sx, row_idx * scale + sy)
+                            )
         glyph_width = max(len(r) for r in glyph)
         cursor_x += (glyph_width + 1) * scale
     return pixels

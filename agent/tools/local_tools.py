@@ -15,6 +15,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from agent.core.hub_artifacts import wrap_shell_command_with_hub_artifact_bootstrap
+
 
 MAX_OUTPUT_CHARS = 25_000
 MAX_LINE_LENGTH = 4000
@@ -22,7 +24,7 @@ DEFAULT_READ_LINES = 2000
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 36000  # 10 hours — needed for long training runs (e.g. PostTrainBench)
 
-_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07')
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07")
 
 # Track files that have been read this session (enforces read-before-write/edit)
 _files_read: set[str] = set()
@@ -63,17 +65,21 @@ def _atomic_write(path: Path, content: str) -> None:
 
 
 def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub('', text)
+    return _ANSI_RE.sub("", text)
 
 
-def _truncate_output(output: str, max_chars: int = MAX_OUTPUT_CHARS, head_ratio: float = 0.25) -> str:
+def _truncate_output(
+    output: str, max_chars: int = MAX_OUTPUT_CHARS, head_ratio: float = 0.25
+) -> str:
     """Tail-biased truncation with temp file spillover for full output access."""
     if len(output) <= max_chars:
         return output
     # Write full output to temp file so LLM can read specific sections
     spill_path = None
     try:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', prefix='bash_output_', delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", prefix="bash_output_", delete=False
+        ) as f:
             f.write(output)
             spill_path = f.name
     except Exception:
@@ -93,10 +99,14 @@ def _truncate_output(output: str, max_chars: int = MAX_OUTPUT_CHARS, head_ratio:
 
 # ── Handlers ────────────────────────────────────────────────────────────
 
-async def _bash_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
+
+async def _bash_handler(
+    args: dict[str, Any], session: Any = None, **_kw
+) -> tuple[str, bool]:
     command = args.get("command", "")
     if not command:
         return "No command provided.", False
+    command = wrap_shell_command_with_hub_artifact_bootstrap(command, session)
     work_dir = args.get("work_dir", ".")
     timeout = min(args.get("timeout") or DEFAULT_TIMEOUT, MAX_TIMEOUT)
     try:
@@ -174,9 +184,12 @@ async def _write_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
         # Syntax validation for Python files
         if p.suffix == ".py":
             from agent.tools.edit_utils import validate_python
+
             warnings = validate_python(content, file_path)
             if warnings:
-                msg += "\n\nValidation warnings:\n" + "\n".join(f"  ⚠ {w}" for w in warnings)
+                msg += "\n\nValidation warnings:\n" + "\n".join(
+                    f"  ⚠ {w}" for w in warnings
+                )
         return msg, True
     except Exception as e:
         return f"write error: {e}", False
@@ -229,7 +242,9 @@ async def _edit_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     if p.suffix == ".py":
         warnings = validate_python(new_text, file_path)
         if warnings:
-            msg += "\n\nValidation warnings:\n" + "\n".join(f"  ⚠ {w}" for w in warnings)
+            msg += "\n\nValidation warnings:\n" + "\n".join(
+                f"  ⚠ {w}" for w in warnings
+            )
     return msg, True
 
 

@@ -92,7 +92,9 @@ def _parse_entry(entry: dict) -> ModelInfo:
                 input_price=pricing.get("input"),
                 output_price=pricing.get("output"),
                 supports_tools=bool(p.get("supports_tools", False)),
-                supports_structured_output=bool(p.get("supports_structured_output", False)),
+                supports_structured_output=bool(
+                    p.get("supports_structured_output", False)
+                ),
             )
         )
     return ModelInfo(id=entry.get("id", ""), providers=providers)

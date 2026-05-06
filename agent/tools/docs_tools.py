@@ -932,7 +932,7 @@ EXPLORE_HF_DOCS_TOOL_SPEC = {
                     "• argilla — Data annotation, feedback, and human-in-the-loop workflows.\n"
                     "• distilabel — Synthetic data generation and distillation pipelines.\n"
                     "• microsoft-azure — Azure deployment and integration guides.\n"
-                    "• kernels — Lightweight execution environments and notebook-style workflows.\n"
+                    "• kernels — Load prebuilt compute kernels (E.g. flash-attn2) from the Hub via `attn_implementation`; avoids compiling flash-attn from source.\n"
                     "• google-cloud — GCP deployment and serving workflows.\n"
                 ),
             },

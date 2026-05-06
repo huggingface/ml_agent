@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { useState, useCallback, type ReactNode } from 'react';
 import {
   Box,
   Typography,
@@ -8,18 +8,14 @@ import {
 } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import GroupAddIcon from '@mui/icons-material/GroupAdd';
 import LoginIcon from '@mui/icons-material/Login';
 import RocketLaunchIcon from '@mui/icons-material/RocketLaunch';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
 import { apiFetch } from '@/utils/api';
 import { isInIframe, triggerLogin } from '@/hooks/useAuth';
-import { useOrgMembership } from '@/hooks/useOrgMembership';
 
 const HF_ORANGE = '#FF9D00';
-const ORG_JOIN_URL =
-  'https://huggingface.co/organizations/ml-agent-explorers/share/GzPMJUivoFPlfkvFtIqEouZKSytatKQSZT';
 
 // ---------------------------------------------------------------------------
 // ChecklistStep sub-component
@@ -192,48 +188,6 @@ export default function WelcomeScreen() {
   const isAuthenticated = !!user?.authenticated;
   const isDevUser = user?.username === 'dev';
 
-  // Iframe: localStorage-based org tracking (no auth token available)
-  const [iframeOrgJoined, setIframeOrgJoined] = useState(() => {
-    try { return localStorage.getItem('hf-agent-org-joined') === '1'; } catch { return false; }
-  });
-  const joinLinkOpened = useRef(false);
-
-  // Auto-advance when user returns from org join link (iframe only)
-  useEffect(() => {
-    if (!inIframe) return;
-    const handleVisibility = () => {
-      if (document.visibilityState !== 'visible' || !joinLinkOpened.current) return;
-      joinLinkOpened.current = false;
-      try { localStorage.setItem('hf-agent-org-joined', '1'); } catch { /* ignore */ }
-      setIframeOrgJoined(true);
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [inIframe]);
-
-  const isOrgMember = inIframe ? iframeOrgJoined : !!user?.orgMember;
-
-  // Poll for org membership once authenticated (skipped in dev mode and iframe)
-  const popupRef = useOrgMembership(isAuthenticated && !isDevUser && !inIframe && !isOrgMember);
-
-  // ---- Actions ----
-
-  const handleJoinOrg = useCallback(() => {
-    if (inIframe) {
-      // Iframe: open link, track via visibilitychange + localStorage
-      joinLinkOpened.current = true;
-      window.open(ORG_JOIN_URL, '_blank', 'noopener,noreferrer');
-      return;
-    }
-    // Direct: open as popup, auto-close via polling
-    const popup = window.open(ORG_JOIN_URL, 'hf-org-join', 'noopener');
-    if (popup) {
-      popupRef.current = popup;
-    } else {
-      window.open(ORG_JOIN_URL, '_blank', 'noopener,noreferrer');
-    }
-  }, [popupRef, inIframe]);
-
   const handleStartSession = useCallback(async () => {
     if (isCreating) return;
     setIsCreating(true);
@@ -255,7 +209,7 @@ export default function WelcomeScreen() {
         return;
       }
       const data = await response.json();
-      createSession(data.session_id);
+      createSession(data.session_id, data.model);
       setPlan([]);
       clearPanel();
     } catch {
@@ -268,8 +222,7 @@ export default function WelcomeScreen() {
   // ---- Step status helpers ----
 
   const signInStatus: StepStatus = isAuthenticated ? 'completed' : 'active';
-  const joinOrgStatus: StepStatus = isOrgMember ? 'completed' : isAuthenticated ? 'active' : 'locked';
-  const startStatus: StepStatus = isAuthenticated && isOrgMember ? 'active' : 'locked';
+  const startStatus: StepStatus = isAuthenticated ? 'active' : 'locked';
 
   // Space URL for iframe "Open ML Intern" step
   const spaceHost =
@@ -280,6 +233,12 @@ export default function WelcomeScreen() {
       : '';
 
   return (
+    // Outer container scrolls; inner uses `margin: auto` so the checklist
+    // centers vertically when the viewport has room and falls back to top-
+    // aligned + scrollable when it doesn't. The previous setup hardcoded
+    // `justify-content: center` with no overflow, so on short viewports
+    // (1366×768 Chrome was the reported case) the bottom of the card —
+    // including the "Start session" CTA — got clipped with no way to scroll.
     <Box
       sx={{
         width: '100%',
@@ -287,172 +246,150 @@ export default function WelcomeScreen() {
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        justifyContent: 'center',
+        overflowY: 'auto',
         background: 'var(--body-gradient)',
-        py: 8,
       }}
     >
-      {/* Logo */}
-      <Box
-        component="img"
-        src="/smolagents.webp"
-        alt="smolagents"
-        sx={{ width: 80, height: 80, mb: 2.5, display: 'block' }}
-      />
-
-      {/* Title */}
-      <Typography
-        variant="h2"
-        sx={{
-          fontWeight: 800,
-          color: 'var(--text)',
-          mb: 1,
-          letterSpacing: '-0.02em',
-          fontSize: { xs: '1.8rem', md: '2.4rem' },
-        }}
-      >
-        ML Intern
-      </Typography>
-
-      {/* Description */}
-      <Typography
-        variant="body1"
-        sx={{
-          color: 'var(--muted-text)',
-          maxWidth: 480,
-          mb: 4,
-          lineHeight: 1.7,
-          fontSize: '0.9rem',
-          textAlign: 'center',
-          px: 2,
-          '& strong': { color: 'var(--text)', fontWeight: 600 },
-        }}
-      >
-        Your personal <strong>ML agent</strong>. It reads <strong>papers</strong>, finds <strong>datasets</strong>, trains <strong>models</strong>, and iterates until the numbers go up. Instructions in. Trained model out.
-      </Typography>
-
-      {/* ── Checklist ──────────────────────────────────────────── */}
       <Box
         sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
           width: '100%',
-          maxWidth: 520,
-          bgcolor: 'var(--surface)',
-          border: '1px solid var(--border)',
-          borderRadius: '12px',
-          overflow: 'hidden',
-          mx: 2,
+          margin: 'auto',
+          py: 8,
         }}
       >
-        {isDevUser ? (
-          /* Dev mode: single step */
-          <ChecklistStep
-            stepNumber={1}
-            title="Start Session"
-            description="Launch an AI agent session for ML engineering."
-            status="active"
-            actionLabel="Start Session"
-            actionIcon={<RocketLaunchIcon sx={{ fontSize: 16 }} />}
-            onAction={handleStartSession}
-            loading={isCreating}
-            isLast
-          />
-        ) : inIframe ? (
-          /* Iframe: 2 steps */
-          <>
+        {/* Logo */}
+        <Box
+          component="img"
+          src="/smolagents.webp"
+          alt="smolagents"
+          sx={{ width: 80, height: 80, mb: 2.5, display: 'block' }}
+        />
+
+        {/* Title */}
+        <Typography
+          variant="h2"
+          sx={{
+            fontWeight: 800,
+            color: 'var(--text)',
+            mb: 1,
+            letterSpacing: '-0.02em',
+            fontSize: { xs: '1.8rem', md: '2.4rem' },
+          }}
+        >
+          ML Intern
+        </Typography>
+
+        {/* Description */}
+        <Typography
+          variant="body1"
+          sx={{
+            color: 'var(--muted-text)',
+            maxWidth: 480,
+            mb: 4,
+            lineHeight: 1.7,
+            fontSize: '0.9rem',
+            textAlign: 'center',
+            px: 2,
+            '& strong': { color: 'var(--text)', fontWeight: 600 },
+          }}
+        >
+          Your personal <strong>ML agent</strong>. It reads <strong>papers</strong>, finds <strong>datasets</strong>, trains <strong>models</strong>, and iterates until the numbers go up. Instructions in. Trained model out.
+        </Typography>
+
+        {/* ── Checklist ──────────────────────────────────────────── */}
+        <Box
+          sx={{
+            width: '100%',
+            maxWidth: 520,
+            bgcolor: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: '12px',
+            overflow: 'hidden',
+            mx: 2,
+          }}
+        >
+          {isDevUser ? (
+            /* Dev mode: single step */
             <ChecklistStep
               stepNumber={1}
-              title="Join ML Agent Explorers"
-              description="Get free access to GPUs, inference APIs, and Hub resources."
-              status={isOrgMember ? 'completed' : 'active'}
-              actionLabel="Join Organization"
-              actionIcon={<GroupAddIcon sx={{ fontSize: 16 }} />}
-              onAction={handleJoinOrg}
-            />
-            <ChecklistStep
-              stepNumber={2}
-              title="Open ML Intern"
-              description="Open the agent in a full browser tab to get started."
-              status={isOrgMember ? 'active' : 'locked'}
-              lockedReason="Join the organization first."
-              actionLabel="Open ML Intern"
-              actionIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
-              actionHref={spaceHost}
-              isLast
-            />
-          </>
-        ) : (
-          /* Direct access: 3 steps */
-          <>
-            <ChecklistStep
-              stepNumber={1}
-              title="Sign in with Hugging Face"
-              description="Authenticate to access GPU resources and model APIs."
-              status={signInStatus}
-              actionLabel="Sign in"
-              actionIcon={<LoginIcon sx={{ fontSize: 16 }} />}
-              onAction={() => triggerLogin()}
-            />
-            <ChecklistStep
-              stepNumber={2}
-              title="Join ML Agent Explorers"
-              description="Get free access to GPUs, inference APIs, and Hub resources."
-              status={joinOrgStatus}
-              lockedReason="Sign in first to continue."
-              actionLabel="Join Organization"
-              actionIcon={<GroupAddIcon sx={{ fontSize: 16 }} />}
-              onAction={handleJoinOrg}
-            />
-            <ChecklistStep
-              stepNumber={3}
               title="Start Session"
               description="Launch an AI agent session for ML engineering."
-              status={startStatus}
-              lockedReason="Complete the steps above to continue."
+              status="active"
               actionLabel="Start Session"
               actionIcon={<RocketLaunchIcon sx={{ fontSize: 16 }} />}
               onAction={handleStartSession}
               loading={isCreating}
               isLast
             />
-          </>
-        )}
-      </Box>
+          ) : inIframe ? (
+            /* Iframe: open in a full tab */
+            <ChecklistStep
+              stepNumber={1}
+              title="Open ML Intern"
+              description="Open the agent in a full browser tab to get started."
+              status="active"
+              actionLabel="Open ML Intern"
+              actionIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
+              actionHref={spaceHost}
+              isLast
+            />
+          ) : (
+            /* Direct access: sign in → start */
+            <>
+              <ChecklistStep
+                stepNumber={1}
+                title="Sign in with Hugging Face"
+                description="Authenticate to access GPU resources and model APIs."
+                status={signInStatus}
+                actionLabel="Sign in"
+                actionIcon={<LoginIcon sx={{ fontSize: 16 }} />}
+                onAction={() => triggerLogin()}
+              />
+              <ChecklistStep
+                stepNumber={2}
+                title="Start Session"
+                description="Launch an AI agent session for ML engineering."
+                status={startStatus}
+                lockedReason="Sign in first to continue."
+                actionLabel="Start Session"
+                actionIcon={<RocketLaunchIcon sx={{ fontSize: 16 }} />}
+                onAction={handleStartSession}
+                loading={isCreating}
+                isLast
+              />
+            </>
+          )}
+        </Box>
 
-      {/* Polling hint when waiting for org join */}
-      {isAuthenticated && !isOrgMember && !isDevUser && !inIframe && (
+        {/* Error */}
+        {error && (
+          <Alert
+            severity="warning"
+            variant="outlined"
+            onClose={() => setError(null)}
+            sx={{
+              mt: 3,
+              maxWidth: 400,
+              fontSize: '0.8rem',
+              borderColor: HF_ORANGE,
+              color: 'var(--text)',
+            }}
+          >
+            {error}
+          </Alert>
+        )}
+
+        {/* Footnote */}
         <Typography
           variant="caption"
-          sx={{ mt: 2, color: 'var(--muted-text)', fontSize: '0.75rem', textAlign: 'center' }}
+          sx={{ mt: 4, color: 'var(--muted-text)', opacity: 0.5, fontSize: '0.7rem' }}
         >
-          This page updates automatically when you join the organization.
+          Conversations are stored locally in your browser.
         </Typography>
-      )}
-
-      {/* Error */}
-      {error && (
-        <Alert
-          severity="warning"
-          variant="outlined"
-          onClose={() => setError(null)}
-          sx={{
-            mt: 3,
-            maxWidth: 400,
-            fontSize: '0.8rem',
-            borderColor: HF_ORANGE,
-            color: 'var(--text)',
-          }}
-        >
-          {error}
-        </Alert>
-      )}
-
-      {/* Footnote */}
-      <Typography
-        variant="caption"
-        sx={{ mt: 4, color: 'var(--muted-text)', opacity: 0.5, fontSize: '0.7rem' }}
-      >
-        Conversations are stored locally in your browser.
-      </Typography>
+      </Box>
     </Box>
   );
 }

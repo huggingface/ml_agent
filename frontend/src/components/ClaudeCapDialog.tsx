@@ -19,6 +19,7 @@ interface ClaudeCapDialogProps {
   cap: number;
   onClose: () => void;
   onUseFreeModel: () => void;
+  onUpgrade: () => void;
 }
 
 export default function ClaudeCapDialog({
@@ -27,6 +28,7 @@ export default function ClaudeCapDialog({
   cap,
   onClose,
   onUseFreeModel,
+  onUpgrade,
 }: ClaudeCapDialogProps) {
   // plan not surfaced in copy right now — Pro users see the same dialog and
   // can upgrade their org if they're also capped.
@@ -53,15 +55,15 @@ export default function ClaudeCapDialog({
       <DialogTitle
         sx={{ color: 'var(--text)', fontWeight: 700, fontSize: '1rem', pt: 2.5, pb: 0, px: 3 }}
       >
-        You've hit your Opus limit
+        You've hit your premium model limit
       </DialogTitle>
       <DialogContent sx={{ px: 3, pt: 1.25, pb: 0 }}>
         <DialogContentText
           sx={{ color: 'var(--muted-text)', fontSize: '0.85rem', lineHeight: 1.6 }}
         >
-          Opus costs an arm and a leg, so we unfortunately have to cap you at {cap}{' '}
-          {cap === 1 ? 'session' : 'sessions'} a day. Give Kimi, MiniMax, or GLM a spin —
-          they are genuinely good and we use them all the time.
+          Opus and GPT-5.5 are expensive to run, so we cap premium models at {cap}{' '}
+          {cap === 1 ? 'session' : 'sessions'} a day. Give Kimi, MiniMax, GLM,
+          or DeepSeek a spin instead.
         </DialogContentText>
         <Box
           sx={{
@@ -83,14 +85,14 @@ export default function ClaudeCapDialog({
               letterSpacing: '0.02em',
             }}
           >
-            HF Pro ($9/mo) — more Opus, more everything
+            HF Pro ($9/mo) — more premium model sessions
           </Typography>
           <Typography
             variant="caption"
             sx={{ display: 'block', color: 'var(--muted-text)', fontSize: '0.78rem', lineHeight: 1.55 }}
           >
-            {PRO_CAP} Opus sessions/day here, 20× HF Inference credits, ZeroGPU access,
-            and priority on Spaces hardware.
+            {PRO_CAP} premium model sessions/day here, 20× HF Inference credits,
+            ZeroGPU access, and priority on Spaces hardware.
           </Typography>
         </Box>
       </DialogContent>
@@ -100,6 +102,7 @@ export default function ClaudeCapDialog({
           href={HF_PRICING_URL}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={onUpgrade}
           variant="contained"
           size="small"
           sx={{

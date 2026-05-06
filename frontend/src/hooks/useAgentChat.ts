@@ -36,7 +36,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
 
-  const { setNeedsAttention } = useSessionStore();
+  const { setNeedsAttention, updateSessionYolo } = useSessionStore();
 
   // Helper: update this session's state (mirrors to globals if active)
   const updateSession = useAgentStore.getState().updateSession;
@@ -185,6 +185,20 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       onApprovalRequired: (tools) => {
         if (!tools.length) return;
         setNeedsAttention(sessionId, true);
+
+        const store = useAgentStore.getState();
+        for (const tool of tools) {
+          store.setToolBudgetBlock(
+            tool.tool_call_id,
+            tool.auto_approval_blocked
+              ? {
+                  reason: tool.block_reason ?? null,
+                  estimatedCostUsd: tool.estimated_cost_usd ?? null,
+                  remainingCapUsd: tool.remaining_cap_usd ?? null,
+                }
+              : null,
+          );
+        }
 
         updateSession(sessionId, { activityStatus: { type: 'waiting-approval' } });
 
@@ -346,7 +360,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onError: (error) => {
       updateSession(sessionId, { isProcessing: false });
-      // Claude daily-cap: open the cap dialog instead of the generic error
+      // Premium-model daily cap: open the cap dialog instead of the generic error
       // banner. Transport marks the error with this sentinel.
       if (error.message === 'CLAUDE_QUOTA_EXHAUSTED') {
         if (isActiveRef.current) {
@@ -480,6 +494,9 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
             );
             if (pendingIds.size > 0) setNeedsAttention(sessionId, true);
           }
+          if (info.auto_approval) {
+            updateSessionYolo(sessionId, info.auto_approval);
+          }
           return { data, pendingIds, info };
         }
         return { data, pendingIds, info: null };
@@ -501,7 +518,10 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     /** Read the event stream from GET /api/events and forward to side-channel. */
     const consumeEventStream = async (signal: AbortSignal) => {
       try {
-        const res = await apiFetch(`/api/events/${sessionId}`, {
+        const lastEventKey = `hf-agent-last-event:${sessionId}`;
+        const lastSeq = localStorage.getItem(lastEventKey);
+        const qs = lastSeq ? `?after=${encodeURIComponent(lastSeq)}` : '';
+        const res = await apiFetch(`/api/events/${sessionId}${qs}`, {
           headers: { 'Accept': 'text/event-stream' },
           signal,
         });
@@ -509,6 +529,79 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
 
         const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
         let buf = '';
+        let eventId: string | null = null;
+        let eventData = '';
+        const dispatch = async () => {
+          if (!eventData.trim()) {
+            eventId = null;
+            eventData = '';
+            return false;
+          }
+          const event = JSON.parse(eventData.trim());
+          const seq = event.seq ?? (eventId ? Number(eventId) : undefined);
+          if (Number.isFinite(seq)) {
+            localStorage.setItem(lastEventKey, String(seq));
+          }
+          eventId = null;
+          eventData = '';
+          // Forward to side-channel for real-time UI updates
+          const et = event.event_type as string;
+          if (et === 'processing') sideChannel.onProcessing();
+          else if (et === 'assistant_chunk') sideChannel.onStreaming();
+          else if (et === 'tool_call') {
+            const t = event.data?.tool as string;
+            const d = event.data?.arguments?.description as string | undefined;
+            sideChannel.onToolRunning(t, d);
+            sideChannel.onToolCallPanel(t, (event.data?.arguments || {}) as Record<string, unknown>);
+          } else if (et === 'tool_output') {
+            sideChannel.onToolOutputPanel(
+              event.data?.tool as string,
+              event.data?.tool_call_id as string,
+              event.data?.output as string,
+              event.data?.success as boolean,
+            );
+          } else if (et === 'tool_state_change') {
+            const state = event.data?.state as string;
+            const toolName = event.data?.tool as string;
+            if (state === 'running' && toolName) sideChannel.onToolRunning(toolName);
+          } else if (et === 'turn_complete' || et === 'error' || et === 'interrupted') {
+            sideChannel.onProcessingDone();
+            stopReconnect();
+            // Final hydration to get the complete message state
+            const result = await hydrateMessages();
+            if (result) {
+              const uiMsgs = llmMessagesToUIMessages(result.data, result.pendingIds, chatActionsRef.current.messages);
+              if (uiMsgs.length > 0) {
+                chat.setMessages(uiMsgs);
+                saveMessages(sessionId, uiMsgs);
+              }
+            }
+            return true;
+          } else if (et === 'approval_required') {
+            sideChannel.onApprovalRequired(
+              (event.data?.tools || []) as Array<{
+                tool: string;
+                arguments: Record<string, unknown>;
+                tool_call_id: string;
+                auto_approval_blocked?: boolean;
+                block_reason?: string | null;
+                estimated_cost_usd?: number | null;
+                remaining_cap_usd?: number | null;
+              }>,
+            );
+            stopReconnect();
+            const result = await hydrateMessages();
+            if (result) {
+              const uiMsgs = llmMessagesToUIMessages(result.data, result.pendingIds, chatActionsRef.current.messages);
+              if (uiMsgs.length > 0) {
+                chat.setMessages(uiMsgs);
+                saveMessages(sessionId, uiMsgs);
+              }
+            }
+            return true;
+          }
+          return false;
+        };
         while (true) {
           const { value, done } = await reader.read();
           if (done || signal.aborted) break;
@@ -516,59 +609,21 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
           const lines = buf.split('\n');
           buf = lines.pop() || '';
           for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data: ')) continue;
-            try {
-              const event = JSON.parse(trimmed.slice(6));
-              // Forward to side-channel for real-time UI updates
-              const et = event.event_type as string;
-              if (et === 'processing') sideChannel.onProcessing();
-              else if (et === 'assistant_chunk') sideChannel.onStreaming();
-              else if (et === 'tool_call') {
-                const t = event.data?.tool as string;
-                const d = event.data?.arguments?.description as string | undefined;
-                sideChannel.onToolRunning(t, d);
-                sideChannel.onToolCallPanel(t, (event.data?.arguments || {}) as Record<string, unknown>);
-              } else if (et === 'tool_output') {
-                sideChannel.onToolOutputPanel(
-                  event.data?.tool as string,
-                  event.data?.tool_call_id as string,
-                  event.data?.output as string,
-                  event.data?.success as boolean,
-                );
-              } else if (et === 'tool_state_change') {
-                const state = event.data?.state as string;
-                const toolName = event.data?.tool as string;
-                if (state === 'running' && toolName) sideChannel.onToolRunning(toolName);
-              } else if (et === 'turn_complete' || et === 'error' || et === 'interrupted') {
-                sideChannel.onProcessingDone();
-                stopReconnect();
-                // Final hydration to get the complete message state
-                const result = await hydrateMessages();
-                if (result) {
-                  const uiMsgs = llmMessagesToUIMessages(result.data, result.pendingIds, chatActionsRef.current.messages);
-                  if (uiMsgs.length > 0) {
-                    chat.setMessages(uiMsgs);
-                    saveMessages(sessionId, uiMsgs);
-                  }
-                }
-                return;
-              } else if (et === 'approval_required') {
-                sideChannel.onApprovalRequired(
-                  (event.data?.tools || []) as Array<{ tool: string; arguments: Record<string, unknown>; tool_call_id: string }>,
-                );
-                stopReconnect();
-                const result = await hydrateMessages();
-                if (result) {
-                  const uiMsgs = llmMessagesToUIMessages(result.data, result.pendingIds, chatActionsRef.current.messages);
-                  if (uiMsgs.length > 0) {
-                    chat.setMessages(uiMsgs);
-                    saveMessages(sessionId, uiMsgs);
-                  }
-                }
-                return;
-              }
-            } catch { /* ignore parse errors */ }
+            const trimmed = line.replace(/\r$/, '');
+            if (trimmed === '') {
+              try {
+                if (await dispatch()) return;
+              } catch { /* ignore parse errors */ }
+              continue;
+            }
+            if (trimmed.startsWith(':')) continue;
+            if (trimmed.startsWith('id:')) {
+              eventId = trimmed.slice(3).trim();
+              continue;
+            }
+            if (trimmed.startsWith('data:')) {
+              eventData += trimmed.slice(5).trimStart() + '\n';
+            }
           }
         }
       } catch {
@@ -672,7 +727,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
 
   // -- Approve tools ------------------------------------------------------
   const approveTools = useCallback(
-    async (approvals: Array<{ tool_call_id: string; approved: boolean; feedback?: string | null; edited_script?: string | null }>) => {
+    async (approvals: Array<{ tool_call_id: string; approved: boolean; feedback?: string | null; edited_script?: string | null; namespace?: string | null }>) => {
       // Store edited scripts so the transport can read them when sendMessages is called
       for (const a of approvals) {
         if (a.edited_script) {

@@ -13,7 +13,7 @@ Architecture:
   - Optionally deletes the Space when done
 
 Lifecycle:
-    sb = Sandbox.create(owner="burtenshaw")         # duplicate, wait, connect
+    sb = Sandbox.create(owner="burtenshaw")         # duplicate private Space, wait, connect
     sb = Sandbox.create(owner="burtenshaw",          # with options
                         hardware="t4-small",
                         private=True,
@@ -37,6 +37,7 @@ Tools: bash, read, write, edit, upload
 from __future__ import annotations
 
 import io
+import secrets as secrets_lib
 import sys
 import time
 import uuid
@@ -64,6 +65,70 @@ MAX_TIMEOUT = 1200
 WAIT_TIMEOUT = 600
 WAIT_INTERVAL = 5
 API_WAIT_TIMEOUT = 180
+HARDWARE_REQUEST_TIMEOUT = 60
+CPU_BASIC_HARDWARE = "cpu-basic"
+
+
+def _is_transient_space_visibility_error(error: Exception) -> bool:
+    """Return True when a newly duplicated Space is not queryable yet."""
+    response = getattr(error, "response", None)
+    if getattr(response, "status_code", None) == 404:
+        return True
+    message = str(error)
+    return "Repository Not Found" in message or "404 Client Error" in message
+
+
+def _is_transient_space_management_error(error: Exception) -> bool:
+    """Return True when a just-created private Space is not manageable yet."""
+    response = getattr(error, "response", None)
+    if getattr(response, "status_code", None) in {401, 404}:
+        return True
+    message = str(error)
+    return (
+        "Repository Not Found" in message
+        or "401 Client Error" in message
+        or "404 Client Error" in message
+    )
+
+
+def _request_space_hardware_with_retry(
+    api: HfApi,
+    space_id: str,
+    *,
+    hardware: str,
+    sleep_time: int | None,
+    log: Callable[[str], object],
+    check_cancel: Callable[[], object],
+) -> None:
+    """Request hardware, retrying while Hub permissions propagate for a new Space."""
+    deadline = time.time() + HARDWARE_REQUEST_TIMEOUT
+    attempt = 0
+    while True:
+        check_cancel()
+        try:
+            api.request_space_hardware(
+                space_id,
+                hardware=hardware,
+                sleep_time=sleep_time,
+            )
+            return
+        except Exception as e:
+            if not _is_transient_space_management_error(e):
+                raise
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise
+
+            attempt += 1
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            status = f"HTTP {status_code}" if status_code else type(e).__name__
+            log(
+                f"  Hardware request not accepted yet ({status}); "
+                f"retrying ({attempt})..."
+            )
+            time.sleep(min(WAIT_INTERVAL, remaining))
+
 
 _DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -99,8 +164,8 @@ CMD ["python", "sandbox_server.py"]
 
 _SANDBOX_SERVER = '''\
 """Minimal FastAPI server for sandbox operations."""
-import os, subprocess, pathlib, signal, threading, re, tempfile
-from fastapi import FastAPI
+import hmac, os, subprocess, pathlib, signal, threading, re, tempfile
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
@@ -155,6 +220,24 @@ def _atomic_write(path: pathlib.Path, content: str):
                 pass
 
 app = FastAPI()
+
+def _bearer_token(header: str) -> str:
+    scheme, _, supplied = header.partition(" ")
+    if scheme.lower() != "bearer" or not supplied:
+        return ""
+    return supplied
+
+def _require_auth(request: Request) -> None:
+    sandbox_token = os.environ.get("SANDBOX_API_TOKEN") or ""
+    if not sandbox_token:
+        raise HTTPException(status_code=503, detail="Sandbox API token not configured")
+    supplied = _bearer_token(request.headers.get("x-sandbox-authorization", ""))
+    if not supplied:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    if not hmac.compare_digest(supplied, sandbox_token):
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+_AUTH = [Depends(_require_auth)]
 
 # Track active bash processes so they can be killed on cancel
 _active_procs = {}  # pid -> subprocess.Popen
@@ -344,7 +427,7 @@ def _validate_python(content, path=""):
 def health():
     return {"status": "ok"}
 
-@app.post("/api/bash")
+@app.post("/api/bash", dependencies=_AUTH)
 def bash(req: BashReq):
     try:
         proc = subprocess.Popen(
@@ -371,7 +454,7 @@ def bash(req: BashReq):
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
-@app.post("/api/kill")
+@app.post("/api/kill", dependencies=_AUTH)
 def kill_all():
     """Kill all active bash processes. Called when user cancels."""
     with _proc_lock:
@@ -389,7 +472,7 @@ def kill_all():
                 pass
     return {"success": True, "output": f"Killed {len(killed)} process(es): {killed}", "error": ""}
 
-@app.post("/api/read")
+@app.post("/api/read", dependencies=_AUTH)
 def read(req: ReadReq):
     try:
         p = pathlib.Path(req.path)
@@ -406,7 +489,7 @@ def read(req: ReadReq):
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
-@app.post("/api/write")
+@app.post("/api/write", dependencies=_AUTH)
 def write(req: WriteReq):
     try:
         p = pathlib.Path(req.path)
@@ -420,7 +503,7 @@ def write(req: WriteReq):
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
-@app.post("/api/edit")
+@app.post("/api/edit", dependencies=_AUTH)
 def edit(req: EditReq):
     try:
         p = pathlib.Path(req.path)
@@ -447,7 +530,7 @@ def edit(req: EditReq):
     except Exception as e:
         return {"success": False, "output": "", "error": str(e)}
 
-@app.post("/api/exists")
+@app.post("/api/exists", dependencies=_AUTH)
 def exists(req: ExistsReq):
     return {"success": True, "output": str(pathlib.Path(req.path).exists()).lower(), "error": ""}
 
@@ -482,6 +565,7 @@ class Sandbox:
 
     space_id: str
     token: str | None = None
+    api_token: str | None = field(default=None, repr=False)
     work_dir: str = "/app"
     timeout: int = DEFAULT_TIMEOUT
     _owns_space: bool = field(default=False, repr=False)
@@ -497,11 +581,25 @@ class Sandbox:
         self._base_url = f"https://{slug}.hf.space/api/"
         self._client = httpx.Client(
             base_url=self._base_url,
-            headers={"Authorization": f"Bearer {self.token}"} if self.token else {},
+            headers=self._auth_headers(),
             timeout=httpx.Timeout(MAX_TIMEOUT, connect=30),
             follow_redirects=True,
         )
         self._hf_api = HfApi(token=self.token)
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Return headers for private HF Space access plus sandbox API auth.
+
+        Private Spaces require the HF token in ``Authorization`` at the Hub
+        edge. The sandbox server requires its control-plane token in the
+        dedicated ``X-Sandbox-Authorization`` header.
+        """
+        headers: dict[str, str] = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.api_token:
+            headers["X-Sandbox-Authorization"] = f"Bearer {self.api_token}"
+        return headers
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -515,8 +613,8 @@ class Sandbox:
         *,
         name: str | None = None,
         template: str = TEMPLATE_SPACE,
-        hardware: str = "cpu-basic",
-        private: bool = False,
+        hardware: str = CPU_BASIC_HARDWARE,
+        private: bool = True,
         sleep_time: int | None = None,
         token: str | None = None,
         secrets: dict[str, str] | None = None,
@@ -536,7 +634,7 @@ class Sandbox:
                   A unique suffix is always appended.
             template: Source Space to duplicate (default: burtenshaw/sandbox).
             hardware: Hardware tier (cpu-basic, t4-small, etc.).
-            private: Whether the Space should be private.
+            private: Whether the Space should be private. Defaults to True.
             sleep_time: Auto-sleep after N seconds of inactivity.
             token: HF API token (from user's OAuth session).
             wait_timeout: Max seconds to wait for Space to start (default: 300).
@@ -563,6 +661,7 @@ class Sandbox:
         base = name or "sandbox"
         suffix = uuid.uuid4().hex[:8]
         space_id = f"{owner}/{base}-{suffix}"
+        sandbox_api_token = secrets_lib.token_urlsafe(32)
 
         _log(f"Creating sandbox: {space_id} (from {template})...")
 
@@ -580,11 +679,31 @@ class Sandbox:
 
         _check_cancel()
 
+        # ``duplicate_space`` already receives the target hardware. The extra
+        # /hardware call is useful for paid tiers, but hosted OAuth tokens can
+        # 401 on that endpoint for a fresh private Space even after duplication
+        # succeeds. Avoid the redundant call for default CPU sandboxes when no
+        # auto-sleep timer is requested; with sleep_time set, the hardware
+        # endpoint is still needed to configure auto-sleep.
+        if hardware == CPU_BASIC_HARDWARE and sleep_time is None:
+            _log(f"Using duplicated Space hardware: {hardware}")
+        else:
+            _request_space_hardware_with_retry(
+                api,
+                space_id,
+                hardware=hardware,
+                sleep_time=sleep_time,
+                log=_log,
+                check_cancel=_check_cancel,
+            )
+            _log(f"Requested hardware: {hardware}")
+
         # Inject secrets BEFORE uploading server files (which triggers rebuild).
         # Secrets added after a Space is running aren't available until restart,
         # so they must be set before the build/start cycle.
-        if secrets:
-            for key, val in secrets.items():
+        sandbox_secrets = {**(secrets or {}), "SANDBOX_API_TOKEN": sandbox_api_token}
+        if sandbox_secrets:
+            for key, val in sandbox_secrets.items():
                 api.add_space_secret(space_id, key, val)
 
         # Upload sandbox server and Dockerfile (triggers rebuild)
@@ -597,8 +716,22 @@ class Sandbox:
         deadline = time.time() + wait_timeout
         while time.time() < deadline:
             _check_cancel()
-            runtime = api.get_space_runtime(space_id)
+            try:
+                runtime = api.get_space_runtime(space_id)
+            except Exception as e:
+                if _is_transient_space_visibility_error(e):
+                    _log("  Space runtime not visible yet...")
+                    time.sleep(WAIT_INTERVAL)
+                    continue
+                raise
             if runtime.stage == "RUNNING":
+                current_hardware = runtime.hardware or getattr(
+                    runtime, "requested_hardware", None
+                )
+                if current_hardware != hardware:
+                    _log(f"  RUNNING on {current_hardware}; waiting for {hardware}...")
+                    time.sleep(WAIT_INTERVAL)
+                    continue
                 _log(f"Space is running (hardware: {runtime.hardware})")
                 break
             if runtime.stage in ("RUNTIME_ERROR", "BUILD_ERROR"):
@@ -617,7 +750,12 @@ class Sandbox:
         _check_cancel()
 
         # Wait for the API server to be responsive (non-fatal)
-        sb = cls(space_id=space_id, token=token, _owns_space=True)
+        sb = cls(
+            space_id=space_id,
+            token=token,
+            api_token=sandbox_api_token,
+            _owns_space=True,
+        )
         try:
             sb._wait_for_api(timeout=API_WAIT_TIMEOUT, log=_log)
         except TimeoutError as e:
@@ -627,7 +765,9 @@ class Sandbox:
         return sb
 
     @staticmethod
-    def _setup_server(space_id: str, api: HfApi, *, log: Callable[[str], object] = print) -> None:
+    def _setup_server(
+        space_id: str, api: HfApi, *, log: Callable[[str], object] = print
+    ) -> None:
         """Upload embedded sandbox server + Dockerfile to the Space (single commit)."""
         log(f"Uploading sandbox server to {space_id}...")
         api.create_commit(
@@ -648,17 +788,30 @@ class Sandbox:
         log("Server files uploaded, rebuild triggered.")
 
     @classmethod
-    def connect(cls, space_id: str, *, token: str | None = None) -> Sandbox:
+    def connect(
+        cls,
+        space_id: str,
+        *,
+        token: str | None = None,
+        api_token: str | None = None,
+    ) -> Sandbox:
         """
         Connect to an existing running Space.
 
         Does a health check to verify the Space is reachable.
         """
-        sb = cls(space_id=space_id, token=token, _owns_space=False)
+        sb = cls(
+            space_id=space_id,
+            token=token,
+            api_token=api_token,
+            _owns_space=False,
+        )
         sb._wait_for_api(timeout=60)
         return sb
 
-    def _wait_for_api(self, timeout: int = API_WAIT_TIMEOUT, log: Callable[[str], object] = print):
+    def _wait_for_api(
+        self, timeout: int = API_WAIT_TIMEOUT, log: Callable[[str], object] = print
+    ):
         """Poll the health endpoint until the server responds."""
         deadline = time.time() + timeout
         last_err = None
@@ -687,6 +840,10 @@ class Sandbox:
             )
         print(f"Deleting sandbox: {self.space_id}...")
         self._hf_api.delete_repo(self.space_id, repo_type="space")
+        # Clear ownership so a second cleanup call (e.g. delete_session +
+        # _run_session.finally both fire) early-returns instead of retrying
+        # a 404 delete and emitting a spurious ERROR log.
+        self._owns_space = False
         self._client.close()
         print("Deleted.")
 
@@ -831,7 +988,12 @@ class Sandbox:
         return result
 
     def edit(
-        self, path: str, old_str: str, new_str: str, *, replace_all: bool = False,
+        self,
+        path: str,
+        old_str: str,
+        new_str: str,
+        *,
+        replace_all: bool = False,
         mode: str = "replace",
     ) -> ToolResult:
         if old_str == new_str:

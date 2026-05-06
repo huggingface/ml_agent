@@ -10,14 +10,24 @@ from typing import Any, Dict, Literal, Optional
 from huggingface_hub import HfApi
 from huggingface_hub.utils import RepositoryNotFoundError
 
+from agent.core.hub_artifacts import register_hub_artifact
 from agent.tools.types import ToolResult
 
 OperationType = Literal[
-    "create_branch", "delete_branch",
-    "create_tag", "delete_tag",
+    "create_branch",
+    "delete_branch",
+    "create_tag",
+    "delete_tag",
     "list_refs",
-    "create_pr", "list_prs", "get_pr", "merge_pr", "close_pr", "comment_pr", "change_pr_status",
-    "create_repo", "update_repo",
+    "create_pr",
+    "list_prs",
+    "get_pr",
+    "merge_pr",
+    "close_pr",
+    "comment_pr",
+    "change_pr_status",
+    "create_repo",
+    "update_repo",
 ]
 
 
@@ -36,8 +46,9 @@ def _build_repo_url(repo_id: str, repo_type: str = "model") -> str:
 class HfRepoGitTool:
     """Tool for git-like operations on HF repos."""
 
-    def __init__(self, hf_token: Optional[str] = None):
+    def __init__(self, hf_token: Optional[str] = None, session: Any = None):
         self.api = HfApi(token=hf_token)
+        self.session = session
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:
         """Execute the specified operation."""
@@ -131,7 +142,11 @@ class HfRepoGitTool:
         )
 
         url = f"{_build_repo_url(repo_id, repo_type)}/tree/{branch}"
-        return {"formatted": f"**Branch created:** {branch}\n{url}", "totalResults": 1, "resultsShared": 1}
+        return {
+            "formatted": f"**Branch created:** {branch}\n{url}",
+            "totalResults": 1,
+            "resultsShared": 1,
+        }
 
     async def _delete_branch(self, args: Dict[str, Any]) -> ToolResult:
         """Delete a branch."""
@@ -152,7 +167,11 @@ class HfRepoGitTool:
             repo_type=repo_type,
         )
 
-        return {"formatted": f"**Branch deleted:** {branch}", "totalResults": 1, "resultsShared": 1}
+        return {
+            "formatted": f"**Branch deleted:** {branch}",
+            "totalResults": 1,
+            "resultsShared": 1,
+        }
 
     # =========================================================================
     # TAG OPERATIONS
@@ -183,7 +202,11 @@ class HfRepoGitTool:
         )
 
         url = f"{_build_repo_url(repo_id, repo_type)}/tree/{tag}"
-        return {"formatted": f"**Tag created:** {tag}\n{url}", "totalResults": 1, "resultsShared": 1}
+        return {
+            "formatted": f"**Tag created:** {tag}\n{url}",
+            "totalResults": 1,
+            "resultsShared": 1,
+        }
 
     async def _delete_tag(self, args: Dict[str, Any]) -> ToolResult:
         """Delete a tag."""
@@ -204,7 +227,11 @@ class HfRepoGitTool:
             repo_type=repo_type,
         )
 
-        return {"formatted": f"**Tag deleted:** {tag}", "totalResults": 1, "resultsShared": 1}
+        return {
+            "formatted": f"**Tag deleted:** {tag}",
+            "totalResults": 1,
+            "resultsShared": 1,
+        }
 
     # =========================================================================
     # LIST REFS
@@ -226,7 +253,9 @@ class HfRepoGitTool:
         )
 
         branches = [b.name for b in refs.branches] if refs.branches else []
-        tags = [t.name for t in refs.tags] if hasattr(refs, 'tags') and refs.tags else []
+        tags = (
+            [t.name for t in refs.tags] if hasattr(refs, "tags") and refs.tags else []
+        )
 
         url = _build_repo_url(repo_id, repo_type)
         lines = [f"**{repo_id}**", url, ""]
@@ -241,7 +270,11 @@ class HfRepoGitTool:
         else:
             lines.append("**Tags:** none")
 
-        return {"formatted": "\n".join(lines), "totalResults": len(branches) + len(tags), "resultsShared": len(branches) + len(tags)}
+        return {
+            "formatted": "\n".join(lines),
+            "totalResults": len(branches) + len(tags),
+            "resultsShared": len(branches) + len(tags),
+        }
 
     # =========================================================================
     # PR OPERATIONS
@@ -270,7 +303,7 @@ class HfRepoGitTool:
 
         url = f"{_build_repo_url(repo_id, repo_type)}/discussions/{result.num}"
         return {
-            "formatted": f"**Draft PR #{result.num} created:** {title}\n{url}\n\nAdd commits via upload with revision=\"refs/pr/{result.num}\"",
+            "formatted": f'**Draft PR #{result.num} created:** {title}\n{url}\n\nAdd commits via upload with revision="refs/pr/{result.num}"',
             "totalResults": 1,
             "resultsShared": 1,
         }
@@ -285,17 +318,27 @@ class HfRepoGitTool:
         repo_type = args.get("repo_type", "model")
         status = args.get("status", "all")  # open, closed, all
 
-        discussions = list(self.api.get_repo_discussions(
-            repo_id=repo_id,
-            repo_type=repo_type,
-            discussion_status=status if status != "all" else None,
-        ))
+        discussions = list(
+            self.api.get_repo_discussions(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                discussion_status=status if status != "all" else None,
+            )
+        )
 
         if not discussions:
-            return {"formatted": f"No discussions in {repo_id}", "totalResults": 0, "resultsShared": 0}
+            return {
+                "formatted": f"No discussions in {repo_id}",
+                "totalResults": 0,
+                "resultsShared": 0,
+            }
 
         url = _build_repo_url(repo_id, repo_type)
-        lines = [f"**{repo_id}** - {len(discussions)} discussions", f"{url}/discussions", ""]
+        lines = [
+            f"**{repo_id}** - {len(discussions)} discussions",
+            f"{url}/discussions",
+            "",
+        ]
 
         for d in discussions[:20]:
             if d.status == "draft":
@@ -309,7 +352,11 @@ class HfRepoGitTool:
             type_label = "PR" if d.is_pull_request else "D"
             lines.append(f"{status_label} #{d.num} [{type_label}] {d.title}")
 
-        return {"formatted": "\n".join(lines), "totalResults": len(discussions), "resultsShared": min(20, len(discussions))}
+        return {
+            "formatted": "\n".join(lines),
+            "totalResults": len(discussions),
+            "resultsShared": min(20, len(discussions)),
+        }
 
     async def _get_pr(self, args: Dict[str, Any]) -> ToolResult:
         """Get PR details."""
@@ -335,7 +382,7 @@ class HfRepoGitTool:
             "draft": "Draft",
             "open": "Open",
             "merged": "Merged",
-            "closed": "Closed"
+            "closed": "Closed",
         }
         status = status_map.get(pr.status, pr.status.capitalize())
         type_label = "Pull Request" if pr.is_pull_request else "Discussion"
@@ -349,9 +396,13 @@ class HfRepoGitTool:
 
         if pr.is_pull_request:
             if pr.status == "draft":
-                lines.append(f"\nTo add commits: upload with revision=\"refs/pr/{pr_num}\"")
+                lines.append(
+                    f'\nTo add commits: upload with revision="refs/pr/{pr_num}"'
+                )
             elif pr.status == "open":
-                lines.append(f"\nTo add commits: upload with revision=\"refs/pr/{pr_num}\"")
+                lines.append(
+                    f'\nTo add commits: upload with revision="refs/pr/{pr_num}"'
+                )
 
         return {"formatted": "\n".join(lines), "totalResults": 1, "resultsShared": 1}
 
@@ -377,7 +428,11 @@ class HfRepoGitTool:
         )
 
         url = f"{_build_repo_url(repo_id, repo_type)}/discussions/{pr_num}"
-        return {"formatted": f"**PR #{pr_num} merged**\n{url}", "totalResults": 1, "resultsShared": 1}
+        return {
+            "formatted": f"**PR #{pr_num} merged**\n{url}",
+            "totalResults": 1,
+            "resultsShared": 1,
+        }
 
     async def _close_pr(self, args: Dict[str, Any]) -> ToolResult:
         """Close a PR/discussion."""
@@ -401,7 +456,11 @@ class HfRepoGitTool:
             repo_type=repo_type,
         )
 
-        return {"formatted": f"**Discussion #{pr_num} closed**", "totalResults": 1, "resultsShared": 1}
+        return {
+            "formatted": f"**Discussion #{pr_num} closed**",
+            "totalResults": 1,
+            "resultsShared": 1,
+        }
 
     async def _comment_pr(self, args: Dict[str, Any]) -> ToolResult:
         """Add a comment to a PR/discussion."""
@@ -427,7 +486,11 @@ class HfRepoGitTool:
         )
 
         url = f"{_build_repo_url(repo_id, repo_type)}/discussions/{pr_num}"
-        return {"formatted": f"**Comment added to #{pr_num}**\n{url}", "totalResults": 1, "resultsShared": 1}
+        return {
+            "formatted": f"**Comment added to #{pr_num}**\n{url}",
+            "totalResults": 1,
+            "resultsShared": 1,
+        }
 
     async def _change_pr_status(self, args: Dict[str, Any]) -> ToolResult:
         """Change PR/discussion status (mainly to convert draft to open)."""
@@ -455,7 +518,11 @@ class HfRepoGitTool:
         )
 
         url = f"{_build_repo_url(repo_id, repo_type)}/discussions/{pr_num}"
-        return {"formatted": f"**PR #{pr_num} status changed to {new_status}**\n{url}", "totalResults": 1, "resultsShared": 1}
+        return {
+            "formatted": f"**PR #{pr_num} status changed to {new_status}**\n{url}",
+            "totalResults": 1,
+            "resultsShared": 1,
+        }
 
     # =========================================================================
     # REPO MANAGEMENT
@@ -473,7 +540,9 @@ class HfRepoGitTool:
         space_sdk = args.get("space_sdk")
 
         if repo_type == "space" and not space_sdk:
-            return self._error("space_sdk required for spaces (gradio/streamlit/docker/static)")
+            return self._error(
+                "space_sdk required for spaces (gradio/streamlit/docker/static)"
+            )
 
         kwargs = {
             "repo_id": repo_id,
@@ -485,6 +554,17 @@ class HfRepoGitTool:
             kwargs["space_sdk"] = space_sdk
 
         result = await _async_call(self.api.create_repo, **kwargs)
+        extra_metadata = None
+        if repo_type == "space" and space_sdk:
+            extra_metadata = {"sdk": space_sdk}
+        await _async_call(
+            register_hub_artifact,
+            self.api,
+            repo_id,
+            repo_type,
+            session=self.session,
+            extra_metadata=extra_metadata,
+        )
 
         return {
             "formatted": f"**Repository created:** {repo_id}\n**Private:** {private}\n{result}",
@@ -504,7 +584,9 @@ class HfRepoGitTool:
         gated = args.get("gated")
 
         if private is None and gated is None:
-            return self._error("Specify private (bool) or gated ('auto'/'manual'/false)")
+            return self._error(
+                "Specify private (bool) or gated ('auto'/'manual'/false)"
+            )
 
         kwargs = {"repo_id": repo_id, "repo_type": repo_type}
         if private is not None:
@@ -521,11 +603,20 @@ class HfRepoGitTool:
             changes.append(f"gated={gated}")
 
         url = f"{_build_repo_url(repo_id, repo_type)}/settings"
-        return {"formatted": f"**Settings updated:** {', '.join(changes)}\n{url}", "totalResults": 1, "resultsShared": 1}
+        return {
+            "formatted": f"**Settings updated:** {', '.join(changes)}\n{url}",
+            "totalResults": 1,
+            "resultsShared": 1,
+        }
 
     def _error(self, message: str) -> ToolResult:
         """Return an error result."""
-        return {"formatted": message, "totalResults": 0, "resultsShared": 0, "isError": True}
+        return {
+            "formatted": message,
+            "totalResults": 0,
+            "resultsShared": 0,
+            "isError": True,
+        }
 
 
 # Tool specification
@@ -571,10 +662,20 @@ HF_REPO_GIT_TOOL_SPEC = {
             "operation": {
                 "type": "string",
                 "enum": [
-                    "create_branch", "delete_branch",
-                    "create_tag", "delete_tag", "list_refs",
-                    "create_pr", "list_prs", "get_pr", "merge_pr", "close_pr", "comment_pr", "change_pr_status",
-                    "create_repo", "update_repo",
+                    "create_branch",
+                    "delete_branch",
+                    "create_tag",
+                    "delete_tag",
+                    "list_refs",
+                    "create_pr",
+                    "list_prs",
+                    "get_pr",
+                    "merge_pr",
+                    "close_pr",
+                    "comment_pr",
+                    "change_pr_status",
+                    "create_repo",
+                    "update_repo",
                 ],
                 "description": "Operation to execute",
             },
@@ -653,11 +754,13 @@ HF_REPO_GIT_TOOL_SPEC = {
 }
 
 
-async def hf_repo_git_handler(arguments: Dict[str, Any], session=None) -> tuple[str, bool]:
+async def hf_repo_git_handler(
+    arguments: Dict[str, Any], session=None
+) -> tuple[str, bool]:
     """Handler for agent tool router."""
     try:
         hf_token = session.hf_token if session else None
-        tool = HfRepoGitTool(hf_token=hf_token)
+        tool = HfRepoGitTool(hf_token=hf_token, session=session)
         result = await tool.execute(arguments)
         return result["formatted"], not result.get("isError", False)
     except Exception as e:

@@ -1,0 +1,21 @@
+{
+  "model_name": "anthropic/claude-opus-4-6",
+  "save_sessions": true,
+  "session_dataset_repo": "smolagents/ml-intern-sessions",
+  "share_traces": true,
+  "personal_trace_repo_template": "{hf_user}/ml-intern-sessions",
+  "yolo_mode": false,
+  "confirm_cpu_jobs": true,
+  "auto_file_upload": true,
+  "messaging": {
+    "enabled": false,
+    "auto_event_types": ["approval_required", "error", "turn_complete"],
+    "destinations": {}
+  },
+  "mcpServers": {
+    "hf-mcp-server": {
+      "transport": "http",
+      "url": "https://huggingface.co/mcp?login"
+    }
+  }
+}

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from 'react';
+import { useMemo, useRef, useState, useEffect, type ComponentPropsWithoutRef } from 'react';
 import { Box } from '@mui/material';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -166,9 +166,17 @@ export default function MarkdownContent({ content, sx, isStreaming = false }: Ma
 
   const remarkPlugins = useMemo(() => [remarkGfm], []);
 
+  const components = useMemo(() => ({
+    a: ({ href, children, ...props }: ComponentPropsWithoutRef<'a'>) => (
+      <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+        {children}
+      </a>
+    ),
+  }), []);
+
   return (
     <Box sx={[markdownSx, ...(Array.isArray(sx) ? sx : sx ? [sx] : [])]}>
-      <ReactMarkdown remarkPlugins={remarkPlugins}>{displayContent}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>{displayContent}</ReactMarkdown>
     </Box>
   );
 }
