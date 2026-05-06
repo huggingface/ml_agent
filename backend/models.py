@@ -52,7 +52,10 @@ class SubmitRequest(BaseModel):
     """Request to submit user input."""
 
     session_id: str
-    text: str
+    # Cap text size to prevent context-bloat / cost-amplification: a malicious
+    # or runaway client could otherwise attach megabytes that then ride along
+    # in every subsequent turn until /api/compact is called.
+    text: str = Field(..., min_length=1, max_length=100_000)
 
 
 class TruncateRequest(BaseModel):
