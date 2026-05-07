@@ -141,7 +141,7 @@ def _normalize_user_plan(whoami: Any) -> str:
     if not isinstance(whoami, dict):
         return "free"
 
-    if whoami.get("isPro") is True or whoami.get("is_pro") is True:
+    if whoami.get("isPro") is True:
         return "pro"
 
     return "free"
@@ -162,12 +162,11 @@ async def _fetch_user_plan(token: str) -> str:
     if not _WHOAMI_SHAPE_LOGGED:
         _WHOAMI_SHAPE_LOGGED = True
         logger.debug(
-            "whoami-v2 payload keys: %s (sample values: isPro=%r is_pro=%r)",
+            "whoami-v2 payload keys: %s (sample values: isPro=%r)",
             sorted(whoami.keys())
             if isinstance(whoami, dict)
             else type(whoami).__name__,
             whoami.get("isPro") if isinstance(whoami, dict) else None,
-            whoami.get("is_pro") if isinstance(whoami, dict) else None,
         )
 
     return _normalize_user_plan(whoami)

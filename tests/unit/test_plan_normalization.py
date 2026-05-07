@@ -19,17 +19,7 @@ def test_oauth_is_pro_flag_takes_priority_over_user_type():
 @pytest.mark.parametrize(
     "payload",
     [
-        {"type": "user", "isPro": True},
-        {"type": "user", "is_pro": True},
-    ],
-)
-def test_pro_boolean_flags_get_pro_tier(payload):
-    assert dependencies._normalize_user_plan(payload) == "pro"
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
+        {"is_pro": True},
         {"accountType": "pro"},
         {"plan": "HF Pro"},
         {"subscription": "hf_pro"},
@@ -38,7 +28,7 @@ def test_pro_boolean_flags_get_pro_tier(payload):
         {"tier": "promotional"},
     ],
 )
-def test_string_plan_values_stay_free(payload):
+def test_non_ispro_signals_stay_free(payload):
     assert dependencies._normalize_user_plan(payload) == "free"
 
 
