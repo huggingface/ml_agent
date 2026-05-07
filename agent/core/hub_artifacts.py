@@ -36,6 +36,7 @@ _USAGE_HEADING_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _FRONT_MATTER_RE = re.compile(r"\A---\s*\n.*?\n---\s*\n?", re.DOTALL)
+_SANDBOX_SPACE_NAME_RE = re.compile(r"^sandbox-[0-9a-f]{8}$")
 
 
 def _safe_session_id(session: Any) -> str:
@@ -77,6 +78,14 @@ def artifact_collection_title(session: Any) -> str:
 
 def _artifact_key(repo_id: str, repo_type: str | None) -> str:
     return f"{repo_type or 'model'}:{repo_id}"
+
+
+def is_sandbox_hub_repo(repo_id: str | None, repo_type: str | None) -> bool:
+    """Return True for ML Intern's ephemeral sandbox Space repos."""
+    if (repo_type or "model") != "space" or not repo_id:
+        return False
+    repo_name = str(repo_id).rsplit("/", 1)[-1]
+    return bool(_SANDBOX_SPACE_NAME_RE.fullmatch(repo_name))
 
 
 def _session_artifact_set(session: Any, attr: str) -> set[str]:
@@ -397,6 +406,8 @@ def register_hub_artifact(
     repo_type = repo_type or "model"
     if repo_type not in SUPPORTED_REPO_TYPES:
         return False
+    if is_sandbox_hub_repo(repo_id, repo_type):
+        return False
 
     key = _artifact_key(repo_id, repo_type)
     remember_hub_artifact(session, repo_id, repo_type)
@@ -465,6 +476,7 @@ def build_hub_artifact_sitecustomize(session: Any) -> str:
             tag = {ML_INTERN_TAG!r}
             marker = {PROVENANCE_MARKER!r}
             supported = {sorted(SUPPORTED_REPO_TYPES)!r}
+            sandbox_space_re = re.compile({_SANDBOX_SPACE_NAME_RE.pattern!r})
             registering = False
             collection_slug = {collection_slug!r}
             registered = set()
@@ -611,6 +623,8 @@ def build_hub_artifact_sitecustomize(session: Any) -> str:
                 repo_type = repo_type or "model"
                 if repo_type not in supported:
                     return
+                if _is_sandbox_repo(repo_id, repo_type):
+                    return
                 key = f"{{repo_type}}:{{repo_id}}"
                 if key in registered and not force:
                     return
@@ -665,6 +679,12 @@ def build_hub_artifact_sitecustomize(session: Any) -> str:
 
             def _repo_type(kwargs):
                 return kwargs.get("repo_type") or "model"
+
+            def _is_sandbox_repo(repo_id, repo_type):
+                if (repo_type or "model") != "space" or not repo_id:
+                    return False
+                repo_name = str(repo_id).rsplit("/", 1)[-1]
+                return bool(sandbox_space_re.fullmatch(repo_name))
 
             def _patched_create_repo(self, *args, **kwargs):
                 result = _original_create_repo(self, *args, **kwargs)

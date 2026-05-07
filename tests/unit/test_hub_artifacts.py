@@ -13,6 +13,7 @@ from agent.core.hub_artifacts import (
     build_hub_artifact_sitecustomize,
     ensure_session_artifact_collection,
     is_known_hub_artifact,
+    is_sandbox_hub_repo,
     register_hub_artifact,
     remember_hub_artifact,
     start_session_artifact_collection_task,
@@ -160,6 +161,35 @@ def test_register_hub_artifact_creates_private_collection_and_adds_item_once(
     assert api.collection_items[0]["exists_ok"] is True
     assert len(api.uploads) == 1
     assert b"ml-intern" in api.uploads[0]["path_or_fileobj"]
+
+
+def test_register_hub_artifact_skips_sandbox_spaces(monkeypatch):
+    session = _session()
+    api = SimpleNamespace(token="hf-token")
+    calls = []
+
+    monkeypatch.setattr(
+        hub_artifacts,
+        "_update_repo_card",
+        lambda *args, **kwargs: calls.append(("card", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        hub_artifacts,
+        "_add_to_collection",
+        lambda *args, **kwargs: calls.append(("collection", args, kwargs)),
+    )
+
+    assert is_sandbox_hub_repo("alice/sandbox-1234abcd", "space")
+    assert not is_sandbox_hub_repo("alice/sandbox-1234abcd", "model")
+    assert not is_sandbox_hub_repo("alice/demo-space", "space")
+    assert not register_hub_artifact(
+        api,
+        "alice/sandbox-1234abcd",
+        "space",
+        session=session,
+    )
+    assert not is_known_hub_artifact(session, "alice/sandbox-1234abcd", "space")
+    assert calls == []
 
 
 def test_register_hub_artifact_retries_after_partial_failure(monkeypatch):
@@ -503,3 +533,55 @@ def test_sitecustomize_bootstrap_reuses_existing_collection_slug():
     assert (
         "collection_slug = 'alice/ml-intern-artifacts-2026-05-05-session-123'" in code
     )
+
+
+def test_sitecustomize_skips_sandbox_space_registration(monkeypatch):
+    import huggingface_hub as hub
+    from huggingface_hub import HfApi
+
+    uploads = []
+    downloads = []
+    collection_creates = []
+    collection_items = []
+
+    for name in ("create_repo", "upload_folder", "create_commit"):
+        if hasattr(HfApi, name):
+            monkeypatch.setattr(HfApi, name, getattr(HfApi, name))
+        if hasattr(hub, name):
+            monkeypatch.setattr(hub, name, getattr(hub, name))
+
+    def fake_upload_file(self, **kwargs):
+        uploads.append(kwargs)
+        return SimpleNamespace()
+
+    def fake_hf_hub_download(*args, **kwargs):
+        downloads.append((args, kwargs))
+        raise RuntimeError("sandbox metadata update should be skipped")
+
+    def fake_create_collection(self, **kwargs):
+        collection_creates.append(kwargs)
+        return SimpleNamespace(slug="alice/ml-intern-artifacts")
+
+    def fake_add_collection_item(self, **kwargs):
+        collection_items.append(kwargs)
+
+    monkeypatch.setattr(HfApi, "upload_file", fake_upload_file)
+    monkeypatch.setattr(HfApi, "create_collection", fake_create_collection)
+    monkeypatch.setattr(HfApi, "add_collection_item", fake_add_collection_item)
+    monkeypatch.setattr(hub, "upload_file", getattr(hub, "upload_file"))
+    monkeypatch.setattr(hub, "hf_hub_download", fake_hf_hub_download)
+
+    exec(build_hub_artifact_sitecustomize(_session()), {})
+
+    HfApi(token="hf-token").upload_file(
+        path_or_fileobj=b"app",
+        path_in_repo="app.py",
+        repo_id="alice/sandbox-1234abcd",
+        repo_type="space",
+        token="hf-token",
+    )
+
+    assert [upload["repo_id"] for upload in uploads] == ["alice/sandbox-1234abcd"]
+    assert downloads == []
+    assert collection_creates == []
+    assert collection_items == []
