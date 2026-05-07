@@ -13,7 +13,7 @@ back to a premium model doesn't (`AgentSession.claude_counted` guards that).
 
 Cap tiers:
   free user   → CLAUDE_FREE_DAILY (1)
-  pro / org   → CLAUDE_PRO_DAILY  (20)
+  pro user    → CLAUDE_PRO_DAILY  (20)
 """
 
 import asyncio
@@ -40,7 +40,7 @@ def _today() -> str:
 
 def daily_cap_for(plan: str | None) -> int:
     """Return the daily Claude-session cap for the given plan."""
-    return CLAUDE_FREE_DAILY if (plan or "free") == "free" else CLAUDE_PRO_DAILY
+    return CLAUDE_PRO_DAILY if plan == "pro" else CLAUDE_FREE_DAILY
 
 
 async def get_claude_used_today(user_id: str) -> int:

@@ -631,10 +631,11 @@ class HfJobsTool:
                         "formatted": (
                             f"Hugging Face Jobs rejected this run because the "
                             f"namespace `{self.namespace}` has no available credits. "
-                            "Tell the user to add credits at "
-                            "https://huggingface.co/settings/billing — once topped up, "
-                            "re-run this same job. (Switching namespaces is fine if "
-                            "another wallet has credits.)"
+                            "HF Jobs are billed with namespace credits, which are "
+                            "separate from HF Pro membership. Tell the user to add "
+                            "credits at https://huggingface.co/settings/billing — "
+                            "once topped up, re-run this same job. (Switching "
+                            "namespaces is fine if another wallet has credits.)"
                         ),
                         "totalResults": 0,
                         "resultsShared": 0,
