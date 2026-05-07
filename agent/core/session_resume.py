@@ -12,6 +12,7 @@ from typing import Any
 
 from litellm import Message
 
+from agent.core.model_switcher import is_valid_model_id
 from agent.core.session import DEFAULT_SESSION_LOG_DIR
 
 logger = logging.getLogger(__name__)
@@ -199,12 +200,14 @@ def restore_session_from_log(session: Any, path: Path) -> dict[str, Any]:
         raise ValueError("Selected log does not contain a messages array")
 
     restored_messages: list[Message] = []
+    dropped_count = 0
     for raw in raw_messages:
         if not isinstance(raw, dict) or raw.get("role") == "system":
             continue
         try:
             restored_messages.append(Message.model_validate(raw))
         except Exception as e:
+            dropped_count += 1
             logger.warning("Dropping malformed message from %s: %s", path, e)
 
     if not restored_messages:
@@ -214,9 +217,22 @@ def restore_session_from_log(session: Any, path: Path) -> dict[str, Any]:
     system_msg = cm.items[0] if cm.items and cm.items[0].role == "system" else None
     cm.items = ([system_msg] if system_msg else []) + restored_messages
 
+    # Validate the saved model id before switching. ``update_model`` doesn't
+    # check availability; an unrecognised id silently sticks and the next LLM
+    # call fails with a cryptic routing error. Logs from a different
+    # deployment, an older catalog, or a removed model land here.
     saved_model = data.get("model_name")
+    invalid_saved_model: str | None = None
     if isinstance(saved_model, str) and saved_model:
-        session.update_model(saved_model)
+        if is_valid_model_id(saved_model):
+            session.update_model(saved_model)
+        else:
+            invalid_saved_model = saved_model
+            logger.warning(
+                "Saved log model %r failed format validation; keeping %r",
+                saved_model,
+                session.config.model_name,
+            )
 
     cm._recompute_usage(session.config.model_name)
 
@@ -230,12 +246,14 @@ def restore_session_from_log(session: Any, path: Path) -> dict[str, Any]:
         session.session_start_time = (
             data.get("session_start_time") or session.session_start_time
         )
-        session._local_save_path = str(path)
-    else:
-        # Different user (or one side anonymous) — keep current identity so
-        # uploads land under the right account, and let the next save pick a
-        # fresh filename instead of overwriting the source log.
-        session._local_save_path = None
+
+    # Always fork the on-disk save path. The source log is treated as an
+    # immutable snapshot: ``logged_events`` is reset to a single
+    # ``resumed_from`` marker below for cost accounting, so reusing the
+    # source path would let the next heartbeat save destroy the original
+    # ``llm_call``/event history on disk. The next save will pick a fresh
+    # filename instead.
+    session._local_save_path = None
 
     saved_event_count = (
         len(data.get("events", [])) if isinstance(data.get("events"), list) else 0
@@ -261,7 +279,9 @@ def restore_session_from_log(session: Any, path: Path) -> dict[str, Any]:
     return {
         "path": str(path),
         "restored_count": len(restored_messages),
+        "dropped_count": dropped_count,
         "model_name": session.config.model_name,
+        "invalid_saved_model": invalid_saved_model,
         "forked": not is_continuation,
         "had_redacted_content": _has_redacted_content(raw_messages),
     }

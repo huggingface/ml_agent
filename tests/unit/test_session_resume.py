@@ -112,12 +112,17 @@ def test_restore_continues_when_user_id_matches(tmp_path):
     result = session_resume.restore_session_from_log(session, path)
 
     assert result["restored_count"] == 1
+    assert result["dropped_count"] == 0
     assert result["forked"] is False
     assert result["model_name"] == "openai/gpt-5.5"
     assert result["had_redacted_content"] is False
+    assert result["invalid_saved_model"] is None
     assert session.config.model_name == "openai/gpt-5.5"
     assert session.session_id == "saved-session"
-    assert session._local_save_path == str(path)
+    # Source log path is never reused: future heartbeat saves write to a
+    # fresh file so the snapshot stays intact (regression: see source-log
+    # round-trip test below).
+    assert session._local_save_path is None
     assert session.turn_count == 1
     assert session.last_auto_save_turn == 1
     assert session.pending_approval is None
@@ -197,7 +202,143 @@ def test_restore_continues_when_both_sides_anonymous(tmp_path):
 
     assert result["forked"] is False
     assert session.session_id == "saved-session"
-    assert session._local_save_path == str(path)
+    assert session._local_save_path is None
+
+
+def test_restore_rejects_invalid_saved_model(tmp_path):
+    log_dir = tmp_path / "session_logs"
+    path = log_dir / "session.json"
+    log_dir.mkdir()
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "saved",
+                "user_id": "user-a",
+                "model_name": "not a real id with spaces",
+                "messages": [{"role": "user", "content": "hello"}],
+                "events": [],
+            }
+        )
+    )
+
+    session = _FakeSession(user_id="user-a")
+    original_model = session.config.model_name
+
+    result = session_resume.restore_session_from_log(session, path)
+
+    assert result["invalid_saved_model"] == "not a real id with spaces"
+    assert result["model_name"] == original_model
+    assert session.config.model_name == original_model
+
+
+def test_restore_counts_dropped_messages(tmp_path):
+    log_dir = tmp_path / "session_logs"
+    path = log_dir / "session.json"
+    log_dir.mkdir()
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "saved",
+                "user_id": "user-a",
+                "model_name": "openai/gpt-5.5",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "user", "content": 12345},  # invalid content type
+                ],
+                "events": [],
+            }
+        )
+    )
+
+    session = _FakeSession(user_id="user-a")
+
+    result = session_resume.restore_session_from_log(session, path)
+
+    assert result["restored_count"] == 1
+    assert result["dropped_count"] == 1
+
+
+def test_restore_does_not_overwrite_source_log_on_save(tmp_path, monkeypatch):
+    """Regression: resuming + saving must not destroy the source log on disk.
+
+    Without the always-fork ``_local_save_path`` reset, the next heartbeat
+    save would rewrite the source file with ``events=[resumed_from]`` and
+    ``total_cost_usd=0``, wiping the original audit trail. This builds a
+    real ``Session`` and exercises the round-trip.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    from agent.context_manager.manager import ContextManager
+    from agent.core.session import Session
+
+    log_dir = tmp_path / "session_logs"
+    log_dir.mkdir()
+    src_path = log_dir / "src.json"
+    src_payload = {
+        "session_id": "saved-session",
+        "user_id": "user-a",
+        "session_start_time": "2026-01-01T00:00:00",
+        "session_end_time": "2026-01-01T00:05:00",
+        "model_name": "openai/gpt-5.5",
+        "messages": [
+            {"role": "system", "content": "old system"},
+            {"role": "user", "content": "earlier work"},
+        ],
+        "events": [
+            {"event_type": "llm_call", "data": {"cost_usd": 0.42}},
+            {"event_type": "turn_complete", "data": {}},
+        ],
+    }
+    src_path.write_text(json.dumps(src_payload, indent=2))
+    src_bytes_before = src_path.read_bytes()
+
+    class _Cfg:
+        model_name = "openai/gpt-5.5"
+        save_sessions = True
+        session_dataset_repo = None
+        auto_save_interval = 1
+        heartbeat_interval_s = 60
+        max_iterations = 10
+        yolo_mode = False
+        confirm_cpu_jobs = False
+        auto_file_upload = False
+        reasoning_effort = None
+        share_traces = False
+        personal_trace_repo_template = None
+        mcpServers: dict = {}
+
+    cm = ContextManager.__new__(ContextManager)
+    cm.items = [Message(role="system", content="current system")]
+    cm.tool_specs = []
+    cm.model_max_tokens = 200_000
+    cm.running_context_usage = 0
+    cm.compact_size = 0.1
+    cm.untouched_messages = 5
+    cm.hf_token = None
+    cm.local_mode = True
+    cm.system_prompt = "current system"
+    cm.on_message_added = None
+
+    import asyncio as _asyncio
+
+    session = Session(
+        event_queue=_asyncio.Queue(),
+        config=_Cfg(),
+        tool_router=None,
+        context_manager=cm,
+        hf_token=None,
+        user_id="user-a",
+        local_mode=True,
+    )
+
+    session_resume.restore_session_from_log(session, src_path)
+    assert session._local_save_path is None
+
+    saved_path = session.save_trajectory_local(directory=str(log_dir))
+
+    assert saved_path is not None
+    assert Path(saved_path) != src_path
+    assert src_path.read_bytes() == src_bytes_before
 
 
 def test_restore_flags_redacted_messages(tmp_path):

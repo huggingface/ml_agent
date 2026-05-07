@@ -374,7 +374,9 @@ async def event_listener(
                 data = event.data or {}
                 path = data.get("path", "?")
                 count = data.get("restored_count", 0)
+                dropped = int(data.get("dropped_count", 0) or 0)
                 model = data.get("model_name", "?")
+                invalid_model = data.get("invalid_saved_model")
                 forked = bool(data.get("forked", False))
                 redacted = bool(data.get("had_redacted_content", False))
                 verb = "Forked from" if forked else "Resumed"
@@ -383,6 +385,18 @@ async def event_listener(
                     f"([cyan]{count}[/cyan] messages, "
                     f"model [cyan]{model}[/cyan])."
                 )
+                if dropped:
+                    console.print(
+                        f"[yellow]Warning:[/yellow] dropped {dropped} "
+                        "malformed message(s) while restoring — surrounding "
+                        "tool-call alignment may be off."
+                    )
+                if invalid_model:
+                    console.print(
+                        f"[yellow]Warning:[/yellow] saved model id "
+                        f"[cyan]{invalid_model}[/cyan] failed validation; "
+                        f"kept current model [cyan]{model}[/cyan]."
+                    )
                 if forked:
                     console.print(
                         "[dim]Saved log belongs to a different user — kept "
