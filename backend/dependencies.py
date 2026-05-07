@@ -6,7 +6,6 @@
 
 import logging
 import os
-import re
 import time
 from collections.abc import Iterable
 from hashlib import sha256
@@ -54,8 +53,8 @@ REQUIRED_OAUTH_SCOPES: tuple[str, ...] = (
     "write-discussions",
 )
 
-# Plan field discovery — log the whoami-v2 shape once at DEBUG so we can
-# confirm the actual key in production without hammering the HF API.
+# Log the whoami-v2 shape once at DEBUG so we can confirm the production Pro
+# signal without hammering the HF API.
 _WHOAMI_SHAPE_LOGGED = False
 
 
@@ -137,25 +136,13 @@ def _user_from_info(user_info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _has_pro_plan_token(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    return "pro" in re.split(r"[^a-z0-9]+", value.lower())
-
-
 def _normalize_user_plan(whoami: Any) -> str:
     """Normalize a whoami-v2 payload to the app's personal quota tiers."""
     if not isinstance(whoami, dict):
         return "free"
 
-    # OAuth whoami sets `type: "user"` and surfaces Pro via the `isPro` boolean
-    # — see Space discussion #21.
     if whoami.get("isPro") is True or whoami.get("is_pro") is True:
         return "pro"
-
-    for key in ("plan", "accountType", "account_type", "tier", "subscription"):
-        if _has_pro_plan_token(whoami.get(key)):
-            return "pro"
 
     return "free"
 
@@ -175,13 +162,12 @@ async def _fetch_user_plan(token: str) -> str:
     if not _WHOAMI_SHAPE_LOGGED:
         _WHOAMI_SHAPE_LOGGED = True
         logger.debug(
-            "whoami-v2 payload keys: %s (sample values: plan=%r accountType=%r isPro=%r)",
+            "whoami-v2 payload keys: %s (sample values: isPro=%r is_pro=%r)",
             sorted(whoami.keys())
             if isinstance(whoami, dict)
             else type(whoami).__name__,
-            whoami.get("plan") if isinstance(whoami, dict) else None,
-            whoami.get("accountType") if isinstance(whoami, dict) else None,
             whoami.get("isPro") if isinstance(whoami, dict) else None,
+            whoami.get("is_pro") if isinstance(whoami, dict) else None,
         )
 
     return _normalize_user_plan(whoami)
