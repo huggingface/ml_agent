@@ -56,6 +56,7 @@ REQUIRED_OAUTH_SCOPES: tuple[str, ...] = (
 # Plan field discovery — log the whoami-v2 shape once at DEBUG so we can
 # confirm the actual key in production without hammering the HF API.
 _WHOAMI_SHAPE_LOGGED = False
+_PAID_PLAN_TAGS = ("pro", "enterprise", "team")
 
 
 def normalize_oauth_scopes(scopes: Iterable[str]) -> tuple[str, ...]:
@@ -136,6 +137,38 @@ def _user_from_info(user_info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _has_paid_plan_tag(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    return any(tag in value.lower() for tag in _PAID_PLAN_TAGS)
+
+
+def _normalize_user_plan(whoami: Any) -> str:
+    """Normalize a whoami-v2 payload to the app's quota tiers."""
+    if not isinstance(whoami, dict):
+        return "free"
+
+    # OAuth whoami sets `type: "user"` and surfaces Pro via the `isPro` boolean
+    # — see Space discussion #21.
+    if whoami.get("isPro") is True or whoami.get("is_pro") is True:
+        return "pro"
+
+    for key in ("plan", "accountType", "account_type", "tier", "subscription"):
+        if _has_paid_plan_tag(whoami.get(key)):
+            return "pro"
+
+    orgs = whoami.get("orgs") or []
+    if isinstance(orgs, list):
+        for org in orgs:
+            if not isinstance(org, dict):
+                continue
+            for key in ("plan", "accountType", "account_type", "tier"):
+                if _has_paid_plan_tag(org.get(key)):
+                    return "org"
+
+    return "free"
+
+
 async def _fetch_user_plan(token: str) -> str:
     """Look up the user's HF plan via /api/whoami-v2.
 
@@ -160,26 +193,7 @@ async def _fetch_user_plan(token: str) -> str:
             whoami.get("isPro") if isinstance(whoami, dict) else None,
         )
 
-    if not isinstance(whoami, dict):
-        return "free"
-
-    # OAuth whoami sets `type: "user"` and surfaces Pro via the `isPro` boolean
-    # — see Space discussion #21. HF-Jobs eligibility (PR #172) ignores plan
-    # entirely; the premium-model daily-cap tier is still a free vs pro/org split.
-    if whoami.get("isPro") is True or whoami.get("is_pro") is True:
-        return "pro"
-    plan_str = ""
-    for key in ("plan", "type", "accountType"):
-        value = whoami.get(key)
-        if isinstance(value, str) and value:
-            plan_str = value.lower()
-            break
-    if any(tag in plan_str for tag in ("pro", "enterprise", "team")):
-        return "pro"
-    orgs = whoami.get("orgs") or []
-    if isinstance(orgs, list) and orgs:
-        return "org"
-    return "free"
+    return _normalize_user_plan(whoami)
 
 
 async def _extract_user_from_token(token: str) -> dict[str, Any] | None:

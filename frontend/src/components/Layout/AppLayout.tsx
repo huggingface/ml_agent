@@ -31,7 +31,7 @@ const DRAWER_WIDTH = 260;
 
 export default function AppLayout() {
   const { sessions, activeSessionId, markExpired } = useSessionStore();
-  const { isConnected, llmHealthError, setLlmHealthError, user } = useAgentStore();
+  const { isConnected, error, setError, llmHealthError, setLlmHealthError, user } = useAgentStore();
   const {
     isLeftSidebarOpen,
     isRightPanelOpen,
@@ -466,6 +466,21 @@ export default function AppLayout() {
               {llmHealthError.model} — {llmHealthError.error.slice(0, 150)}
             </Typography>
           )}
+        </Alert>
+      </Snackbar>
+      <Snackbar
+        open={!!error}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        onClose={() => setError(null)}
+        autoHideDuration={6000}
+      >
+        <Alert
+          severity="error"
+          variant="filled"
+          onClose={() => setError(null)}
+          sx={{ fontSize: '0.8rem', maxWidth: 480 }}
+        >
+          {error}
         </Alert>
       </Snackbar>
     </Box>

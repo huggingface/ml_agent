@@ -87,6 +87,19 @@ const findModelByPath = (path: string, options: ModelOption[]): ModelOption | un
   return options.find(m => m.modelPath === path || path?.includes(m.id));
 };
 
+const readApiErrorMessage = async (res: Response, fallback: string): Promise<string> => {
+  try {
+    const data = await res.json();
+    const detail = data?.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail.message === 'string') return detail.message;
+    if (detail && typeof detail.error === 'string') return detail.error;
+  } catch {
+    /* ignore malformed error bodies */
+  }
+  return fallback;
+};
+
 interface ChatInputProps {
   sessionId?: string;
   initialModelPath?: string | null;
@@ -121,6 +134,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
   const jobsUpgradeRequired = useAgentStore((s) => s.jobsUpgradeRequired);
   const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
+  const setError = useAgentStore((s) => s.setError);
   const updateSessionModel = useSessionStore((s) => s.updateSessionModel);
   const [awaitingTopUp, setAwaitingTopUp] = useState(false);
   const lastSentRef = useRef<string>('');
@@ -240,8 +254,13 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
       if (res.ok) {
         setSelectedModelId(model.id);
         updateSessionModel(sessionId, model.modelPath);
+        setError(null);
+        return;
       }
-    } catch { /* ignore */ }
+      setError(await readApiErrorMessage(res, 'Could not switch model.'));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Could not switch model.');
+    }
   };
 
   // Dialog close: just clear the flag. The typed text is already restored.
