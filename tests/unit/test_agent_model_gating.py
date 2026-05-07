@@ -167,7 +167,7 @@ async def test_free_user_premium_quota_rejects_second_session(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pro_and_org_users_use_pro_premium_quota(monkeypatch):
+async def test_pro_user_uses_pro_premium_quota(monkeypatch):
     async def fake_persist_session_snapshot(_agent_session):
         return None
 
@@ -177,23 +177,58 @@ async def test_pro_and_org_users_use_pro_premium_quota(monkeypatch):
         fake_persist_session_snapshot,
     )
 
-    for plan in ("pro", "org"):
-        for index in range(2):
-            agent_session = SimpleNamespace(
-                claude_counted=False,
-                session=SimpleNamespace(
-                    config=SimpleNamespace(model_name="openai/gpt-5.5"),
-                ),
-            )
-            await agent._enforce_premium_model_quota(
-                {"user_id": f"{plan}-user", "plan": plan},
-                agent_session,
-            )
-            assert agent_session.claude_counted is True
-            assert (
-                await agent.user_quotas.get_claude_used_today(f"{plan}-user")
-                == index + 1
-            )
+    for index in range(2):
+        agent_session = SimpleNamespace(
+            claude_counted=False,
+            session=SimpleNamespace(
+                config=SimpleNamespace(model_name="openai/gpt-5.5"),
+            ),
+        )
+        await agent._enforce_premium_model_quota(
+            {"user_id": "pro-user", "plan": "pro"},
+            agent_session,
+        )
+        assert agent_session.claude_counted is True
+        assert await agent.user_quotas.get_claude_used_today("pro-user") == index + 1
+
+
+@pytest.mark.asyncio
+async def test_org_plan_uses_free_premium_quota(monkeypatch):
+    async def fake_persist_session_snapshot(_agent_session):
+        return None
+
+    monkeypatch.setattr(
+        agent.session_manager,
+        "persist_session_snapshot",
+        fake_persist_session_snapshot,
+    )
+
+    first_session = SimpleNamespace(
+        claude_counted=False,
+        session=SimpleNamespace(
+            config=SimpleNamespace(model_name="openai/gpt-5.5"),
+        ),
+    )
+    second_session = SimpleNamespace(
+        claude_counted=False,
+        session=SimpleNamespace(
+            config=SimpleNamespace(model_name="openai/gpt-5.5"),
+        ),
+    )
+
+    await agent._enforce_premium_model_quota(
+        {"user_id": "org-user", "plan": "org"},
+        first_session,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await agent._enforce_premium_model_quota(
+            {"user_id": "org-user", "plan": "org"},
+            second_session,
+        )
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.detail["plan"] == "org"
+    assert "Upgrade to HF Pro" in exc_info.value.detail["message"]
 
 
 @pytest.mark.asyncio

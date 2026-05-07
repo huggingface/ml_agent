@@ -174,7 +174,7 @@ async def _enforce_premium_model_quota(
     cap = user_quotas.daily_cap_for(plan)
     new_count = await user_quotas.try_increment_claude(user_id, cap)
     if new_count is None:
-        if plan in {"pro", "org"}:
+        if plan == "pro":
             message = (
                 "Daily premium model limit reached. Use a free model and try "
                 "premium models again tomorrow."

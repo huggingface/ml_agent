@@ -27,7 +27,7 @@ def _reset_store():
 def test_daily_cap_for_known_plans():
     assert user_quotas.daily_cap_for("free") == user_quotas.CLAUDE_FREE_DAILY
     assert user_quotas.daily_cap_for("pro") == user_quotas.CLAUDE_PRO_DAILY
-    assert user_quotas.daily_cap_for("org") == user_quotas.CLAUDE_PRO_DAILY
+    assert user_quotas.daily_cap_for("org") == user_quotas.CLAUDE_FREE_DAILY
 
 
 def test_daily_cap_for_unknown_or_missing_defaults_to_free():

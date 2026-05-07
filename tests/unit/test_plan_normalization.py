@@ -30,14 +30,14 @@ def test_free_user_with_free_org_stays_free():
     assert dependencies._normalize_user_plan(whoami) == "free"
 
 
-def test_user_with_paid_org_gets_org_tier():
+def test_user_with_paid_org_without_personal_pro_stays_free():
     whoami = {
         "name": "alice",
         "type": "user",
         "orgs": [{"name": "team-a", "plan": "team"}],
     }
 
-    assert dependencies._normalize_user_plan(whoami) == "org"
+    assert dependencies._normalize_user_plan(whoami) == "free"
 
 
 @pytest.mark.parametrize("payload", [None, [], {"type": "user"}, {"plan": "free"}])

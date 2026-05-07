@@ -35,7 +35,7 @@ DEV_USER: dict[str, Any] = {
     "user_id": "dev",
     "username": "dev",
     "authenticated": True,
-    "plan": "org",  # Dev runs at the Pro/Org quota tier so local testing isn't capped.
+    "plan": "pro",  # Dev runs at the Pro quota tier so local testing isn't capped.
 }
 
 INTERNAL_HF_TOKEN_KEY = "_hf_token"
@@ -144,7 +144,7 @@ def _has_paid_plan_tag(value: Any) -> bool:
 
 
 def _normalize_user_plan(whoami: Any) -> str:
-    """Normalize a whoami-v2 payload to the app's quota tiers."""
+    """Normalize a whoami-v2 payload to the app's personal quota tiers."""
     if not isinstance(whoami, dict):
         return "free"
 
@@ -157,22 +157,13 @@ def _normalize_user_plan(whoami: Any) -> str:
         if _has_paid_plan_tag(whoami.get(key)):
             return "pro"
 
-    orgs = whoami.get("orgs") or []
-    if isinstance(orgs, list):
-        for org in orgs:
-            if not isinstance(org, dict):
-                continue
-            for key in ("plan", "accountType", "account_type", "tier"):
-                if _has_paid_plan_tag(org.get(key)):
-                    return "org"
-
     return "free"
 
 
 async def _fetch_user_plan(token: str) -> str:
     """Look up the user's HF plan via /api/whoami-v2.
 
-    Returns 'free' | 'pro' | 'org'. Non-200, network errors, or an unknown
+    Returns 'free' | 'pro'. Non-200, network errors, or an unknown
     payload shape all collapse to 'free' — safe default; we'd rather under-
     grant the Pro cap than over-grant it on bad data.
     """
