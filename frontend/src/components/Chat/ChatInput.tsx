@@ -1,5 +1,18 @@
 import { useState, useCallback, useEffect, useRef, KeyboardEvent } from 'react';
-import { Box, TextField, IconButton, CircularProgress, Typography, Menu, MenuItem, ListItemIcon, ListItemText, Chip } from '@mui/material';
+import {
+  Alert,
+  Box,
+  TextField,
+  IconButton,
+  CircularProgress,
+  Typography,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Chip,
+  Snackbar,
+} from '@mui/material';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
@@ -134,9 +147,9 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
   const jobsUpgradeRequired = useAgentStore((s) => s.jobsUpgradeRequired);
   const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
-  const setError = useAgentStore((s) => s.setError);
   const updateSessionModel = useSessionStore((s) => s.updateSessionModel);
   const [awaitingTopUp, setAwaitingTopUp] = useState(false);
+  const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
   const lastSentRef = useRef<string>('');
 
   useEffect(() => {
@@ -254,12 +267,12 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
       if (res.ok) {
         setSelectedModelId(model.id);
         updateSessionModel(sessionId, model.modelPath);
-        setError(null);
+        setModelSwitchError(null);
         return;
       }
-      setError(await readApiErrorMessage(res, 'Could not switch model.'));
+      setModelSwitchError(await readApiErrorMessage(res, 'Could not switch model.'));
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Could not switch model.');
+      setModelSwitchError(error instanceof Error ? error.message : 'Could not switch model.');
     }
   };
 
@@ -594,6 +607,21 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
           onUpgrade={handleJobsUpgradeClick}
           onRetry={handleJobsRetry}
         />
+        <Snackbar
+          open={!!modelSwitchError}
+          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+          onClose={() => setModelSwitchError(null)}
+          autoHideDuration={6000}
+        >
+          <Alert
+            severity="error"
+            variant="filled"
+            onClose={() => setModelSwitchError(null)}
+            sx={{ fontSize: '0.8rem', maxWidth: 480 }}
+          >
+            {modelSwitchError}
+          </Alert>
+        </Snackbar>
       </Box>
     </Box>
   );
