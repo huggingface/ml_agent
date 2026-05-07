@@ -374,18 +374,6 @@ async def _create_sandbox_locked(
         create_latency_s=int(_t.monotonic() - _t_start),
     )
 
-    # Set a descriptive title (template title is inherited on duplicate)
-    from huggingface_hub import metadata_update
-
-    await asyncio.to_thread(
-        metadata_update,
-        sb.space_id,
-        {"title": "ml-intern sandbox"},
-        repo_type="space",
-        overwrite=True,
-        token=token,
-    )
-
     await session.send_event(
         Event(
             event_type="tool_log",
