@@ -10,9 +10,11 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import signal
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -21,6 +23,12 @@ import litellm
 from prompt_toolkit import PromptSession
 
 from agent.config import load_config
+from agent.core.attachments import (
+    AttachmentError,
+    AttachmentSource,
+    create_context_manifest,
+    import_dataset_batch,
+)
 from agent.core.approval_policy import is_scheduled_operation
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
@@ -55,6 +63,41 @@ litellm.drop_params = True
 litellm.suppress_debug_info = True
 
 CLI_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cli_agent_config.json"
+
+
+def _split_path_args(values: list[str] | None) -> list[str]:
+    paths: list[str] = []
+    for value in values or []:
+        for part in value.split(","):
+            part = part.strip()
+            if part:
+                paths.append(part)
+    return paths
+
+
+def _sources_from_paths(paths: list[str], *, kind: str = "file") -> list[AttachmentSource]:
+    return [
+        AttachmentSource(path=Path(path).expanduser(), original_name=Path(path).name, kind=kind)
+        for path in paths
+    ]
+
+
+def _placeholders_for(manifests: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    for manifest in manifests:
+        for item in manifest.get("items", []):
+            placeholder = item.get("placeholder")
+            filename = item.get("filename")
+            if placeholder and filename:
+                labels.append(f"{placeholder} {filename}")
+    return "\n".join(labels)
+
+
+def _compose_display_text(text: str, manifests: list[dict[str, Any]]) -> str:
+    placeholders = _placeholders_for(manifests)
+    if not placeholders:
+        return text
+    return f"{text.rstrip()}\n\n{placeholders}"
 
 
 def _is_scheduled_hf_job_tool(tool_info: dict[str, Any]) -> bool:
@@ -745,6 +788,9 @@ async def _handle_slash_command(
     session_holder: list,
     submission_queue: asyncio.Queue,
     submission_id: list[int],
+    pending_attachments: list[dict[str, Any]],
+    pending_datasets: list[dict[str, Any]],
+    hf_token: str | None,
 ) -> Submission | None:
     """
     Handle a slash command. Returns a Submission to enqueue, or None if
@@ -774,6 +820,45 @@ async def _handle_slash_command(
             id=f"sub_{submission_id[0]}",
             operation=Operation(op_type=OpType.COMPACT),
         )
+
+    if command in {"/attach", "/dataset"}:
+        console = get_console()
+        if not arg:
+            console.print(f"[bold red]Usage:[/bold red] {command} PATH [PATH ...]")
+            return None
+        try:
+            paths = shlex.split(arg)
+        except ValueError as exc:
+            console.print(f"[bold red]Could not parse paths:[/bold red] {exc}")
+            return None
+        scope_id = getattr(session_holder[0], "session_id", None) or f"cli-{uuid.uuid4().hex[:8]}"
+        try:
+            if command == "/attach":
+                manifest = create_context_manifest(
+                    _sources_from_paths(paths),
+                    scope_id=scope_id,
+                    copy_to_staging=False,
+                )
+                pending_attachments.append(manifest)
+                console.print(f"[green]Attached for next turn:[/green] {', '.join(paths)}")
+            else:
+                if not hf_token:
+                    console.print("[bold red]A Hugging Face token is required for /dataset.[/bold red]")
+                    return None
+                manifest = await asyncio.to_thread(
+                    import_dataset_batch,
+                    _sources_from_paths(paths),
+                    token=hf_token,
+                    scope_id=scope_id,
+                )
+                pending_datasets.append(manifest)
+                console.print(
+                    "[green]Dataset imported for next turn:[/green] "
+                    f"{manifest['repo_id']}:{manifest['path_prefix']}"
+                )
+        except AttachmentError as exc:
+            console.print(f"[bold red]Attachment error:[/bold red] {exc}")
+        return None
 
     if command == "/model":
         console = get_console()
@@ -959,7 +1044,12 @@ async def _handle_share_traces_command(arg: str, config, session) -> None:
     console.print(f"[green]Dataset is now {label}.[/green] {url}")
 
 
-async def main(model: str | None = None):
+async def main(
+    model: str | None = None,
+    file_paths: list[str] | None = None,
+    image_paths: list[str] | None = None,
+    dataset_paths: list[str] | None = None,
+):
     """Interactive chat with the agent"""
 
     # Clear screen
@@ -1038,6 +1128,28 @@ async def main(model: str | None = None):
     await ready_event.wait()
 
     submission_id = [0]
+    pending_attachments: list[dict[str, Any]] = []
+    pending_datasets: list[dict[str, Any]] = []
+    scope_id = getattr(session_holder[0], "session_id", None) or f"cli-{uuid.uuid4().hex[:8]}"
+    try:
+        initial_sources = _sources_from_paths(file_paths or []) + _sources_from_paths(image_paths or [], kind="image")
+        if initial_sources:
+            pending_attachments.append(
+                create_context_manifest(initial_sources, scope_id=scope_id, copy_to_staging=False)
+            )
+        if dataset_paths:
+            if not hf_token:
+                raise AttachmentError("A Hugging Face token is required for dataset imports.")
+            pending_datasets.append(
+                await asyncio.to_thread(
+                    import_dataset_batch,
+                    _sources_from_paths(dataset_paths),
+                    token=hf_token,
+                    scope_id=scope_id,
+                )
+            )
+    except AttachmentError as exc:
+        get_console().print(f"[bold red]Attachment error:[/bold red] {exc}")
     # Mirrors codex-rs/tui/src/bottom_pane/mod.rs:137
     # (`QUIT_SHORTCUT_TIMEOUT = Duration::from_secs(1)`). Two Ctrl+C presses
     # within this window quit; a single press cancels the in-flight turn.
@@ -1136,6 +1248,9 @@ async def main(model: str | None = None):
                     session_holder,
                     submission_queue,
                     submission_id,
+                    pending_attachments,
+                    pending_datasets,
+                    hf_token,
                 )
                 if sub is None:
                     # Command handled locally, loop back for input
@@ -1146,11 +1261,18 @@ async def main(model: str | None = None):
                     continue
 
             # Submit to agent
+            turn_attachments = [*pending_attachments, *pending_datasets]
+            pending_attachments.clear()
+            pending_datasets.clear()
             submission_id[0] += 1
             submission = Submission(
                 id=f"sub_{submission_id[0]}",
                 operation=Operation(
-                    op_type=OpType.USER_INPUT, data={"text": user_input}
+                    op_type=OpType.USER_INPUT,
+                    data={
+                        "text": _compose_display_text(user_input, turn_attachments),
+                        "attachments": turn_attachments,
+                    },
                 ),
             )
             await submission_queue.put(submission)
@@ -1192,6 +1314,9 @@ async def headless_main(
     model: str | None = None,
     max_iterations: int | None = None,
     stream: bool = True,
+    file_paths: list[str] | None = None,
+    image_paths: list[str] | None = None,
+    dataset_paths: list[str] | None = None,
 ) -> None:
     """Run a single prompt headlessly and exit."""
     import logging
@@ -1258,9 +1383,38 @@ async def headless_main(
             break
 
     # Submit the prompt
+    scope_id = getattr(session_holder[0], "session_id", None) or f"cli-{uuid.uuid4().hex[:8]}"
+    attachments: list[dict[str, Any]] = []
+    try:
+        initial_sources = _sources_from_paths(file_paths or []) + _sources_from_paths(image_paths or [], kind="image")
+        if initial_sources:
+            attachments.append(
+                create_context_manifest(initial_sources, scope_id=scope_id, copy_to_staging=False)
+            )
+        if dataset_paths:
+            if not hf_token:
+                raise AttachmentError("A Hugging Face token is required for dataset imports.")
+            attachments.append(
+                await asyncio.to_thread(
+                    import_dataset_batch,
+                    _sources_from_paths(dataset_paths),
+                    token=hf_token,
+                    scope_id=scope_id,
+                )
+            )
+    except AttachmentError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+
     submission = Submission(
         id="sub_1",
-        operation=Operation(op_type=OpType.USER_INPUT, data={"text": prompt}),
+        operation=Operation(
+            op_type=OpType.USER_INPUT,
+            data={
+                "text": _compose_display_text(prompt, attachments),
+                "attachments": attachments,
+            },
+        ),
     )
     await submission_queue.put(submission)
 
@@ -1438,7 +1592,28 @@ def cli():
         action="store_true",
         help="Disable token streaming (use non-streaming LLM calls)",
     )
+    parser.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        help="Attach a local file for the next turn. Repeat or comma-separate paths.",
+    )
+    parser.add_argument(
+        "--image",
+        action="append",
+        default=[],
+        help="Attach a local image for the next turn. Repeat or comma-separate paths.",
+    )
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        default=[],
+        help="Import local path(s) to your private HF dataset repo before the turn.",
+    )
     args = parser.parse_args()
+    file_paths = _split_path_args(args.file)
+    image_paths = _split_path_args(args.image)
+    dataset_paths = _split_path_args(args.dataset)
 
     try:
         if args.prompt:
@@ -1451,10 +1626,22 @@ def cli():
                     model=args.model,
                     max_iterations=max_iter,
                     stream=not args.no_stream,
+                    file_paths=file_paths,
+                    image_paths=image_paths,
+                    dataset_paths=dataset_paths,
                 )
             )
         else:
-            asyncio.run(main(model=args.model))
+            main_kwargs: dict[str, Any] = {"model": args.model}
+            if file_paths or image_paths or dataset_paths:
+                main_kwargs.update(
+                    {
+                        "file_paths": file_paths,
+                        "image_paths": image_paths,
+                        "dataset_paths": dataset_paths,
+                    }
+                )
+            asyncio.run(main(**main_kwargs))
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
 

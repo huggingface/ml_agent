@@ -16,6 +16,9 @@ import {
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
+import AttachFileIcon from '@mui/icons-material/AttachFile';
+import CloseIcon from '@mui/icons-material/Close';
+import StorageIcon from '@mui/icons-material/Storage';
 import { apiFetch } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
@@ -116,11 +119,17 @@ const readApiErrorMessage = async (res: Response, fallback: string): Promise<str
 interface ChatInputProps {
   sessionId?: string;
   initialModelPath?: string | null;
-  onSend: (text: string) => void;
+  onSend: (text: string, uploads?: unknown[]) => void;
   onStop?: () => void;
   isProcessing?: boolean;
   disabled?: boolean;
   placeholder?: string;
+}
+
+interface PendingRetry {
+  inputText: string;
+  displayText: string;
+  uploads: unknown[];
 }
 
 const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
@@ -130,6 +139,7 @@ const firstFreeModel = (options: ModelOption[]) => options.find(m => !isPremiumM
 export default function ChatInput({ sessionId, initialModelPath, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
   const modelOptionsRef = useRef<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
   const sessionIdRef = useRef<string | undefined>(sessionId);
@@ -137,6 +147,10 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
     () => findModelByPath(initialModelPath ?? '', DEFAULT_MODEL_OPTIONS)?.id ?? DEFAULT_MODEL_OPTIONS[0].id,
   );
   const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
+  const [selectedFiles, setSelectedFiles] = useState<Array<{ id: string; file: File }>>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [importAsDataset, setImportAsDataset] = useState(false);
   const { quota, refresh: refreshQuota } = useUserQuota();
   // The daily-cap dialog is triggered from two places: (a) a 429 returned
   // from the chat transport when the user tries to send on a premium model over cap —
@@ -150,7 +164,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   const updateSessionModel = useSessionStore((s) => s.updateSessionModel);
   const [awaitingTopUp, setAwaitingTopUp] = useState(false);
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
-  const lastSentRef = useRef<string>('');
+  const lastSentRef = useRef<PendingRetry | null>(null);
 
   useEffect(() => {
     modelOptionsRef.current = modelOptions;
@@ -215,19 +229,60 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
     }
   }, [disabled, isProcessing]);
 
-  const handleSend = useCallback(() => {
-    if (input.trim() && !disabled) {
-      lastSentRef.current = input;
-      onSend(input);
-      setInput('');
+  const addFiles = useCallback((files: FileList | File[]) => {
+    const next = Array.from(files).map((file) => ({
+      id: `${file.name}-${file.lastModified}-${Math.random().toString(16).slice(2)}`,
+      file,
+    }));
+    setSelectedFiles((current) => [...current, ...next]);
+    setUploadError(null);
+  }, []);
+
+  const uploadSelectedFiles = useCallback(async (): Promise<unknown[]> => {
+    if (!sessionId || selectedFiles.length === 0) return [];
+    const form = new FormData();
+    selectedFiles.forEach(({ file }) => form.append('files', file, file.name));
+    form.append('import_as_dataset', String(importAsDataset));
+    const res = await apiFetch(`/api/session/${sessionId}/uploads`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => 'Upload failed');
+      throw new Error(detail || 'Upload failed');
     }
-  }, [input, disabled, onSend]);
+    const data = await res.json();
+    return data?.upload ? [data.upload] : [];
+  }, [sessionId, selectedFiles, importAsDataset]);
+
+  const handleSend = useCallback(async () => {
+    if ((input.trim() || selectedFiles.length > 0) && !disabled && !isUploading) {
+      setUploadError(null);
+      setIsUploading(true);
+      const baseText = input.trim();
+      try {
+        const uploads = await uploadSelectedFiles();
+        const placeholders = selectedFiles
+          .map(({ file }, index) => `[${file.type.startsWith('image/') ? 'Image' : 'File'} #${index + 1}] ${file.name}`)
+          .join('\n');
+        const displayText = placeholders ? `${baseText}\n\n${placeholders}`.trim() : baseText;
+        lastSentRef.current = { inputText: baseText, displayText, uploads };
+        onSend(displayText, uploads);
+        setInput('');
+        setSelectedFiles([]);
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : 'Upload failed');
+      } finally {
+        setIsUploading(false);
+      }
+    }
+  }, [input, selectedFiles, disabled, isUploading, uploadSelectedFiles, onSend]);
 
   // When the chat transport reports a premium-model quota 429, restore the typed
   // text so the user doesn't lose their message.
   useEffect(() => {
     if (claudeQuotaExhausted && lastSentRef.current) {
-      setInput(lastSentRef.current);
+      setInput(lastSentRef.current.inputText);
     }
   }, [claudeQuotaExhausted]);
 
@@ -296,11 +351,11 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
       if (res.ok) {
         setSelectedModelId(free.id);
         updateSessionModel(sessionId, free.modelPath);
-        const retryText = lastSentRef.current;
-        if (retryText) {
-          onSend(retryText);
+        const retry = lastSentRef.current;
+        if (retry) {
+          onSend(retry.displayText, retry.uploads);
           setInput('');
-          lastSentRef.current = '';
+          lastSentRef.current = null;
         }
       }
     } catch { /* ignore */ }
@@ -383,8 +438,9 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
           className="composer"
           sx={{
             display: 'flex',
+            flexDirection: 'column',
             gap: '10px',
-            alignItems: 'flex-start',
+            alignItems: 'stretch',
             bgcolor: 'var(--composer-bg)',
             borderRadius: 'var(--radius-md)',
             p: '12px',
@@ -395,7 +451,79 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
                 boxShadow: 'var(--focus)',
             }
           }}
+          onDragOver={(e) => {
+            e.preventDefault();
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            if (!disabled && !isProcessing && e.dataTransfer.files.length > 0) {
+              addFiles(e.dataTransfer.files);
+            }
+          }}
         >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              if (e.target.files) addFiles(e.target.files);
+              e.target.value = '';
+            }}
+          />
+          {(selectedFiles.length > 0 || uploadError) && (
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, alignItems: 'center' }}>
+              {selectedFiles.map(({ id, file }) => (
+                <Chip
+                  key={id}
+                  size="small"
+                  label={file.name}
+                  onDelete={() => setSelectedFiles((files) => files.filter((f) => f.id !== id))}
+                  deleteIcon={<CloseIcon />}
+                  sx={{
+                    maxWidth: '220px',
+                    bgcolor: 'rgba(255,255,255,0.06)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--divider)',
+                    '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
+                  }}
+                />
+              ))}
+              {selectedFiles.length > 0 && (
+                <Chip
+                  size="small"
+                  icon={<StorageIcon sx={{ fontSize: 15 }} />}
+                  label={importAsDataset ? 'Import as dataset' : 'Attach to turn'}
+                  onClick={() => setImportAsDataset((v) => !v)}
+                  sx={{
+                    bgcolor: importAsDataset ? 'var(--accent-yellow)' : 'transparent',
+                    color: importAsDataset ? '#000' : 'var(--muted-text)',
+                    border: '1px solid var(--divider)',
+                    fontWeight: 600,
+                  }}
+                />
+              )}
+              {uploadError && (
+                <Typography variant="caption" sx={{ color: 'var(--accent-red)' }}>
+                  {uploadError}
+                </Typography>
+              )}
+            </Box>
+          )}
+          <Box sx={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+          <IconButton
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled || isProcessing || isUploading}
+            sx={{
+              mt: 1,
+              p: 1,
+              borderRadius: '10px',
+              color: 'var(--muted-text)',
+              '&:hover': { color: 'var(--accent-yellow)', bgcolor: 'var(--hover-bg)' },
+            }}
+          >
+            <AttachFileIcon fontSize="small" />
+          </IconButton>
           <TextField
             fullWidth
             multiline
@@ -455,7 +583,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
           ) : (
             <IconButton
               onClick={handleSend}
-              disabled={disabled || !input.trim()}
+              disabled={disabled || isUploading || (!input.trim() && selectedFiles.length === 0)}
               sx={{
                 mt: 1,
                 p: 1,
@@ -474,6 +602,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
               <ArrowUpwardIcon fontSize="small" />
             </IconButton>
           )}
+          </Box>
         </Box>
 
         {/* Powered By Badge */}

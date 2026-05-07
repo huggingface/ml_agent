@@ -451,6 +451,8 @@ HELP_TEXT = f"""\
 {_I}  [cyan]/help[/cyan]            Show this help
 {_I}  [cyan]/undo[/cyan]            Undo last turn
 {_I}  [cyan]/compact[/cyan]         Compact context window
+{_I}  [cyan]/attach[/cyan] PATH...  Attach local file(s) for the next turn
+{_I}  [cyan]/dataset[/cyan] PATH... Import local file(s) to private HF dataset
 {_I}  [cyan]/model[/cyan] [id]      Show available models or switch
 {_I}  [cyan]/effort[/cyan] [level]  Reasoning effort (minimal|low|medium|high|xhigh|max|off)
 {_I}  [cyan]/yolo[/cyan]            Toggle auto-approve mode

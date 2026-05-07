@@ -69,11 +69,14 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
   const busy = isProcessing || sdkBusy;
 
   const handleSendMessage = useCallback(
-    async (text: string) => {
+    async (text: string, uploads?: unknown[]) => {
       if (!text.trim() || busy) return;
 
       updateSession(sessionId, { isProcessing: true, activityStatus: { type: 'thinking' } });
-      sendMessage({ text: text.trim(), metadata: { createdAt: new Date().toISOString() } });
+      sendMessage({
+        text: text.trim(),
+        metadata: { createdAt: new Date().toISOString(), uploads },
+      });
 
       // Auto-title the session from the first user message
       const isFirstMessage = messages.filter((m) => m.role === 'user').length === 0;

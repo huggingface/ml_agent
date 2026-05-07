@@ -1034,9 +1034,14 @@ class SessionManager:
         await agent_session.submission_queue.put(submission)
         return True
 
-    async def submit_user_input(self, session_id: str, text: str) -> bool:
+    async def submit_user_input(
+        self, session_id: str, text: str, attachments: list[dict[str, Any]] | None = None
+    ) -> bool:
         """Submit user input to a session."""
-        operation = Operation(op_type=OpType.USER_INPUT, data={"text": text})
+        data: dict[str, Any] = {"text": text}
+        if attachments:
+            data["attachments"] = attachments
+        operation = Operation(op_type=OpType.USER_INPUT, data=data)
         return await self.submit(session_id, operation)
 
     async def submit_approval(

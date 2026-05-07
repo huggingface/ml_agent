@@ -394,7 +394,10 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
             .map(p => p.text)
             .join('')
         : '';
-      body = { text };
+      const uploads = lastUserMsg?.metadata && typeof lastUserMsg.metadata === 'object'
+        ? (lastUserMsg.metadata as Record<string, unknown>).uploads
+        : undefined;
+      body = uploads ? { text, uploads } : { text };
     }
 
     // POST to SSE endpoint

@@ -25,6 +25,7 @@ from agent.core.approval_policy import (
 from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
 from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
+from agent.core.attachments import build_user_content
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.hub_artifacts import start_session_artifact_collection_task
 from agent.core.llm_params import _resolve_llm_params
@@ -1125,6 +1126,7 @@ class Handlers:
     async def run_agent(
         session: Session,
         text: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> str | None:
         """
         Handle user input (like user_input_or_turn in codex.rs:1291)
@@ -1138,10 +1140,35 @@ class Handlers:
         if text and session.pending_approval:
             await Handlers._abandon_pending_approval(session)
 
-        # Add user message to history only if there's actual content
-        if text:
-            user_msg = Message(role="user", content=text)
-            session.context_manager.add_message(user_msg)
+        redacted_user_msg: Message | None = None
+        raw_user_msg: Message | None = None
+
+        def _redact_transient_user_content() -> None:
+            if raw_user_msg is not None and redacted_user_msg is not None:
+                raw_user_msg.content = redacted_user_msg.content
+
+        # Add user message to history only if there's actual content. Image
+        # bytes are sent transiently for the current LLM turn, then replaced
+        # with text-only placeholders before the history is persisted/reused.
+        if text or attachments:
+            content = build_user_content(text, attachments or [])
+            redacted_text = build_user_content(text, [
+                m for m in (attachments or []) if m.get("type") == "dataset_import"
+            ])
+            if attachments:
+                # Preserve manifest/preview context in the persisted text while
+                # avoiding raw image data URLs.
+                from agent.core.attachments import attachment_note
+
+                redacted_text = (text or "").rstrip() + attachment_note(attachments or [])
+            raw_user_msg = Message(role="user", content=content)
+            redacted_user_msg = Message(role="user", content=redacted_text)
+            if content != redacted_text:
+                session.context_manager.items.append(raw_user_msg)
+                if session.context_manager.on_message_added:
+                    session.context_manager.on_message_added(redacted_user_msg)
+            else:
+                session.context_manager.add_message(raw_user_msg)
 
         # Send event that we're processing
         await session.send_event(
@@ -1596,6 +1623,7 @@ class Handlers:
                     }
 
                     # Return early - wait for EXEC_APPROVAL operation
+                    _redact_transient_user_content()
                     return None
 
                 iteration += 1
@@ -1636,6 +1664,8 @@ class Handlers:
                 )
                 errored = True
                 break
+
+        _redact_transient_user_content()
 
         if session.is_cancelled:
             await _cleanup_on_cancel(session)
@@ -1942,7 +1972,8 @@ async def process_submission(session: Session, submission) -> bool:
 
     if op.op_type == OpType.USER_INPUT:
         text = op.data.get("text", "") if op.data else ""
-        await Handlers.run_agent(session, text)
+        attachments = op.data.get("attachments", []) if op.data else []
+        await Handlers.run_agent(session, text, attachments)
         return True
 
     if op.op_type == OpType.COMPACT:

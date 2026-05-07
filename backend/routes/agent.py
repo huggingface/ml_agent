@@ -16,8 +16,11 @@ from dependencies import (
 from fastapi import (
     APIRouter,
     Depends,
+    File,
+    Form,
     HTTPException,
     Request,
+    UploadFile,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
@@ -44,6 +47,13 @@ from session_manager import (
 import user_quotas
 
 from agent.core.hf_access import get_jobs_access
+from agent.core.attachments import (
+    AttachmentError,
+    AttachmentSource,
+    create_context_manifest,
+    import_dataset_batch,
+    load_context_manifest,
+)
 from agent.core.hf_tokens import resolve_hf_request_token, resolve_hf_router_token
 from agent.core.llm_params import _resolve_llm_params
 
@@ -689,6 +699,89 @@ async def submit_approval(
     return {"status": "submitted", "session_id": request.session_id}
 
 
+def _resolve_chat_uploads(session_id: str, uploads: Any) -> list[dict[str, Any]]:
+    if not uploads:
+        return []
+    if not isinstance(uploads, list):
+        raise HTTPException(status_code=400, detail="'uploads' must be a list")
+    manifests: list[dict[str, Any]] = []
+    for upload in uploads:
+        try:
+            if isinstance(upload, str):
+                manifest = load_context_manifest(session_id, upload)
+            elif isinstance(upload, dict) and upload.get("type") == "context_upload":
+                manifest = load_context_manifest(session_id, str(upload.get("upload_id") or ""))
+            elif isinstance(upload, dict) and upload.get("type") == "dataset_import":
+                manifest = upload
+            else:
+                raise AttachmentError("Malformed upload reference.")
+            if manifest.get("scope_id") != session_id:
+                raise AttachmentError("Upload does not belong to this session.")
+            manifests.append(manifest)
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return manifests
+
+
+@router.post("/session/{session_id}/uploads")
+async def upload_session_files(
+    session_id: str,
+    request: Request,
+    files: list[UploadFile] = File(...),
+    import_as_dataset: bool = Form(False),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Stage explicit user-selected files or import them to a private HF dataset."""
+    agent_session = await _check_session_access(session_id, user, request)
+    if not agent_session or not agent_session.is_active:
+        raise HTTPException(status_code=404, detail="Session not found or inactive")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="ml-intern-upload-") as tmpdir:
+        sources: list[AttachmentSource] = []
+        for index, upload in enumerate(files, start=1):
+            original_name = Path(upload.filename or "attachment").name
+            target = Path(tmpdir) / f"{index:03d}-{original_name}"
+            size = 0
+            with target.open("wb") as out:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > 200 * 1024 * 1024:
+                        raise HTTPException(status_code=413, detail=f"{original_name} is too large")
+                    out.write(chunk)
+            kind = "image" if (upload.content_type or "").startswith("image/") else "file"
+            sources.append(AttachmentSource(path=target, original_name=original_name, kind=kind))
+
+        try:
+            if import_as_dataset:
+                token = resolve_hf_request_token(request)
+                if not token:
+                    raise AttachmentError("A Hugging Face token is required to import datasets.")
+                manifest = await asyncio.to_thread(
+                    import_dataset_batch,
+                    sources,
+                    token=token,
+                    scope_id=session_id,
+                )
+            else:
+                manifest = create_context_manifest(
+                    sources,
+                    scope_id=session_id,
+                    copy_to_staging=True,
+                )
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"status": "uploaded", "upload": manifest}
+
+
 @router.post("/chat/{session_id}")
 async def chat_sse(
     session_id: str,
@@ -711,6 +804,7 @@ async def chat_sse(
     # Submit the operation
     text = body.get("text")
     approvals = body.get("approvals")
+    uploads = _resolve_chat_uploads(session_id, body.get("uploads"))
 
     # Gate user-message sends against the daily premium-model quota. Approvals are
     # continuations of an in-progress turn — the session was already charged
@@ -736,7 +830,7 @@ async def chat_sse(
             ]
             success = await session_manager.submit_approval(session_id, formatted)
         elif text is not None:
-            success = await session_manager.submit_user_input(session_id, text)
+            success = await session_manager.submit_user_input(session_id, text, uploads)
         else:
             broadcaster.unsubscribe(sub_id)
             raise HTTPException(

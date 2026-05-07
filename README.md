@@ -67,6 +67,40 @@ ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
 
+**Attach local files and datasets:**
+
+Use `--file` or `--image` when a local file should be visible to the next
+agent turn only:
+
+```bash
+ml-intern "summarize this CSV" --file ./data.csv
+ml-intern "what does this screenshot show?" --image ./screenshot.png
+```
+
+In interactive mode, queue local files for the next submitted message:
+
+```text
+/attach ./data.csv ./notes.txt
+/attach ./screenshot.png
+```
+
+Use `--dataset` or `/dataset` when the file should be imported to a private
+Hugging Face dataset repo for training jobs or later reuse:
+
+```bash
+ml-intern "fine-tune on this data" --dataset ./train.jsonl
+```
+
+```text
+/dataset ./train.jsonl
+```
+
+Dataset imports are stored under a private repo named
+`{username}/ml-intern-user-datasets`. Plain `--file`, `--image`, and `/attach`
+do not upload to the Hub; they are per-turn context only. In the web UI, use
+the paperclip button or drag and drop files into the composer, then choose
+between **Attach to turn** and **Import as dataset** before sending.
+
 Run `ml-intern` then `/model` to see the full list of suggested model ids
 (Claude, GPT, HF-router models like MiniMax, Kimi, GLM, DeepSeek, and local
 model prefixes).
