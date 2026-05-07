@@ -718,4 +718,4 @@ def test_cli_defaults_without_live_network_or_llm():
     assert args.github_report_label == mod.DEFAULT_GITHUB_REPORT_LABEL
     assert args.output_dir is None
     assert out.name == "20260504T123000Z"
-    assert "scratch/backlog-prioritization" in str(out)
+    assert out.parts[-3:-1] == ("scratch", "backlog-prioritization")
