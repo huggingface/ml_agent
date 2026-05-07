@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent.config import load_config
+from agent.core.llm_errors import render_llm_error_message
 from agent.core.agent_loop import process_submission
 from agent.core.hub_artifacts import start_session_artifact_collection_task
 from agent.core.session import Event, OpType, Session
@@ -987,7 +988,7 @@ class SessionManager:
                     except Exception as e:
                         logger.error(f"Error in session {session_id}: {e}")
                         await session.send_event(
-                            Event(event_type="error", data={"error": str(e)})
+                            Event(event_type="error", data={"error": render_llm_error_message(e)})
                         )
 
         finally:

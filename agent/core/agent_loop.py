@@ -27,6 +27,7 @@ from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.hub_artifacts import start_session_artifact_collection_task
+from agent.core.llm_errors import friendly_llm_error_message, render_llm_error_message
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
@@ -505,47 +506,7 @@ async def _heal_effort_and_rebuild_params(
 
 def _friendly_error_message(error: Exception) -> str | None:
     """Return a user-friendly message for known error types, or None to fall back to traceback."""
-    err_str = str(error).lower()
-
-    if (
-        "authentication" in err_str
-        or "unauthorized" in err_str
-        or "invalid x-api-key" in err_str
-    ):
-        return (
-            "Authentication failed — your API key is missing or invalid.\n\n"
-            "To fix this, set the API key for your model provider:\n"
-            "  • Anthropic:   export ANTHROPIC_API_KEY=sk-...\n"
-            "  • OpenAI:      export OPENAI_API_KEY=sk-...\n"
-            "  • HF Router:   export HF_TOKEN=hf_...\n\n"
-            "You can also add it to a .env file in the project root.\n"
-            "To switch models, use the /model command."
-        )
-
-    if "insufficient" in err_str and "credit" in err_str:
-        return (
-            "Insufficient API credits. Please check your account balance "
-            "at your model provider's dashboard."
-        )
-
-    if "not supported by provider" in err_str or "no provider supports" in err_str:
-        return (
-            "The model isn't served by the provider you pinned.\n\n"
-            "Drop the ':<provider>' suffix to let the HF router auto-pick a "
-            "provider, or use '/model' (no arg) to see which providers host "
-            "which models."
-        )
-
-    if "model_not_found" in err_str or (
-        "model" in err_str and ("not found" in err_str or "does not exist" in err_str)
-    ):
-        return (
-            "Model not found. Use '/model' to list suggestions, or paste an "
-            "HF model id like 'MiniMaxAI/MiniMax-M2.7'. Availability is shown "
-            "when you switch."
-        )
-
-    return None
+    return friendly_llm_error_message(error)
 
 
 async def _compact_and_notify(session: Session) -> None:
@@ -1622,11 +1583,9 @@ class Handlers:
                 continue
 
             except Exception as e:
-                import traceback
-
-                error_msg = _friendly_error_message(e)
-                if error_msg is None:
-                    error_msg = str(e) + "\n" + traceback.format_exc()
+                logger.info("Agent turn failed: %s", e)
+                logger.debug("Agent turn failed", exc_info=True)
+                error_msg = render_llm_error_message(e)
 
                 await session.send_event(
                     Event(

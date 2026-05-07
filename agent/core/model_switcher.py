@@ -20,12 +20,13 @@ import asyncio
 from litellm import acompletion
 
 from agent.core.effort_probe import ProbeInconclusive, probe_effort
+from agent.core.llm_errors import render_llm_error_message
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.local_models import (
     LOCAL_MODEL_PREFIXES,
     is_local_model_id,
-    is_reserved_local_model_id,
 )
+from agent.core.provider_adapters import is_valid_model_name
 
 
 # Suggested models shown by `/model` (not a gate). Users can paste any HF
@@ -50,7 +51,7 @@ SUGGESTED_MODELS = [
 
 
 _ROUTING_POLICIES = {"fastest", "cheapest", "preferred"}
-_DIRECT_PREFIXES = ("anthropic/", "openai/", *LOCAL_MODEL_PREFIXES)
+_DIRECT_PREFIXES = ("anthropic/", "openai/", "bedrock/", *LOCAL_MODEL_PREFIXES)
 _LOCAL_PROBE_TIMEOUT = 15.0
 
 
@@ -67,19 +68,7 @@ def is_valid_model_id(model_id: str) -> bool:
     Actual availability is verified against the HF router catalog on
     switch, and by the provider on the probe's ping call.
     """
-    if not model_id:
-        return False
-    if is_local_model_id(model_id):
-        return True
-    if is_reserved_local_model_id(model_id):
-        return False
-    if any(model_id.startswith(prefix) for prefix in LOCAL_MODEL_PREFIXES):
-        return False
-    if "/" not in model_id:
-        return False
-    head = model_id.split(":", 1)[0]
-    parts = head.split("/")
-    return len(parts) >= 2 and all(parts)
+    return is_valid_model_name(model_id)
 
 
 def _print_hf_routing_info(model_id: str, console) -> bool:
@@ -175,6 +164,7 @@ def print_invalid_id(arg: str, console) -> None:
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
         "  • anthropic/<model>\n"
         "  • openai/<model>\n"
+        "  • bedrock/<model>\n"
         "  • ollama/<model> | vllm/<model> | lm_studio/<model> | llamacpp/<model>[/dim]"
     )
 
@@ -248,14 +238,15 @@ async def probe_and_switch_model(
         outcome = await probe_effort(model_id, preference, hf_token, session=session)
     except ProbeInconclusive as e:
         _commit_switch(model_id, config, session, effective=None, cache=False)
+        warning = render_llm_error_message(e)
         console.print(
             f"[yellow]Model switched to {model_id}[/yellow] "
-            f"[dim](couldn't validate: {e}; will verify on first message)[/dim]"
+            f"[dim](couldn't validate: {warning}; will verify on first message)[/dim]"
         )
         return
     except Exception as e:
         # Hard persistent error — auth, unknown model, quota. Don't switch.
-        console.print(f"[bold red]Switch failed:[/bold red] {e}")
+        console.print(f"[bold red]Switch failed:[/bold red] {render_llm_error_message(e)}")
         console.print(f"[dim]Keeping current model: {config.model_name}[/dim]")
         return
 
