@@ -173,6 +173,33 @@ def test_protected_files_snapshot_and_verify_clean_with_extra_files(tmp_path):
     assert payload["changed"] == []
 
 
+def test_protected_files_snapshot_ignores_python_bytecode_cache(tmp_path):
+    task_dir = tmp_path / "task"
+    cache_dir = task_dir / "evaluation_code" / "__pycache__"
+    cache_dir.mkdir(parents=True)
+    (task_dir / "evaluate.py").write_text("print('eval')\n", encoding="utf-8")
+    (task_dir / "evaluation_code" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (cache_dir / "helper.cpython-311.pyc").write_bytes(b"old bytecode")
+    (task_dir / "evaluation_code" / "legacy.pyo").write_bytes(b"old optimized bytecode")
+    manifest = integrity.snapshot_protected_files(task_dir)
+    manifest_paths = {entry["path"] for entry in manifest["files"]}
+
+    assert "evaluate.py" in manifest_paths
+    assert "evaluation_code/helper.py" in manifest_paths
+    assert "evaluation_code/__pycache__/helper.cpython-311.pyc" not in manifest_paths
+    assert "evaluation_code/legacy.pyo" not in manifest_paths
+
+    manifest_path = tmp_path / "manifest.json"
+    integrity.write_json(manifest_path, manifest)
+    (cache_dir / "helper.cpython-311.pyc").write_bytes(b"new bytecode")
+    (task_dir / "evaluation_code" / "legacy.pyo").write_bytes(b"new optimized bytecode")
+
+    payload = integrity.verify_protected_files(task_dir, manifest_path)
+
+    assert payload["status"] == "clean"
+    assert payload["changed"] == []
+
+
 def test_protected_files_verify_rejects_changed_file(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()

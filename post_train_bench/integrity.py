@@ -85,6 +85,8 @@ SCAN_SKIP_SUFFIXES = {
 }
 MAX_SCAN_BYTES = 10 * 1024 * 1024
 HASH_CHUNK_BYTES = 1024 * 1024
+PROTECTED_SKIP_DIRS = {"__pycache__"}
+PROTECTED_SKIP_SUFFIXES = {".pyc", ".pyo"}
 
 
 def utc_now() -> str:
@@ -102,6 +104,14 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(HASH_CHUNK_BYTES), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def is_protected_runtime_cache(path: Path) -> bool:
+    """Return True for interpreter cache artifacts, not benchmark source."""
+    return (
+        any(part in PROTECTED_SKIP_DIRS for part in path.parts)
+        or path.suffix in PROTECTED_SKIP_SUFFIXES
+    )
 
 
 def normalize_model_id(value: str) -> str:
@@ -126,6 +136,8 @@ def snapshot_protected_files(task_dir: Path) -> dict:
         if not path.is_file():
             continue
         rel_path = path.relative_to(task_dir).as_posix()
+        if is_protected_runtime_cache(Path(rel_path)):
+            continue
         files.append(
             {
                 "path": rel_path,
