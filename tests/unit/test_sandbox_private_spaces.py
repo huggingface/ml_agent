@@ -11,6 +11,10 @@ from agent.tools.sandbox_client import Sandbox
 from agent.tools.sandbox_tool import sandbox_create_handler
 
 
+def _fail_metadata_update(*args, **kwargs):
+    raise AssertionError("sandbox creation should not update Space metadata")
+
+
 def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     duplicate_kwargs = {}
     requested_hardware = []
@@ -295,7 +299,7 @@ def test_ensure_sandbox_overrides_private_argument(monkeypatch):
     monkeypatch.setattr(sandbox_tool, "_cleanup_user_orphan_sandboxes", lambda *args: 0)
     monkeypatch.setattr(Sandbox, "create", staticmethod(fake_create))
     monkeypatch.setattr(telemetry, "record_sandbox_create", fake_record_sandbox_create)
-    monkeypatch.setattr("huggingface_hub.metadata_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr("huggingface_hub.metadata_update", _fail_metadata_update)
 
     async def run():
         session = FakeSession()
@@ -356,7 +360,7 @@ def test_sandbox_creation_is_serialized_per_owner(monkeypatch):
     monkeypatch.setattr(sandbox_tool, "_cleanup_user_orphan_sandboxes", lambda *args: 0)
     monkeypatch.setattr(Sandbox, "create", staticmethod(fake_create))
     monkeypatch.setattr(telemetry, "record_sandbox_create", fake_record_sandbox_create)
-    monkeypatch.setattr("huggingface_hub.metadata_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr("huggingface_hub.metadata_update", _fail_metadata_update)
 
     async def run():
         await asyncio.gather(
