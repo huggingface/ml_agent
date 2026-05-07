@@ -33,7 +33,7 @@ DEFAULT_CPU_SANDBOX_HARDWARE = "cpu-basic"
 # Match the exact suffix pattern Sandbox.create produces: "sandbox-<8 hex>".
 # Used to identify orphan sandboxes from prior sessions safely (won't match
 # user-renamed lookalikes).
-_SANDBOX_NAME_RE = re.compile(r"^sandbox-[a-f0-9]{8}$")
+SANDBOX_SPACE_NAME_RE = re.compile(r"^sandbox-[a-f0-9]{8}$")
 
 # How stale a sandbox must be before we treat it as definitely orphan.
 # Anything more recent could be tied to a still-live session in another tab,
@@ -195,7 +195,7 @@ def _cleanup_user_orphan_sandboxes(
 
     for space in spaces:
         space_name = space.id.rsplit("/", 1)[-1]
-        if not _SANDBOX_NAME_RE.match(space_name):
+        if not SANDBOX_SPACE_NAME_RE.match(space_name):
             continue
 
         last_mod = getattr(space, "lastModified", None) or getattr(
@@ -372,18 +372,6 @@ async def _create_sandbox_locked(
         sb,
         hardware=hardware,
         create_latency_s=int(_t.monotonic() - _t_start),
-    )
-
-    # Set a descriptive title (template title is inherited on duplicate)
-    from huggingface_hub import metadata_update
-
-    await asyncio.to_thread(
-        metadata_update,
-        sb.space_id,
-        {"title": "ml-intern sandbox"},
-        repo_type="space",
-        overwrite=True,
-        token=token,
     )
 
     await session.send_event(

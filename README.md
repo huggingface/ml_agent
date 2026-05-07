@@ -2,6 +2,11 @@
   <img src="frontend/public/smolagents.webp" alt="smolagents logo" width="160" />
 </p>
 
+<p align="center">
+    <a href="https://github.com/huggingface/ml-intern/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
+    <a href="https://smolagents-ml-intern.hf.space/"><img alt="Website" src="https://img.shields.io/website/https/smolagents-ml-intern.hf.space.svg?down_color=red&down_message=offline&up_message=online"></a>
+</p>
+
 # ML Intern
 
 An ML intern that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
@@ -364,3 +369,14 @@ Edit `configs/cli_agent_config.json` for CLI defaults, or
 ```
 
 Note: Environment variables like `${YOUR_TOKEN}` are auto-substituted from `.env`.
+
+## Cite ml-intern
+If you use `ml-intern` in your work, please cite it by using the following BibTeX entry or similar.
+```bibtex
+@Misc{ml-intern,
+  title =        {ml-intern: an agent that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem},
+  author =       {Aksel Joonas Reedi, Henri Bonamy, Yoan Di Cosmo, Leandro von Werra, Lewis Tunstall},
+  howpublished = {\url{https://github.com/huggingface/ml-intern}},
+  year =         {2026}
+}
+```
