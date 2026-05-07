@@ -16,8 +16,28 @@ def test_oauth_is_pro_flag_takes_priority_over_user_type():
     assert dependencies._normalize_user_plan({"type": "user", "isPro": True}) == "pro"
 
 
-def test_paid_personal_plan_gets_pro_tier():
-    assert dependencies._normalize_user_plan({"accountType": "pro"}) == "pro"
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"accountType": "pro"},
+        {"plan": "HF Pro"},
+        {"subscription": "hf_pro"},
+    ],
+)
+def test_personal_pro_plan_gets_pro_tier(payload):
+    assert dependencies._normalize_user_plan(payload) == "pro"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"accountType": "team"},
+        {"plan": "enterprise"},
+        {"tier": "promotional"},
+    ],
+)
+def test_non_pro_plan_values_stay_free(payload):
+    assert dependencies._normalize_user_plan(payload) == "free"
 
 
 def test_free_user_with_free_org_stays_free():

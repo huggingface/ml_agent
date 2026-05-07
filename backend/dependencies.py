@@ -6,6 +6,7 @@
 
 import logging
 import os
+import re
 import time
 from collections.abc import Iterable
 from hashlib import sha256
@@ -56,7 +57,6 @@ REQUIRED_OAUTH_SCOPES: tuple[str, ...] = (
 # Plan field discovery — log the whoami-v2 shape once at DEBUG so we can
 # confirm the actual key in production without hammering the HF API.
 _WHOAMI_SHAPE_LOGGED = False
-_PAID_PLAN_TAGS = ("pro", "enterprise", "team")
 
 
 def normalize_oauth_scopes(scopes: Iterable[str]) -> tuple[str, ...]:
@@ -137,10 +137,10 @@ def _user_from_info(user_info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _has_paid_plan_tag(value: Any) -> bool:
+def _has_pro_plan_token(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    return any(tag in value.lower() for tag in _PAID_PLAN_TAGS)
+    return "pro" in re.split(r"[^a-z0-9]+", value.lower())
 
 
 def _normalize_user_plan(whoami: Any) -> str:
@@ -154,7 +154,7 @@ def _normalize_user_plan(whoami: Any) -> str:
         return "pro"
 
     for key in ("plan", "accountType", "account_type", "tier", "subscription"):
-        if _has_paid_plan_tag(whoami.get(key)):
+        if _has_pro_plan_token(whoami.get(key)):
             return "pro"
 
     return "free"
@@ -175,12 +175,12 @@ async def _fetch_user_plan(token: str) -> str:
     if not _WHOAMI_SHAPE_LOGGED:
         _WHOAMI_SHAPE_LOGGED = True
         logger.debug(
-            "whoami-v2 payload keys: %s (sample values: plan=%r type=%r isPro=%r)",
+            "whoami-v2 payload keys: %s (sample values: plan=%r accountType=%r isPro=%r)",
             sorted(whoami.keys())
             if isinstance(whoami, dict)
             else type(whoami).__name__,
             whoami.get("plan") if isinstance(whoami, dict) else None,
-            whoami.get("type") if isinstance(whoami, dict) else None,
+            whoami.get("accountType") if isinstance(whoami, dict) else None,
             whoami.get("isPro") if isinstance(whoami, dict) else None,
         )
 
