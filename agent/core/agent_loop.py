@@ -5,7 +5,6 @@ Main agent implementation with integrated tool system and MCP support
 import asyncio
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,15 +18,22 @@ from litellm import (
 from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
+from agent.core.approval_policy import (
+    is_scheduled_operation,
+    normalize_tool_operation,
+)
+from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
 from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
 from agent.core.attachments import build_user_content
 from agent.core.doom_loop import check_for_doom_loop
+from agent.core.hub_artifacts import start_session_artifact_collection_task
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.tools.jobs_tool import CPU_FLAVORS
+from agent.tools.sandbox_tool import DEFAULT_CPU_SANDBOX_HARDWARE
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +55,12 @@ def _malformed_tool_name(message: Message) -> str | None:
     end = content.find(_MALFORMED_TOOL_SUFFIX, len(_MALFORMED_TOOL_PREFIX))
     if end == -1:
         return None
-    return content[len(_MALFORMED_TOOL_PREFIX):end]
+    return content[len(_MALFORMED_TOOL_PREFIX) : end]
 
 
 def _detect_repeated_malformed(
-    items: list[Message], threshold: int = 2,
+    items: list[Message],
+    threshold: int = 2,
 ) -> str | None:
     """Return the repeated malformed tool name if the tail contains a streak.
 
@@ -111,13 +118,42 @@ def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
     return True, None
 
 
-def _needs_approval(
+_IMMEDIATE_HF_JOB_RUNS = {"run", "uv"}
+
+
+@dataclass(frozen=True)
+class ApprovalDecision:
+    requires_approval: bool
+    auto_approved: bool = False
+    auto_approval_blocked: bool = False
+    block_reason: str | None = None
+    estimated_cost_usd: float | None = None
+    remaining_cap_usd: float | None = None
+    billable: bool = False
+
+
+def _operation(tool_args: dict) -> str:
+    return normalize_tool_operation(tool_args.get("operation"))
+
+
+def _is_immediate_hf_job_run(tool_name: str, tool_args: dict) -> bool:
+    return tool_name == "hf_jobs" and _operation(tool_args) in _IMMEDIATE_HF_JOB_RUNS
+
+
+def _is_scheduled_hf_job_run(tool_name: str, tool_args: dict) -> bool:
+    return tool_name == "hf_jobs" and is_scheduled_operation(_operation(tool_args))
+
+
+def _is_budgeted_auto_approval_target(tool_name: str, tool_args: dict) -> bool:
+    return tool_name == "sandbox_create" or _is_immediate_hf_job_run(
+        tool_name, tool_args
+    )
+
+
+def _base_needs_approval(
     tool_name: str, tool_args: dict, config: Config | None = None
 ) -> bool:
-    """Check if a tool call requires user approval before execution."""
-    # Yolo mode: skip all approvals
-    if config and config.yolo_mode:
-        return False
+    """Check if a tool call requires approval before YOLO policy is applied."""
 
     # If args are malformed, skip approval (validation error will be shown later)
     args_valid, _ = _validate_tool_args(tool_args)
@@ -125,11 +161,14 @@ def _needs_approval(
         return False
 
     if tool_name == "sandbox_create":
-        return True
+        hardware = tool_args.get("hardware") or DEFAULT_CPU_SANDBOX_HARDWARE
+        return hardware != DEFAULT_CPU_SANDBOX_HARDWARE
 
     if tool_name == "hf_jobs":
-        operation = tool_args.get("operation", "")
-        if operation not in ["run", "uv", "scheduled run", "scheduled uv"]:
+        operation = _operation(tool_args)
+        if is_scheduled_operation(operation):
+            return True
+        if operation not in _IMMEDIATE_HF_JOB_RUNS:
             return False
 
         # Check if this is a CPU-only job
@@ -179,6 +218,148 @@ def _needs_approval(
             return True
 
     return False
+
+
+def _needs_approval(
+    tool_name: str, tool_args: dict, config: Config | None = None
+) -> bool:
+    """Legacy sync approval predicate used by tests and CLI display helpers."""
+    if _is_scheduled_hf_job_run(tool_name, tool_args):
+        return True
+    if config and config.yolo_mode:
+        return False
+    return _base_needs_approval(tool_name, tool_args, config)
+
+
+def _session_auto_approval_enabled(session: Session | None) -> bool:
+    return bool(session and getattr(session, "auto_approval_enabled", False))
+
+
+def _effective_yolo_enabled(session: Session | None, config: Config | None) -> bool:
+    return bool(
+        (config and config.yolo_mode) or _session_auto_approval_enabled(session)
+    )
+
+
+def _remaining_budget_after_reservations(
+    session: Session | None, reserved_spend_usd: float
+) -> float | None:
+    if not session or getattr(session, "auto_approval_cost_cap_usd", None) is None:
+        return None
+    cap = float(getattr(session, "auto_approval_cost_cap_usd") or 0.0)
+    spent = float(getattr(session, "auto_approval_estimated_spend_usd", 0.0) or 0.0)
+    return round(max(0.0, cap - spent - reserved_spend_usd), 4)
+
+
+def _budget_block_reason(
+    estimate: CostEstimate,
+    *,
+    remaining_cap_usd: float | None,
+) -> str | None:
+    if estimate.estimated_cost_usd is None:
+        return estimate.block_reason or "Could not estimate the cost safely."
+    if (
+        remaining_cap_usd is not None
+        and estimate.estimated_cost_usd > remaining_cap_usd
+    ):
+        return (
+            f"Estimated cost ${estimate.estimated_cost_usd:.2f} exceeds "
+            f"remaining YOLO cap ${remaining_cap_usd:.2f}."
+        )
+    return None
+
+
+async def _approval_decision(
+    tool_name: str,
+    tool_args: dict,
+    session: Session,
+    *,
+    reserved_spend_usd: float = 0.0,
+) -> ApprovalDecision:
+    """Return the approval decision for one parsed tool call."""
+    config = session.config
+    base_requires_approval = _base_needs_approval(tool_name, tool_args, config)
+
+    # Scheduled jobs are recurring/unbounded enough that YOLO never bypasses
+    # the human confirmation, including legacy config.yolo_mode.
+    if _is_scheduled_hf_job_run(tool_name, tool_args):
+        return ApprovalDecision(
+            requires_approval=True,
+            auto_approval_blocked=_effective_yolo_enabled(session, config),
+            block_reason="Scheduled HF jobs always require manual approval.",
+        )
+
+    yolo_enabled = _effective_yolo_enabled(session, config)
+    budgeted_target = _is_budgeted_auto_approval_target(tool_name, tool_args)
+
+    # Cost caps are a session-scoped web policy. Legacy config.yolo_mode
+    # remains uncapped for CLI/headless, except for scheduled jobs above.
+    session_yolo_enabled = _session_auto_approval_enabled(session)
+    if yolo_enabled and budgeted_target and session_yolo_enabled:
+        estimate = await estimate_tool_cost(tool_name, tool_args, session=session)
+        remaining = _remaining_budget_after_reservations(session, reserved_spend_usd)
+        reason = _budget_block_reason(estimate, remaining_cap_usd=remaining)
+        if reason:
+            return ApprovalDecision(
+                requires_approval=True,
+                auto_approval_blocked=True,
+                block_reason=reason,
+                estimated_cost_usd=estimate.estimated_cost_usd,
+                remaining_cap_usd=remaining,
+                billable=estimate.billable,
+            )
+        if base_requires_approval:
+            return ApprovalDecision(
+                requires_approval=False,
+                auto_approved=True,
+                estimated_cost_usd=estimate.estimated_cost_usd,
+                remaining_cap_usd=remaining,
+                billable=estimate.billable,
+            )
+        return ApprovalDecision(
+            requires_approval=False,
+            estimated_cost_usd=estimate.estimated_cost_usd,
+            remaining_cap_usd=remaining,
+            billable=estimate.billable,
+        )
+
+    if base_requires_approval and yolo_enabled:
+        return ApprovalDecision(requires_approval=False, auto_approved=True)
+
+    return ApprovalDecision(requires_approval=base_requires_approval)
+
+
+def _record_estimated_spend(session: Session, decision: ApprovalDecision) -> None:
+    if not decision.billable or decision.estimated_cost_usd is None:
+        return
+    if hasattr(session, "add_auto_approval_estimated_spend"):
+        session.add_auto_approval_estimated_spend(decision.estimated_cost_usd)
+    else:
+        session.auto_approval_estimated_spend_usd = round(
+            float(getattr(session, "auto_approval_estimated_spend_usd", 0.0) or 0.0)
+            + float(decision.estimated_cost_usd),
+            4,
+        )
+
+
+async def _record_manual_approved_spend_if_needed(
+    session: Session,
+    tool_name: str,
+    tool_args: dict,
+) -> None:
+    if not _session_auto_approval_enabled(session):
+        return
+    if not _is_budgeted_auto_approval_target(tool_name, tool_args):
+        return
+    estimate = await estimate_tool_cost(tool_name, tool_args, session=session)
+    _record_estimated_spend(
+        session,
+        ApprovalDecision(
+            requires_approval=False,
+            billable=estimate.billable,
+            estimated_cost_usd=estimate.estimated_cost_usd,
+        ),
+    )
 
 
 # -- LLM retry constants --------------------------------------------------
@@ -238,15 +419,25 @@ def _is_transient_error(error: Exception) -> bool:
     """Return True for errors that are likely transient and worth retrying."""
     err_str = str(error).lower()
     transient_patterns = [
-        "timeout", "timed out",
-        "503", "service unavailable",
-        "502", "bad gateway",
-        "500", "internal server error",
-        "overloaded", "capacity",
-        "connection reset", "connection refused", "connection error",
-        "eof", "broken pipe",
+        "timeout",
+        "timed out",
+        "503",
+        "service unavailable",
+        "502",
+        "bad gateway",
+        "500",
+        "internal server error",
+        "overloaded",
+        "capacity",
+        "connection reset",
+        "connection refused",
+        "connection error",
+        "eof",
+        "broken pipe",
     ]
-    return _is_rate_limit_error(error) or any(pattern in err_str for pattern in transient_patterns)
+    return _is_rate_limit_error(error) or any(
+        pattern in err_str for pattern in transient_patterns
+    )
 
 
 def _is_effort_config_error(error: Exception) -> bool:
@@ -258,11 +449,14 @@ def _is_effort_config_error(error: Exception) -> bool:
     doesn't work for the current model. We heal the cache and retry once.
     """
     from agent.core.effort_probe import _is_invalid_effort, _is_thinking_unsupported
+
     return _is_thinking_unsupported(error) or _is_invalid_effort(error)
 
 
 async def _heal_effort_and_rebuild_params(
-    session: Session, error: Exception, llm_params: dict,
+    session: Session,
+    error: Exception,
+    llm_params: dict,
 ) -> dict:
     """Update the session's effort cache based on ``error`` and return new
     llm_params. Called only when ``_is_effort_config_error(error)`` is True.
@@ -273,7 +467,11 @@ async def _heal_effort_and_rebuild_params(
       • invalid-effort → re-run the full cascade probe; the result lands
         in the cache
     """
-    from agent.core.effort_probe import ProbeInconclusive, _is_thinking_unsupported, probe_effort
+    from agent.core.effort_probe import (
+        ProbeInconclusive,
+        _is_thinking_unsupported,
+        probe_effort,
+    )
 
     model = session.config.model_name
     if _is_thinking_unsupported(error):
@@ -282,11 +480,16 @@ async def _heal_effort_and_rebuild_params(
     else:
         try:
             outcome = await probe_effort(
-                model, session.config.reasoning_effort, session.hf_token,
+                model,
+                session.config.reasoning_effort,
+                session.hf_token,
+                session=session,
             )
             session.model_effective_effort[model] = outcome.effective_effort
             logger.info(
-                "healed: %s effort cascade → %s", model, outcome.effective_effort,
+                "healed: %s effort cascade → %s",
+                model,
+                outcome.effective_effort,
             )
         except ProbeInconclusive:
             # Transient during healing — strip thinking for safety, next
@@ -305,7 +508,11 @@ def _friendly_error_message(error: Exception) -> str | None:
     """Return a user-friendly message for known error types, or None to fall back to traceback."""
     err_str = str(error).lower()
 
-    if "authentication" in err_str or "unauthorized" in err_str or "invalid x-api-key" in err_str:
+    if (
+        "authentication" in err_str
+        or "unauthorized" in err_str
+        or "invalid x-api-key" in err_str
+    ):
         return (
             "Authentication failed — your API key is missing or invalid.\n\n"
             "To fix this, set the API key for your model provider:\n"
@@ -331,8 +538,7 @@ def _friendly_error_message(error: Exception) -> str | None:
         )
 
     if "model_not_found" in err_str or (
-        "model" in err_str
-        and ("not found" in err_str or "does not exist" in err_str)
+        "model" in err_str and ("not found" in err_str or "does not exist" in err_str)
     ):
         return (
             "Model not found. Use '/model' to list suggestions, or paste an "
@@ -344,23 +550,70 @@ def _friendly_error_message(error: Exception) -> str | None:
 
 
 async def _compact_and_notify(session: Session) -> None:
-    """Run compaction and send event if context was reduced."""
+    """Run compaction and send event if context was reduced.
+
+    Catches ``CompactionFailedError`` and ends the session cleanly instead
+    of letting the caller retry. Pre-2026-05-04 the caller looped on
+    ContextWindowExceededError → compact → re-trigger, burning Bedrock
+    budget at ~$3/Opus retry while the session never reached the upload
+    path (so the cost was invisible in the dataset).
+    """
+    from agent.context_manager.manager import CompactionFailedError
+
     cm = session.context_manager
     old_usage = cm.running_context_usage
     logger.debug(
         "Compaction check: usage=%d, max=%d, threshold=%d, needs_compact=%s",
-        old_usage, cm.model_max_tokens, cm.compaction_threshold, cm.needs_compaction,
+        old_usage,
+        cm.model_max_tokens,
+        cm.compaction_threshold,
+        cm.needs_compaction,
     )
-    await cm.compact(
-        model_name=session.config.model_name,
-        tool_specs=session.tool_router.get_tool_specs_for_llm(),
-        hf_token=session.hf_token,
-    )
+    try:
+        await cm.compact(
+            model_name=session.config.model_name,
+            tool_specs=session.tool_router.get_tool_specs_for_llm(),
+            hf_token=session.hf_token,
+            session=session,
+        )
+    except CompactionFailedError as e:
+        logger.error(
+            "Compaction failed for session %s: %s — terminating session",
+            session.session_id,
+            e,
+        )
+        # Persist the failure event so the dataset has a record of WHY this
+        # session ended (and the cost it incurred up to that point) even if
+        # save_and_upload_detached has issues downstream.
+        await session.send_event(
+            Event(
+                event_type="session_terminated",
+                data={
+                    "reason": "compaction_failed",
+                    "context_usage": cm.running_context_usage,
+                    "context_threshold": cm.compaction_threshold,
+                    "error": str(e)[:300],
+                    "user_message": (
+                        "Your conversation has grown too large to continue. "
+                        "The work you've done is saved — start a new session to keep going."
+                    ),
+                },
+            )
+        )
+        # Stop the agent loop; the finally in _run_session will fire
+        # cleanup_sandbox + save_trajectory so the dataset captures
+        # everything that did happen.
+        session.is_running = False
+        return
+
     new_usage = cm.running_context_usage
     if new_usage != old_usage:
         logger.warning(
             "Context compacted: %d -> %d tokens (max=%d, %d messages)",
-            old_usage, new_usage, cm.model_max_tokens, len(cm.items),
+            old_usage,
+            new_usage,
+            cm.model_max_tokens,
+            len(cm.items),
         )
         await session.send_event(
             Event(
@@ -399,6 +652,7 @@ async def _cleanup_on_cancel(session: Session) -> None:
 @dataclass
 class LLMResult:
     """Result from an LLM call (streaming or non-streaming)."""
+
     content: str | None
     tool_calls_acc: dict[int, dict]
     token_count: int
@@ -518,16 +772,18 @@ async def _maybe_heal_invalid_thinking_signature(
     if not stripped:
         return False
 
-    await session.send_event(Event(
-        event_type="tool_log",
-        data={
-            "tool": "system",
-            "log": (
-                "Anthropic rejected stale thinking signatures; retrying "
-                "without replayed thinking metadata."
-            ),
-        },
-    ))
+    await session.send_event(
+        Event(
+            event_type="tool_log",
+            data={
+                "tool": "system",
+                "log": (
+                    "Anthropic rejected stale thinking signatures; retrying "
+                    "without replayed thinking metadata."
+                ),
+            },
+        )
+    )
     return True
 
 
@@ -552,7 +808,9 @@ def _assistant_message_from_result(
     return Message(**kwargs)
 
 
-async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
+async def _call_llm_streaming(
+    session: Session, messages, tools, llm_params
+) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
     response = None
     _healed_effort = False  # one-shot safety net per call
@@ -578,11 +836,18 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
                 raise ContextWindowExceededError(str(e)) from e
             if not _healed_effort and _is_effort_config_error(e):
                 _healed_effort = True
-                llm_params = await _heal_effort_and_rebuild_params(session, e, llm_params)
-                await session.send_event(Event(
-                    event_type="tool_log",
-                    data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
-                ))
+                llm_params = await _heal_effort_and_rebuild_params(
+                    session, e, llm_params
+                )
+                await session.send_event(
+                    Event(
+                        event_type="tool_log",
+                        data={
+                            "tool": "system",
+                            "log": "Reasoning effort not supported for this model — adjusting and retrying.",
+                        },
+                    )
+                )
                 continue
             if await _maybe_heal_invalid_thinking_signature(
                 session,
@@ -596,12 +861,20 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
                 logger.warning(
                     "Transient LLM error (attempt %d/%d): %s — retrying in %ds",
-                    _llm_attempt + 1, _MAX_LLM_RETRIES, e, _delay,
+                    _llm_attempt + 1,
+                    _MAX_LLM_RETRIES,
+                    e,
+                    _delay,
                 )
-                await session.send_event(Event(
-                    event_type="tool_log",
-                    data={"tool": "system", "log": f"LLM connection error, retrying in {_delay}s..."},
-                ))
+                await session.send_event(
+                    Event(
+                        event_type="tool_log",
+                        data={
+                            "tool": "system",
+                            "log": f"LLM connection error, retrying in {_delay}s...",
+                        },
+                    )
+                )
                 await asyncio.sleep(_delay)
                 continue
             raise
@@ -642,16 +915,21 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
                 idx = tc_delta.index
                 if idx not in tool_calls_acc:
                     tool_calls_acc[idx] = {
-                        "id": "", "type": "function",
+                        "id": "",
+                        "type": "function",
                         "function": {"name": "", "arguments": ""},
                     }
                 if tc_delta.id:
                     tool_calls_acc[idx]["id"] = tc_delta.id
                 if tc_delta.function:
                     if tc_delta.function.name:
-                        tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
+                        tool_calls_acc[idx]["function"]["name"] += (
+                            tc_delta.function.name
+                        )
                     if tc_delta.function.arguments:
-                        tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+                        tool_calls_acc[idx]["function"]["arguments"] += (
+                            tc_delta.function.arguments
+                        )
 
         if hasattr(chunk, "usage") and chunk.usage:
             token_count = chunk.usage.total_tokens
@@ -671,7 +949,9 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
             rebuilt = stream_chunk_builder(chunks, messages=messages)
             if rebuilt and getattr(rebuilt, "choices", None):
                 rebuilt_msg = rebuilt.choices[0].message
-                thinking_blocks, reasoning_content = _extract_thinking_state(rebuilt_msg)
+                thinking_blocks, reasoning_content = _extract_thinking_state(
+                    rebuilt_msg
+                )
         except Exception:
             logger.debug("Failed to rebuild streaming thinking state", exc_info=True)
 
@@ -686,7 +966,9 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     )
 
 
-async def _call_llm_non_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
+async def _call_llm_non_streaming(
+    session: Session, messages, tools, llm_params
+) -> LLMResult:
     """Call the LLM without streaming, emit assistant_message at the end."""
     response = None
     _healed_effort = False
@@ -711,11 +993,18 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
                 raise ContextWindowExceededError(str(e)) from e
             if not _healed_effort and _is_effort_config_error(e):
                 _healed_effort = True
-                llm_params = await _heal_effort_and_rebuild_params(session, e, llm_params)
-                await session.send_event(Event(
-                    event_type="tool_log",
-                    data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
-                ))
+                llm_params = await _heal_effort_and_rebuild_params(
+                    session, e, llm_params
+                )
+                await session.send_event(
+                    Event(
+                        event_type="tool_log",
+                        data={
+                            "tool": "system",
+                            "log": "Reasoning effort not supported for this model — adjusting and retrying.",
+                        },
+                    )
+                )
                 continue
             if await _maybe_heal_invalid_thinking_signature(
                 session,
@@ -729,12 +1018,20 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
                 logger.warning(
                     "Transient LLM error (attempt %d/%d): %s — retrying in %ds",
-                    _llm_attempt + 1, _MAX_LLM_RETRIES, e, _delay,
+                    _llm_attempt + 1,
+                    _MAX_LLM_RETRIES,
+                    e,
+                    _delay,
                 )
-                await session.send_event(Event(
-                    event_type="tool_log",
-                    data={"tool": "system", "log": f"LLM connection error, retrying in {_delay}s..."},
-                ))
+                await session.send_event(
+                    Event(
+                        event_type="tool_log",
+                        data={
+                            "tool": "system",
+                            "log": f"LLM connection error, retrying in {_delay}s...",
+                        },
+                    )
+                )
                 await asyncio.sleep(_delay)
                 continue
             raise
@@ -827,7 +1124,9 @@ class Handlers:
 
     @staticmethod
     async def run_agent(
-        session: Session, text: str, attachments: list[dict[str, Any]] | None = None,
+        session: Session,
+        text: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> str | None:
         """
         Handle user input (like user_input_or_turn in codex.rs:1291)
@@ -887,8 +1186,15 @@ class Handlers:
             if session.is_cancelled:
                 break
 
-            # Compact before calling the LLM if context is near the limit
+            # Compact before calling the LLM if context is near the limit.
+            # When _compact_and_notify catches CompactionFailedError it sets
+            # session.is_running = False; we MUST exit the loop here, otherwise
+            # the LLM call below fires with an over-threshold context, hits
+            # ContextWindowExceededError, and we end up looping again on the
+            # except path — exactly the bug this PR is supposed to fix.
             await _compact_and_notify(session)
+            if not session.is_running:
+                break
 
             # Doom-loop detection: break out of repeated tool call patterns
             doom_prompt = check_for_doom_loop(session.context_manager.items)
@@ -932,12 +1238,18 @@ class Handlers:
                 llm_params = _resolve_llm_params(
                     session.config.model_name,
                     session.hf_token,
-                    reasoning_effort=session.effective_effort_for(session.config.model_name),
+                    reasoning_effort=session.effective_effort_for(
+                        session.config.model_name
+                    ),
                 )
                 if session.stream:
-                    llm_result = await _call_llm_streaming(session, messages, tools, llm_params)
+                    llm_result = await _call_llm_streaming(
+                        session, messages, tools, llm_params
+                    )
                 else:
-                    llm_result = await _call_llm_non_streaming(session, messages, tools, llm_params)
+                    llm_result = await _call_llm_non_streaming(
+                        session, messages, tools, llm_params
+                    )
 
                 content = llm_result.content
                 tool_calls_acc = llm_result.tool_calls_acc
@@ -984,7 +1296,10 @@ class Handlers:
                     await session.send_event(
                         Event(
                             event_type="tool_log",
-                            data={"tool": "system", "log": f"Output truncated — retrying with smaller content ({dropped_names})"},
+                            data={
+                                "tool": "system",
+                                "log": f"Output truncated — retrying with smaller content ({dropped_names})",
+                            },
                         )
                     )
                     iteration += 1
@@ -1047,7 +1362,8 @@ class Handlers:
                     except (json.JSONDecodeError, TypeError, ValueError):
                         logger.warning(
                             "Malformed arguments for tool_call %s (%s) — skipping",
-                            tc.id, tc.function.name,
+                            tc.id,
+                            tc.function.name,
                         )
                         tc.function.arguments = "{}"
                         bad_tools.append(tc)
@@ -1068,48 +1384,92 @@ class Handlers:
                         f"arguments and was NOT executed. Retry with smaller content — "
                         f"for 'write', split into multiple smaller writes using 'edit'."
                     )
-                    session.context_manager.add_message(Message(
-                        role="tool",
-                        content=error_msg,
-                        tool_call_id=tc.id,
-                        name=tc.function.name,
-                    ))
-                    await session.send_event(Event(
-                        event_type="tool_call",
-                        data={"tool": tc.function.name, "arguments": {}, "tool_call_id": tc.id},
-                    ))
-                    await session.send_event(Event(
-                        event_type="tool_output",
-                        data={"tool": tc.function.name, "tool_call_id": tc.id, "output": error_msg, "success": False},
-                    ))
+                    session.context_manager.add_message(
+                        Message(
+                            role="tool",
+                            content=error_msg,
+                            tool_call_id=tc.id,
+                            name=tc.function.name,
+                        )
+                    )
+                    await session.send_event(
+                        Event(
+                            event_type="tool_call",
+                            data={
+                                "tool": tc.function.name,
+                                "arguments": {},
+                                "tool_call_id": tc.id,
+                            },
+                        )
+                    )
+                    await session.send_event(
+                        Event(
+                            event_type="tool_output",
+                            data={
+                                "tool": tc.function.name,
+                                "tool_call_id": tc.id,
+                                "output": error_msg,
+                                "success": False,
+                            },
+                        )
+                    )
 
                 # ── Cancellation check: before tool execution ──
                 if session.is_cancelled:
                     break
 
-                # Separate good tools into approval-required vs auto-execute
-                approval_required_tools: list[tuple[ToolCall, str, dict]] = []
-                non_approval_tools: list[tuple[ToolCall, str, dict]] = []
+                # Separate good tools into approval-required vs auto-execute.
+                # Track reserved spend while classifying a batch so two
+                # auto-approved jobs in one model response cannot jointly
+                # exceed the remaining session cap.
+                approval_required_tools: list[
+                    tuple[ToolCall, str, dict, ApprovalDecision]
+                ] = []
+                non_approval_tools: list[
+                    tuple[ToolCall, str, dict, ApprovalDecision]
+                ] = []
+                reserved_auto_spend_usd = 0.0
                 for tc, tool_name, tool_args in good_tools:
-                    if _needs_approval(tool_name, tool_args, session.config):
-                        approval_required_tools.append((tc, tool_name, tool_args))
+                    decision = await _approval_decision(
+                        tool_name,
+                        tool_args,
+                        session,
+                        reserved_spend_usd=reserved_auto_spend_usd,
+                    )
+                    if decision.requires_approval:
+                        approval_required_tools.append(
+                            (tc, tool_name, tool_args, decision)
+                        )
                     else:
-                        non_approval_tools.append((tc, tool_name, tool_args))
+                        non_approval_tools.append((tc, tool_name, tool_args, decision))
+                        if (
+                            decision.auto_approved
+                            and decision.billable
+                            and decision.estimated_cost_usd is not None
+                        ):
+                            reserved_auto_spend_usd += decision.estimated_cost_usd
 
                 # Execute non-approval tools (in parallel when possible)
                 if non_approval_tools:
                     # 1. Validate args upfront
                     parsed_tools: list[
-                        tuple[ToolCall, str, dict, bool, str]
+                        tuple[ToolCall, str, dict, ApprovalDecision, bool, str]
                     ] = []
-                    for tc, tool_name, tool_args in non_approval_tools:
+                    for tc, tool_name, tool_args, decision in non_approval_tools:
                         args_valid, error_msg = _validate_tool_args(tool_args)
                         parsed_tools.append(
-                            (tc, tool_name, tool_args, args_valid, error_msg)
+                            (tc, tool_name, tool_args, decision, args_valid, error_msg)
                         )
 
                     # 2. Send all tool_call events upfront (so frontend shows them all)
-                    for tc, tool_name, tool_args, args_valid, _ in parsed_tools:
+                    for (
+                        tc,
+                        tool_name,
+                        tool_args,
+                        _decision,
+                        args_valid,
+                        _,
+                    ) in parsed_tools:
                         if args_valid:
                             await session.send_event(
                                 Event(
@@ -1127,22 +1487,27 @@ class Handlers:
                         tc: ToolCall,
                         name: str,
                         args: dict,
+                        decision: ApprovalDecision,
                         valid: bool,
                         err: str,
                     ) -> tuple[ToolCall, str, dict, str, bool]:
                         if not valid:
                             return (tc, name, args, err, False)
+                        if decision.billable:
+                            _record_estimated_spend(session, decision)
                         out, ok = await session.tool_router.call_tool(
                             name, args, session=session, tool_call_id=tc.id
                         )
                         return (tc, name, args, out, ok)
 
-                    gather_task = asyncio.ensure_future(asyncio.gather(
-                        *[
-                            _exec_tool(tc, name, args, valid, err)
-                            for tc, name, args, valid, err in parsed_tools
-                        ]
-                    ))
+                    gather_task = asyncio.ensure_future(
+                        asyncio.gather(
+                            *[
+                                _exec_tool(tc, name, args, decision, valid, err)
+                                for tc, name, args, decision, valid, err in parsed_tools
+                            ]
+                        )
+                    )
                     cancel_task = asyncio.ensure_future(session._cancelled.wait())
 
                     done, _ = await asyncio.wait(
@@ -1157,12 +1522,18 @@ class Handlers:
                         except asyncio.CancelledError:
                             pass
                         # Notify frontend that in-flight tools were cancelled
-                        for tc, name, _args, valid, _ in parsed_tools:
+                        for tc, name, _args, _decision, valid, _ in parsed_tools:
                             if valid:
-                                await session.send_event(Event(
-                                    event_type="tool_state_change",
-                                    data={"tool_call_id": tc.id, "tool": name, "state": "cancelled"},
-                                ))
+                                await session.send_event(
+                                    Event(
+                                        event_type="tool_state_change",
+                                        data={
+                                            "tool_call_id": tc.id,
+                                            "tool": name,
+                                            "state": "cancelled",
+                                        },
+                                    )
+                                )
                         await _cleanup_on_cancel(session)
                         break
 
@@ -1195,30 +1566,60 @@ class Handlers:
                 if approval_required_tools:
                     # Prepare batch approval data
                     tools_data = []
-                    for tc, tool_name, tool_args in approval_required_tools:
+                    blocked_payloads = []
+                    for tc, tool_name, tool_args, decision in approval_required_tools:
                         # Resolve sandbox file paths for hf_jobs scripts so the
                         # frontend can display & edit the actual file content.
-                        if tool_name == "hf_jobs" and isinstance(tool_args.get("script"), str):
+                        if tool_name == "hf_jobs" and isinstance(
+                            tool_args.get("script"), str
+                        ):
                             from agent.tools.sandbox_tool import resolve_sandbox_script
+
                             sandbox = getattr(session, "sandbox", None)
-                            resolved, _ = await resolve_sandbox_script(sandbox, tool_args["script"])
+                            resolved, _ = await resolve_sandbox_script(
+                                sandbox, tool_args["script"]
+                            )
                             if resolved:
                                 tool_args = {**tool_args, "script": resolved}
 
-                        tools_data.append({
+                        tool_payload = {
                             "tool": tool_name,
                             "arguments": tool_args,
                             "tool_call_id": tc.id,
-                        })
+                        }
+                        if decision.auto_approval_blocked:
+                            tool_payload.update(
+                                {
+                                    "auto_approval_blocked": True,
+                                    "block_reason": decision.block_reason,
+                                    "estimated_cost_usd": decision.estimated_cost_usd,
+                                    "remaining_cap_usd": decision.remaining_cap_usd,
+                                }
+                            )
+                            blocked_payloads.append(tool_payload)
+                        tools_data.append(tool_payload)
 
-                    await session.send_event(Event(
-                        event_type="approval_required",
-                        data={"tools": tools_data, "count": len(tools_data)},
-                    ))
+                    event_data = {"tools": tools_data, "count": len(tools_data)}
+                    if blocked_payloads:
+                        first = blocked_payloads[0]
+                        event_data.update(
+                            {
+                                "auto_approval_blocked": True,
+                                "block_reason": first.get("block_reason"),
+                                "estimated_cost_usd": first.get("estimated_cost_usd"),
+                                "remaining_cap_usd": first.get("remaining_cap_usd"),
+                            }
+                        )
+                    await session.send_event(
+                        Event(
+                            event_type="approval_required",
+                            data=event_data,
+                        )
+                    )
 
                     # Store all approval-requiring tools (ToolCall objects for execution)
                     session.pending_approval = {
-                        "tool_calls": [tc for tc, _, _ in approval_required_tools],
+                        "tool_calls": [tc for tc, _, _, _ in approval_required_tools],
                     }
 
                     # Return early - wait for EXEC_APPROVAL operation
@@ -1228,15 +1629,24 @@ class Handlers:
                 iteration += 1
 
             except ContextWindowExceededError:
-                # Force compact and retry this iteration
+                # Force compact and retry this iteration.
                 cm = session.context_manager
                 logger.warning(
                     "ContextWindowExceededError at iteration %d — forcing compaction "
                     "(usage=%d, model_max_tokens=%d, messages=%d)",
-                    iteration, cm.running_context_usage, cm.model_max_tokens, len(cm.items),
+                    iteration,
+                    cm.running_context_usage,
+                    cm.model_max_tokens,
+                    len(cm.items),
                 )
                 cm.running_context_usage = cm.model_max_tokens + 1
                 await _compact_and_notify(session)
+                # Same guard as the top of the loop: if compaction couldn't
+                # bring us under threshold, _compact_and_notify has already
+                # emitted session_terminated and set is_running=False. Continue
+                # would just re-call the LLM with the same too-big context.
+                if not session.is_running:
+                    break
                 continue
 
             except Exception as e:
@@ -1411,6 +1821,8 @@ class Handlers:
                 )
             )
 
+            await _record_manual_approved_spend_if_needed(session, tool_name, tool_args)
+
             output, success = await session.tool_router.call_tool(
                 tool_name, tool_args, session=session, tool_call_id=tc.id
             )
@@ -1419,13 +1831,15 @@ class Handlers:
 
         # Execute all approved tools concurrently (cancellable)
         if approved_tasks:
-            gather_task = asyncio.ensure_future(asyncio.gather(
-                *[
-                    execute_tool(tc, tool_name, tool_args, was_edited)
-                    for tc, tool_name, tool_args, was_edited in approved_tasks
-                ],
-                return_exceptions=True,
-            ))
+            gather_task = asyncio.ensure_future(
+                asyncio.gather(
+                    *[
+                        execute_tool(tc, tool_name, tool_args, was_edited)
+                        for tc, tool_name, tool_args, was_edited in approved_tasks
+                    ],
+                    return_exceptions=True,
+                )
+            )
             cancel_task = asyncio.ensure_future(session._cancelled.wait())
 
             done, _ = await asyncio.wait(
@@ -1441,10 +1855,16 @@ class Handlers:
                     pass
                 # Notify frontend that approved tools were cancelled
                 for tc, tool_name, _args, _was_edited in approved_tasks:
-                    await session.send_event(Event(
-                        event_type="tool_state_change",
-                        data={"tool_call_id": tc.id, "tool": tool_name, "state": "cancelled"},
-                    ))
+                    await session.send_event(
+                        Event(
+                            event_type="tool_state_change",
+                            data={
+                                "tool_call_id": tc.id,
+                                "tool": tool_name,
+                                "state": "cancelled",
+                            },
+                        )
+                    )
                 await _cleanup_on_cancel(session)
                 await session.send_event(Event(event_type="interrupted"))
                 session.increment_turn()
@@ -1597,20 +2017,30 @@ async def submission_loop(
 
     # Create session with tool router
     session = Session(
-        event_queue, config=config, tool_router=tool_router, hf_token=hf_token,
-        user_id=user_id, local_mode=local_mode, stream=stream,
+        event_queue,
+        config=config,
+        tool_router=tool_router,
+        hf_token=hf_token,
+        user_id=user_id,
+        local_mode=local_mode,
+        stream=stream,
         notification_gateway=notification_gateway,
         notification_destinations=notification_destinations,
         defer_turn_complete_notification=defer_turn_complete_notification,
     )
     if session_holder is not None:
         session_holder[0] = session
+    start_session_artifact_collection_task(session, token=hf_token)
     logger.info("Agent loop started")
 
-    # Retry any failed uploads from previous sessions (fire-and-forget)
+    # Retry any failed uploads from previous sessions (fire-and-forget).
+    # Includes the personal trace repo when enabled so a session that failed
+    # to publish to the user's HF dataset gets a fresh attempt on next run.
     if config and config.save_sessions:
         Session.retry_failed_uploads_detached(
-            directory="session_logs", repo_id=config.session_dataset_repo
+            directory="session_logs",
+            repo_id=config.session_dataset_repo,
+            personal_repo_id=session._personal_trace_repo_id(),
         )
 
     try:
@@ -1618,10 +2048,13 @@ async def submission_loop(
         async with tool_router:
             # Emit ready event after initialization
             await session.send_event(
-                Event(event_type="ready", data={
-                    "message": "Agent initialized",
-                    "tool_count": len(tool_router.tools),
-                })
+                Event(
+                    event_type="ready",
+                    data={
+                        "message": "Agent initialized",
+                        "tool_count": len(tool_router.tools),
+                    },
+                )
             )
 
             while session.is_running:

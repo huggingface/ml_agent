@@ -10,18 +10,18 @@ from __future__ import annotations
 # ── Unicode normalization map ────────────────────────────────────────────
 
 UNICODE_MAP = {
-    "\u2013": "-",   # en-dash
-    "\u2014": "-",   # em-dash
-    "\u2212": "-",   # minus sign
-    "\u2018": "'",   # left single quote
-    "\u2019": "'",   # right single quote
-    "\u201c": '"',   # left double quote
-    "\u201d": '"',   # right double quote
-    "\u00a0": " ",   # non-breaking space
-    "\u2003": " ",   # em space
-    "\u2002": " ",   # en space
-    "\u200b": "",    # zero-width space
-    "\ufeff": "",    # BOM
+    "\u2013": "-",  # en-dash
+    "\u2014": "-",  # em-dash
+    "\u2212": "-",  # minus sign
+    "\u2018": "'",  # left single quote
+    "\u2019": "'",  # right single quote
+    "\u201c": '"',  # left double quote
+    "\u201d": '"',  # right double quote
+    "\u00a0": " ",  # non-breaking space
+    "\u2003": " ",  # em space
+    "\u2002": " ",  # en space
+    "\u200b": "",  # zero-width space
+    "\ufeff": "",  # BOM
 }
 
 
@@ -59,12 +59,12 @@ def fuzzy_find(content: str, pattern: str) -> tuple[int | None, str | None]:
         line_start_map[i] = original byte offset of the start of line i.
         """
         orig_lines = text.split("\n")
-        stripped_lines = [strip_fn(l) for l in orig_lines]
+        stripped_lines = [strip_fn(line) for line in orig_lines]
         return "\n".join(stripped_lines), orig_lines, stripped_lines
 
     # Pass 2 — right-trim
     c_rt, c_orig_lines, c_rt_lines = _build_stripped(content, str.rstrip)
-    p_rt = "\n".join(l.rstrip() for l in pattern.split("\n"))
+    p_rt = "\n".join(line.rstrip() for line in pattern.split("\n"))
     idx = c_rt.find(p_rt)
     if idx != -1:
         orig_idx = _map_back(idx, c_orig_lines, c_rt_lines)
@@ -72,7 +72,7 @@ def fuzzy_find(content: str, pattern: str) -> tuple[int | None, str | None]:
 
     # Pass 3 — both-sides trim
     c_st, _, c_st_lines = _build_stripped(content, str.strip)
-    p_st = "\n".join(l.strip() for l in pattern.split("\n"))
+    p_st = "\n".join(line.strip() for line in pattern.split("\n"))
     idx = c_st.find(p_st)
     if idx != -1:
         orig_idx = _map_back(idx, c_orig_lines, c_st_lines)
@@ -114,7 +114,9 @@ def _map_back(
     return 0
 
 
-def fuzzy_find_original_match(content: str, pattern: str) -> tuple[str | None, str | None]:
+def fuzzy_find_original_match(
+    content: str, pattern: str
+) -> tuple[str | None, str | None]:
     """Find the *original* text in content that matches pattern fuzzily.
 
     Returns (original_matched_text, match_note) or (None, None).
@@ -224,7 +226,9 @@ def apply_edit(
             return new_content, 1, fuzzy_note
 
     else:
-        raise ValueError(f"Unknown edit mode: {mode}. Use replace, append_after, or prepend_before.")
+        raise ValueError(
+            f"Unknown edit mode: {mode}. Use replace, append_after, or prepend_before."
+        )
 
 
 # ── Syntax validation (Python) ───────────────────────────────────────────
@@ -255,14 +259,15 @@ def validate_python(content: str, path: str = "") -> list[str]:
         return warnings
 
     # 2. Training script heuristics
-    if any(kw in content for kw in ("TrainingArguments", "SFTConfig", "DPOConfig", "GRPOConfig")):
+    if any(
+        kw in content
+        for kw in ("TrainingArguments", "SFTConfig", "DPOConfig", "GRPOConfig")
+    ):
         if "push_to_hub" not in content:
             warnings.append(
                 "Training script warning: no 'push_to_hub' found — model may be lost when job ends"
             )
         if "hub_model_id" not in content:
-            warnings.append(
-                "Training script warning: no 'hub_model_id' found"
-            )
+            warnings.append("Training script warning: no 'hub_model_id' found")
 
     return warnings

@@ -1,23 +1,30 @@
-"""Daily quota for Claude session creations.
+"""Daily quota for premium model session creations.
 
-Tracks per-user Claude session starts against a daily cap derived from the
-user's HF plan. MongoDB is the source of truth when configured; the
+Tracks per-user premium model session starts against a daily cap derived from
+the user's HF plan. MongoDB is the source of truth when configured; the
 in-process dict remains the fallback for local/dev/test runs.
 
-Unit: session *creations*, not messages. A user who selects Claude in a new
-session consumes one quota point; switching an existing Claude session to
-Claude again doesn't (`AgentSession.claude_counted` guards that).
+The public names still say ``claude`` because this quota bucket originally
+only covered Claude and the persisted session field uses that name.
+
+Unit: session *creations*, not messages. A user who sends with a premium model
+in a new session consumes one quota point; switching an already-counted session
+back to a premium model doesn't (`AgentSession.claude_counted` guards that).
 
 Cap tiers:
   free user   → CLAUDE_FREE_DAILY (1)
-  pro / org   → CLAUDE_PRO_DAILY  (20)
+  pro user    → CLAUDE_PRO_DAILY  (20)
 """
 
 import asyncio
 import os
 from datetime import UTC, datetime
 
-from agent.core.session_persistence import NoopSessionStore, get_session_store, _reset_store_for_tests
+from agent.core.session_persistence import (
+    NoopSessionStore,
+    get_session_store,
+    _reset_store_for_tests,
+)
 
 CLAUDE_FREE_DAILY: int = int(os.environ.get("CLAUDE_FREE_DAILY", "1"))
 CLAUDE_PRO_DAILY: int = int(os.environ.get("CLAUDE_PRO_DAILY", "20"))
@@ -33,7 +40,7 @@ def _today() -> str:
 
 def daily_cap_for(plan: str | None) -> int:
     """Return the daily Claude-session cap for the given plan."""
-    return CLAUDE_FREE_DAILY if (plan or "free") == "free" else CLAUDE_PRO_DAILY
+    return CLAUDE_PRO_DAILY if plan == "pro" else CLAUDE_FREE_DAILY
 
 
 async def get_claude_used_today(user_id: str) -> int:

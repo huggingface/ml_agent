@@ -1,7 +1,8 @@
 """Opt-in live sandbox communication test.
 
-This test creates a real Hugging Face Space sandbox, verifies that unauthenticated
-requests are rejected, then exercises the authenticated agent client end-to-end.
+This test creates a real private Hugging Face Space sandbox, verifies that
+unauthenticated requests are rejected, then exercises the authenticated agent
+client end-to-end.
 It is skipped unless ``ML_INTERN_LIVE_SANDBOX_TESTS=1`` and ``HF_TOKEN`` are set.
 """
 
@@ -41,7 +42,7 @@ def test_live_sandbox_authenticated_agent_communication():
             owner=owner,
             name="ml-intern-live-auth",
             hardware="cpu-basic",
-            private=False,
+            private=True,
             token=token,
             secrets={"HF_TOKEN": token},
             wait_timeout=900,
@@ -54,7 +55,11 @@ def test_live_sandbox_authenticated_agent_communication():
         )
         try:
             denied = unauthenticated.post("exists", json={"path": "/tmp"})
-            assert denied.status_code == 401
+            assert denied.status_code in {
+                401,
+                403,
+                404,
+            }  # HF private-Space edge may 404 to avoid leaking existence
         finally:
             unauthenticated.close()
 

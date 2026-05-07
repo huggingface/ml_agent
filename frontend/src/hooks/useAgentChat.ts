@@ -36,7 +36,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
 
-  const { setNeedsAttention } = useSessionStore();
+  const { setNeedsAttention, updateSessionYolo } = useSessionStore();
 
   // Helper: update this session's state (mirrors to globals if active)
   const updateSession = useAgentStore.getState().updateSession;
@@ -60,9 +60,6 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       },
       onError: (error: string) => {
         updateSession(sessionId, { isProcessing: false });
-        if (isActiveRef.current) {
-          useAgentStore.getState().setError(error);
-        }
         callbacksRef.current.onError?.(error);
       },
       onProcessing: () => {
@@ -185,6 +182,20 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       onApprovalRequired: (tools) => {
         if (!tools.length) return;
         setNeedsAttention(sessionId, true);
+
+        const store = useAgentStore.getState();
+        for (const tool of tools) {
+          store.setToolBudgetBlock(
+            tool.tool_call_id,
+            tool.auto_approval_blocked
+              ? {
+                  reason: tool.block_reason ?? null,
+                  estimatedCostUsd: tool.estimated_cost_usd ?? null,
+                  remainingCapUsd: tool.remaining_cap_usd ?? null,
+                }
+              : null,
+          );
+        }
 
         updateSession(sessionId, { activityStatus: { type: 'waiting-approval' } });
 
@@ -346,7 +357,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onError: (error) => {
       updateSession(sessionId, { isProcessing: false });
-      // Claude daily-cap: open the cap dialog instead of the generic error
+      // Premium-model daily cap: open the cap dialog instead of the generic error
       // banner. Transport marks the error with this sentinel.
       if (error.message === 'CLAUDE_QUOTA_EXHAUSTED') {
         if (isActiveRef.current) {
@@ -355,9 +366,6 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         return;
       }
       logger.error('useChat error:', error);
-      if (isActiveRef.current) {
-        useAgentStore.getState().setError(error.message);
-      }
     },
   });
 
@@ -480,6 +488,9 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
             );
             if (pendingIds.size > 0) setNeedsAttention(sessionId, true);
           }
+          if (info.auto_approval) {
+            updateSessionYolo(sessionId, info.auto_approval);
+          }
           return { data, pendingIds, info };
         }
         return { data, pendingIds, info: null };
@@ -562,7 +573,15 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
             return true;
           } else if (et === 'approval_required') {
             sideChannel.onApprovalRequired(
-              (event.data?.tools || []) as Array<{ tool: string; arguments: Record<string, unknown>; tool_call_id: string }>,
+              (event.data?.tools || []) as Array<{
+                tool: string;
+                arguments: Record<string, unknown>;
+                tool_call_id: string;
+                auto_approval_blocked?: boolean;
+                block_reason?: string | null;
+                estimated_cost_usd?: number | null;
+                remaining_cap_usd?: number | null;
+              }>,
             );
             stopReconnect();
             const result = await hydrateMessages();

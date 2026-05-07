@@ -68,6 +68,10 @@ export interface ApprovalToolItem {
   tool: string;
   arguments: Record<string, unknown>;
   tool_call_id: string;
+  auto_approval_blocked?: boolean;
+  block_reason?: string | null;
+  estimated_cost_usd?: number | null;
+  remaining_cap_usd?: number | null;
 }
 
 export interface TurnCompleteEventData {

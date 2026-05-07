@@ -1,10 +1,8 @@
 """Tests for backend/user_quotas.py — the in-memory Claude daily-quota store."""
 
 import asyncio
-import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -29,16 +27,13 @@ def _reset_store():
 def test_daily_cap_for_known_plans():
     assert user_quotas.daily_cap_for("free") == user_quotas.CLAUDE_FREE_DAILY
     assert user_quotas.daily_cap_for("pro") == user_quotas.CLAUDE_PRO_DAILY
-    assert user_quotas.daily_cap_for("org") == user_quotas.CLAUDE_PRO_DAILY
+    assert user_quotas.daily_cap_for("org") == user_quotas.CLAUDE_FREE_DAILY
 
 
 def test_daily_cap_for_unknown_or_missing_defaults_to_free():
     assert user_quotas.daily_cap_for(None) == user_quotas.CLAUDE_FREE_DAILY
     assert user_quotas.daily_cap_for("") == user_quotas.CLAUDE_FREE_DAILY
-    # Anything we don't recognize as the Pro/Org tier gets the Pro cap because
-    # the function's contract is "free" is the only downgraded tier. If that
-    # ever flips, this test will flip too — adjust consciously.
-    assert user_quotas.daily_cap_for("mystery") == user_quotas.CLAUDE_PRO_DAILY
+    assert user_quotas.daily_cap_for("mystery") == user_quotas.CLAUDE_FREE_DAILY
 
 
 @pytest.mark.asyncio

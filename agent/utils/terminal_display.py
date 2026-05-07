@@ -2,6 +2,7 @@
 Terminal display utilities — rich-powered CLI formatting.
 """
 
+import asyncio
 import re
 
 from rich.console import Console
@@ -57,23 +58,26 @@ def _clip_to_width(s: str, width: int) -> str:
         out.append("\033[0m…")
     return "".join(out)
 
-_THEME = Theme({
-    "tool.name": "bold rgb(255,200,80)",
-    "tool.args": "dim",
-    "tool.ok": "dim green",
-    "tool.fail": "dim red",
-    "info": "dim",
-    "muted": "dim",
-    # Markdown emphasis colors
-    "markdown.strong": "bold rgb(255,200,80)",
-    "markdown.emphasis": "italic rgb(180,140,40)",
-    "markdown.code": "rgb(120,220,255)",
-    "markdown.code_block": "rgb(120,220,255)",
-    "markdown.link": "underline rgb(90,180,255)",
-    "markdown.h1": "bold rgb(255,200,80)",
-    "markdown.h2": "bold rgb(240,180,95)",
-    "markdown.h3": "bold rgb(220,165,100)",
-})
+
+_THEME = Theme(
+    {
+        "tool.name": "bold rgb(255,200,80)",
+        "tool.args": "dim",
+        "tool.ok": "dim green",
+        "tool.fail": "dim red",
+        "info": "dim",
+        "muted": "dim",
+        # Markdown emphasis colors
+        "markdown.strong": "bold rgb(255,200,80)",
+        "markdown.emphasis": "italic rgb(180,140,40)",
+        "markdown.code": "rgb(120,220,255)",
+        "markdown.code_block": "rgb(120,220,255)",
+        "markdown.link": "underline rgb(90,180,255)",
+        "markdown.h1": "bold rgb(255,200,80)",
+        "markdown.h2": "bold rgb(240,180,95)",
+        "markdown.h3": "bold rgb(220,165,100)",
+    }
+)
 
 _console = Console(theme=_THEME, highlight=False)
 
@@ -86,6 +90,7 @@ def get_console() -> Console:
 
 
 # ── Banner ─────────────────────────────────────────────────────────────
+
 
 def print_banner(model: str | None = None, hf_user: str | None = None) -> None:
     """Print particle logo then CRT boot sequence with system info."""
@@ -120,12 +125,16 @@ def print_banner(model: str | None = None, hf_user: str | None = None) -> None:
 
 # ── Init progress ──────────────────────────────────────────────────────
 
+
 def print_init_done(tool_count: int = 0) -> None:
     import time
+
     f = _console.file
     # Overwrite the "Tools: loading..." line with actual count
-    f.write(f"\033[A\033[A\033[A\033[K")  # Move up 3 lines (blank + help + blank) then up to tools line
-    f.write(f"\033[A\033[K")
+    f.write(
+        "\033[A\033[A\033[A\033[K"
+    )  # Move up 3 lines (blank + help + blank) then up to tools line
+    f.write("\033[A\033[K")
     gold = "\033[38;2;180;140;40m"
     reset = "\033[0m"
     tool_text = f"{_I}  Tools: {tool_count} loaded"
@@ -135,16 +144,22 @@ def print_init_done(tool_count: int = 0) -> None:
         time.sleep(0.012)
     f.write("\n\n")
     # Reprint the help line
-    f.write(f"{_I}\033[38;2;255;200;80m/help for commands · /model to switch · /quit to exit{reset}\n\n")
+    f.write(
+        f"{_I}\033[38;2;255;200;80m/help for commands · /model to switch · /quit to exit{reset}\n\n"
+    )
     # Ready message — minimal padding
-    f.write(f"{_I}\033[38;2;255;200;80mReady. Let's build something impressive.{reset}\n")
+    f.write(
+        f"{_I}\033[38;2;255;200;80mReady. Let's build something impressive.{reset}\n"
+    )
     f.flush()
 
 
 # ── Tool calls ─────────────────────────────────────────────────────────
 
+
 def print_tool_call(tool_name: str, args_preview: str) -> None:
     import time
+
     f = _console.file
     # CRT-style: type out tool name in HF yellow
     gold = "\033[38;2;255;200;80m"
@@ -183,6 +198,7 @@ class SubAgentDisplayManager:
 
     def start(self, agent_id: str, label: str = "research") -> None:
         import time
+
         self._agents[agent_id] = {
             "label": label,
             "calls": [],
@@ -234,6 +250,7 @@ class SubAgentDisplayManager:
     @staticmethod
     def _format_stats(agent: dict) -> str:
         import time
+
         start = agent["start_time"]
         if start is None:
             return ""
@@ -276,7 +293,7 @@ class SubAgentDisplayManager:
                 header += f" \033[2m·\033[0m \033[2m{short}\033[0m"
             return [header]
         lines = [header]
-        visible = agent["calls"][-self._MAX_VISIBLE:]
+        visible = agent["calls"][-self._MAX_VISIBLE :]
         for desc in visible:
             lines.append(f"{_I}  \033[2m{desc}\033[0m")
         return lines
@@ -319,13 +336,14 @@ def print_tool_log(tool: str, log: str, agent_id: str = "", label: str = "") -> 
 
 # ── Messages ───────────────────────────────────────────────────────────
 
+
 async def print_markdown(
     text: str,
     cancel_event: "asyncio.Event | None" = None,
     instant: bool = False,
 ) -> None:
-    import asyncio
-    import io, random
+    import io
+    import random
     from rich.padding import Padding
 
     _console.print()
@@ -395,23 +413,35 @@ def print_interrupted() -> None:
 
 
 def print_compacted(old_tokens: int, new_tokens: int) -> None:
-    _console.print(f"{_I}[dim]context compacted: {old_tokens:,} → {new_tokens:,} tokens[/dim]")
+    _console.print(
+        f"{_I}[dim]context compacted: {old_tokens:,} → {new_tokens:,} tokens[/dim]"
+    )
 
 
 # ── Approval ───────────────────────────────────────────────────────────
 
+
 def print_approval_header(count: int) -> None:
     label = f"Approval required — {count} item{'s' if count != 1 else ''}"
     _console.print()
-    _console.print(f"{_I}", Panel(f"[bold yellow]{label}[/bold yellow]", border_style="yellow", expand=False))
+    _console.print(
+        f"{_I}",
+        Panel(
+            f"[bold yellow]{label}[/bold yellow]", border_style="yellow", expand=False
+        ),
+    )
 
 
 def print_approval_item(index: int, total: int, tool_name: str, operation: str) -> None:
-    _console.print(f"\n{_I}[bold]\\[{index}/{total}][/bold]  [tool.name]{tool_name}[/tool.name]  {operation}")
+    _console.print(
+        f"\n{_I}[bold]\\[{index}/{total}][/bold]  [tool.name]{tool_name}[/tool.name]  {operation}"
+    )
 
 
 def print_yolo_approve(count: int) -> None:
-    _console.print(f"{_I}[bold yellow]yolo →[/bold yellow] auto-approved {count} item(s)")
+    _console.print(
+        f"{_I}[bold yellow]yolo →[/bold yellow] auto-approved {count} item(s)"
+    )
 
 
 # ── Help ───────────────────────────────────────────────────────────────
@@ -427,6 +457,7 @@ HELP_TEXT = f"""\
 {_I}  [cyan]/effort[/cyan] [level]  Reasoning effort (minimal|low|medium|high|xhigh|max|off)
 {_I}  [cyan]/yolo[/cyan]            Toggle auto-approve mode
 {_I}  [cyan]/status[/cyan]          Current model & turn count
+{_I}  [cyan]/share-traces[/cyan] [public|private]  Show/flip visibility of your HF trace dataset
 {_I}  [cyan]/quit[/cyan]            Exit"""
 
 
@@ -437,6 +468,7 @@ def print_help() -> None:
 
 
 # ── Plan display ───────────────────────────────────────────────────────
+
 
 def format_plan_display() -> str:
     """Format the current plan for display."""
@@ -471,6 +503,7 @@ def print_plan() -> None:
 
 # ── Formatting for plan_tool output (used by plan_tool handler) ────────
 
+
 def format_plan_tool_output(todos: list) -> str:
     if not todos:
         return "Plan is empty."
@@ -492,6 +525,7 @@ def format_plan_tool_output(todos: list) -> str:
 
 
 # ── Internal helpers ───────────────────────────────────────────────────
+
 
 def _truncate(text: str, max_lines: int = 6) -> str:
     lines = text.split("\n")

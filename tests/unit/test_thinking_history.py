@@ -135,6 +135,7 @@ async def test_streaming_call_rebuilds_anthropic_thinking_state(monkeypatch):
         )
 
     events = []
+
     async def send_event(event):
         events.append(event)
 
@@ -232,6 +233,7 @@ async def test_streaming_call_rebuilds_anthropic_delta_thinking_state(monkeypatc
         )
 
     events = []
+
     async def send_event(event):
         events.append(event)
 
@@ -276,6 +278,7 @@ async def test_streaming_call_skips_chunk_rebuild_for_non_anthropic(monkeypatch)
         raise AssertionError("stream_chunk_builder should not run")
 
     events = []
+
     async def send_event(event):
         events.append(event)
 
