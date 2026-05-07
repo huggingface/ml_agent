@@ -148,7 +148,7 @@ export default function JobsUpgradeDialog({
           {awaitingTopUp
             ? 'Once your top-up is through, click below to resume — the agent will pick the run back up where it left off.'
             : message ||
-              'Hugging Face Jobs need credits on the namespace running them. Add some, then resume — the agent waits here in the meantime.'}
+              'Hugging Face Jobs need credits on the namespace running them. Job credits are separate from HF Pro membership. Add some, then resume.'}
         </Typography>
 
         <Box

@@ -60,9 +60,6 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       },
       onError: (error: string) => {
         updateSession(sessionId, { isProcessing: false });
-        if (isActiveRef.current) {
-          useAgentStore.getState().setError(error);
-        }
         callbacksRef.current.onError?.(error);
       },
       onProcessing: () => {
@@ -369,9 +366,6 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         return;
       }
       logger.error('useChat error:', error);
-      if (isActiveRef.current) {
-        useAgentStore.getState().setError(error.message);
-      }
     },
   });
 
