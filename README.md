@@ -88,14 +88,16 @@ Inside interactive mode, switch with `/model`:
 /model ollama/llama3.1:8b
 /model lm_studio/google/gemma-3-4b
 /model llamacpp/llama-3.1-8b-instruct
+/model openrouter/anthropic/claude-3.5-sonnet
+/model openai-compat/custom-model
 ```
 
-Supported local prefixes are `ollama/`, `vllm/`, `lm_studio/`, and
-`llamacpp/`. Set `LOCAL_LLM_BASE_URL` and optional `LOCAL_LLM_API_KEY` to use
-one shared local endpoint, or override a specific provider with its matching
-`*_BASE_URL` / `*_API_KEY` variable, such as `OLLAMA_BASE_URL` or
-`VLLM_API_KEY`. Provider-specific variables take precedence over the shared
-local variables. Base URLs may include or omit `/v1`.
+Supported local and custom prefixes are `ollama/`, `vllm/`, `lm_studio/`,
+`llamacpp/`, `openrouter/`, and `openai-compat/`. Set `LOCAL_LLM_BASE_URL` and
+optional `LOCAL_LLM_API_KEY` to use one shared local endpoint, or override a
+specific provider with its matching `*_BASE_URL` / `*_API_KEY` variable, such as
+`OPENROUTER_API_KEY` or `VLLM_BASE_URL`. Provider-specific variables take
+precedence over the shared local variables. Base URLs may include or omit `/v1`.
 
 ## Sharing Traces
 
