@@ -572,6 +572,24 @@ def test_sitecustomize_skips_sandbox_space_registration(monkeypatch):
     monkeypatch.setattr(hub, "hf_hub_download", fake_hf_hub_download)
 
     exec(build_hub_artifact_sitecustomize(_session()), {})
+    assert HfApi.upload_file is not fake_upload_file
+
+    HfApi(token="hf-token").upload_file(
+        path_or_fileobj=b"app",
+        path_in_repo="app.py",
+        repo_id="alice/normal-space",
+        repo_type="space",
+        token="hf-token",
+    )
+
+    assert downloads[0][1]["repo_id"] == "alice/normal-space"
+    assert len(collection_creates) == 1
+    assert collection_items[0]["item_id"] == "alice/normal-space"
+
+    uploads.clear()
+    downloads.clear()
+    collection_creates.clear()
+    collection_items.clear()
 
     HfApi(token="hf-token").upload_file(
         path_or_fileobj=b"app",
