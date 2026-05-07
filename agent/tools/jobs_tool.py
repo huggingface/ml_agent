@@ -1156,7 +1156,7 @@ HF_JOBS_TOOL_SPEC = {
             "script": {
                 "type": "string",
                 "description": (
-                    "Python code or sandbox file path (e.g. '/app/train.py') or URL. "
+                    "Python code, sandbox file path (e.g. '/app/train.py', './train.py', or bare 'train.py'), or URL. "
                     "Triggers Python mode. For ML training: base this on a working example found via github_find_examples, not on internal knowledge. "
                     "Mutually exclusive with 'command'."
                 ),

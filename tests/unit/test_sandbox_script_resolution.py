@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC
 from agent.tools.sandbox_tool import resolve_sandbox_script
 
 
@@ -58,3 +59,11 @@ async def test_resolve_sandbox_script_ignores_non_path_scripts(script):
     assert content is None
     assert error is None
     assert sandbox.read_paths == []
+
+
+def test_hf_jobs_script_description_mentions_bare_python_filenames():
+    script_description = HF_JOBS_TOOL_SPEC["parameters"]["properties"]["script"][
+        "description"
+    ]
+
+    assert "bare 'train.py'" in script_description
