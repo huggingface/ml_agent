@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["huggingface_hub>=0.20.0", "httpx>=0.27.0"]
+# dependencies = ["huggingface_hub>=1.12.0", "httpx>=0.27.0"]
 # ///
 """
 Sandbox Tools — Agent-native primitives for HF Space dev-mode sandboxes.
@@ -615,18 +615,19 @@ class Sandbox:
         kwargs = {
             "from_id": template,
             "to_id": space_id,
+            "repo_type": "space",
             "private": private,
-            "hardware": hardware,
+            "space_hardware": hardware,
         }
         if sleep_time is not None:
-            kwargs["sleep_time"] = sleep_time
+            kwargs["space_sleep_time"] = sleep_time
 
-        api.duplicate_space(**kwargs)
+        api.duplicate_repo(**kwargs)
         _log(f"Space created: https://huggingface.co/spaces/{space_id}")
 
         _check_cancel()
 
-        # ``duplicate_space`` sends hardware and sleepTimeSeconds in the
+        # ``duplicate_repo`` sends hardware and sleepTimeSeconds in the
         # initial create request. Avoid a second /hardware call: deployed HF
         # OAuth tokens can 401 on that endpoint for a just-created private
         # Space even though duplication itself succeeded. We rely on the
