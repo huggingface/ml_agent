@@ -477,6 +477,78 @@ def test_sitecustomize_bootstrap_reuses_existing_collection_slug():
     )
 
 
+def test_sitecustomize_caches_lazy_collection_slug_across_bootstraps(
+    monkeypatch,
+    tmp_path,
+):
+    import huggingface_hub as hub
+    from huggingface_hub import HfApi
+
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text("# Existing Model\n", encoding="utf-8")
+    cache_path = tmp_path / "collection-slug.txt"
+    collection_slug = "alice/ml-intern-artifacts-2026-05-05-session-123"
+    uploads = []
+    downloads = []
+    collection_creates = []
+    collection_items = []
+
+    def fake_upload_file(self, **kwargs):
+        uploads.append(kwargs)
+        return SimpleNamespace()
+
+    def fake_hf_hub_download(*args, **kwargs):
+        downloads.append((args, kwargs))
+        return str(readme_path)
+
+    def fake_create_collection(self, **kwargs):
+        collection_creates.append(kwargs)
+        return SimpleNamespace(slug=collection_slug)
+
+    def fake_add_collection_item(self, **kwargs):
+        collection_items.append(kwargs)
+
+    monkeypatch.setenv("ML_INTERN_ARTIFACT_COLLECTION_CACHE", str(cache_path))
+    code = build_hub_artifact_sitecustomize(_session())
+
+    def install_fresh_bootstrap():
+        monkeypatch.setattr(HfApi, "upload_file", fake_upload_file)
+        monkeypatch.setattr(HfApi, "create_collection", fake_create_collection)
+        monkeypatch.setattr(HfApi, "add_collection_item", fake_add_collection_item)
+        monkeypatch.setattr(hub, "hf_hub_download", fake_hf_hub_download)
+        exec(code, {})
+        assert HfApi.upload_file is not fake_upload_file
+
+    install_fresh_bootstrap()
+    HfApi(token="hf-token").upload_file(
+        path_or_fileobj=b"weights",
+        path_in_repo="model.safetensors",
+        repo_id="alice/model-a",
+        repo_type="model",
+        token="hf-token",
+    )
+
+    install_fresh_bootstrap()
+    HfApi(token="hf-token").upload_file(
+        path_or_fileobj=b"weights",
+        path_in_repo="model.safetensors",
+        repo_id="alice/model-b",
+        repo_type="model",
+        token="hf-token",
+    )
+
+    assert cache_path.read_text(encoding="utf-8") == collection_slug
+    assert len(collection_creates) == 1
+    assert [item["item_id"] for item in collection_items] == [
+        "alice/model-a",
+        "alice/model-b",
+    ]
+    assert [download[1]["repo_id"] for download in downloads] == [
+        "alice/model-a",
+        "alice/model-b",
+    ]
+
+
 def test_sitecustomize_skips_sandbox_space_registration(monkeypatch):
     import huggingface_hub as hub
     from huggingface_hub import HfApi

@@ -430,6 +430,13 @@ def build_hub_artifact_sitecustomize(session: Any) -> str:
                 re.IGNORECASE | re.MULTILINE,
             )
             front_matter_re = re.compile(r"\\A---\\s*\\n.*?\\n---\\s*\\n?", re.DOTALL)
+            collection_cache_path = (
+                os.environ.get("ML_INTERN_ARTIFACT_COLLECTION_CACHE")
+                or str(
+                    Path(tempfile.gettempdir())
+                    / f"ml-intern-artifacts-{{session_id}}.collection"
+                )
+            )
 
             def _token(value=None, api=None):
                 if isinstance(value, str) and value:
@@ -542,6 +549,15 @@ def build_hub_artifact_sitecustomize(session: Any) -> str:
                 nonlocal collection_slug
                 if collection_slug:
                     return collection_slug
+                try:
+                    cached_slug = Path(collection_cache_path).read_text(
+                        encoding="utf-8"
+                    ).strip()
+                    if cached_slug:
+                        collection_slug = cached_slug
+                        return collection_slug
+                except Exception:
+                    pass
                 collection = api.create_collection(
                     title=collection_title,
                     description=(
@@ -553,6 +569,13 @@ def build_hub_artifact_sitecustomize(session: Any) -> str:
                     token=token_value,
                 )
                 collection_slug = getattr(collection, "slug", None)
+                if collection_slug:
+                    try:
+                        cache_path = Path(collection_cache_path)
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
+                        cache_path.write_text(collection_slug, encoding="utf-8")
+                    except Exception:
+                        pass
                 return collection_slug
 
             def _register(
