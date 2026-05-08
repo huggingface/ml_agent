@@ -9,7 +9,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAgentStore } from '@/store/agentStore';
 import { apiFetch } from '@/utils/api';
 
-export type PlanTier = 'free' | 'pro' | 'org';
+export type PlanTier = 'free' | 'pro';
 
 export interface UserQuota {
   plan: PlanTier;

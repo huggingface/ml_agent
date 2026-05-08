@@ -1,5 +1,18 @@
 import { useState, useCallback, useEffect, useRef, KeyboardEvent } from 'react';
-import { Box, TextField, IconButton, CircularProgress, Typography, Menu, MenuItem, ListItemIcon, ListItemText, Chip } from '@mui/material';
+import {
+  Alert,
+  Box,
+  TextField,
+  IconButton,
+  CircularProgress,
+  Typography,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Chip,
+  Snackbar,
+} from '@mui/material';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
@@ -87,6 +100,19 @@ const findModelByPath = (path: string, options: ModelOption[]): ModelOption | un
   return options.find(m => m.modelPath === path || path?.includes(m.id));
 };
 
+const readApiErrorMessage = async (res: Response, fallback: string): Promise<string> => {
+  try {
+    const data = await res.json();
+    const detail = data?.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail.message === 'string') return detail.message;
+    if (detail && typeof detail.error === 'string') return detail.error;
+  } catch {
+    /* ignore malformed error bodies */
+  }
+  return fallback;
+};
+
 interface ChatInputProps {
   sessionId?: string;
   initialModelPath?: string | null;
@@ -123,6 +149,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
   const updateSessionModel = useSessionStore((s) => s.updateSessionModel);
   const [awaitingTopUp, setAwaitingTopUp] = useState(false);
+  const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
   const lastSentRef = useRef<string>('');
 
   useEffect(() => {
@@ -240,8 +267,13 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
       if (res.ok) {
         setSelectedModelId(model.id);
         updateSessionModel(sessionId, model.modelPath);
+        setModelSwitchError(null);
+        return;
       }
-    } catch { /* ignore */ }
+      setModelSwitchError(await readApiErrorMessage(res, 'Could not switch model.'));
+    } catch (error) {
+      setModelSwitchError(error instanceof Error ? error.message : 'Could not switch model.');
+    }
   };
 
   // Dialog close: just clear the flag. The typed text is already restored.
@@ -575,6 +607,21 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
           onUpgrade={handleJobsUpgradeClick}
           onRetry={handleJobsRetry}
         />
+        <Snackbar
+          open={!!modelSwitchError}
+          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+          onClose={() => setModelSwitchError(null)}
+          autoHideDuration={6000}
+        >
+          <Alert
+            severity="error"
+            variant="filled"
+            onClose={() => setModelSwitchError(null)}
+            sx={{ fontSize: '0.8rem', maxWidth: 480 }}
+          >
+            {modelSwitchError}
+          </Alert>
+        </Snackbar>
       </Box>
     </Box>
   );
