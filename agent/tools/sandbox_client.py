@@ -65,7 +65,6 @@ MAX_TIMEOUT = 1200
 WAIT_TIMEOUT = 600
 WAIT_INTERVAL = 5
 API_WAIT_TIMEOUT = 180
-HARDWARE_REQUEST_TIMEOUT = 60
 CPU_BASIC_HARDWARE = "cpu-basic"
 
 
@@ -76,58 +75,6 @@ def _is_transient_space_visibility_error(error: Exception) -> bool:
         return True
     message = str(error)
     return "Repository Not Found" in message or "404 Client Error" in message
-
-
-def _is_transient_space_management_error(error: Exception) -> bool:
-    """Return True when a just-created private Space is not manageable yet."""
-    response = getattr(error, "response", None)
-    if getattr(response, "status_code", None) in {401, 404}:
-        return True
-    message = str(error)
-    return (
-        "Repository Not Found" in message
-        or "401 Client Error" in message
-        or "404 Client Error" in message
-    )
-
-
-def _request_space_hardware_with_retry(
-    api: HfApi,
-    space_id: str,
-    *,
-    hardware: str,
-    sleep_time: int | None,
-    log: Callable[[str], object],
-    check_cancel: Callable[[], object],
-) -> None:
-    """Request hardware, retrying while Hub permissions propagate for a new Space."""
-    deadline = time.time() + HARDWARE_REQUEST_TIMEOUT
-    attempt = 0
-    while True:
-        check_cancel()
-        try:
-            api.request_space_hardware(
-                space_id,
-                hardware=hardware,
-                sleep_time=sleep_time,
-            )
-            return
-        except Exception as e:
-            if not _is_transient_space_management_error(e):
-                raise
-
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                raise
-
-            attempt += 1
-            status_code = getattr(getattr(e, "response", None), "status_code", None)
-            status = f"HTTP {status_code}" if status_code else type(e).__name__
-            log(
-                f"  Hardware request not accepted yet ({status}); "
-                f"retrying ({attempt})..."
-            )
-            time.sleep(min(WAIT_INTERVAL, remaining))
 
 
 _DOCKERFILE = """\
@@ -679,24 +626,13 @@ class Sandbox:
 
         _check_cancel()
 
-        # ``duplicate_space`` already receives the target hardware. The extra
-        # /hardware call is useful for paid tiers, but hosted OAuth tokens can
-        # 401 on that endpoint for a fresh private Space even after duplication
-        # succeeds. Avoid the redundant call for default CPU sandboxes when no
-        # auto-sleep timer is requested; with sleep_time set, the hardware
-        # endpoint is still needed to configure auto-sleep.
-        if hardware == CPU_BASIC_HARDWARE and sleep_time is None:
-            _log(f"Using duplicated Space hardware: {hardware}")
-        else:
-            _request_space_hardware_with_retry(
-                api,
-                space_id,
-                hardware=hardware,
-                sleep_time=sleep_time,
-                log=_log,
-                check_cancel=_check_cancel,
-            )
-            _log(f"Requested hardware: {hardware}")
+        # ``duplicate_space`` sends both hardware and sleepTimeSeconds in the
+        # initial create request. Avoid a second /hardware call: deployed HF
+        # OAuth tokens can 401 on that endpoint for a just-created private
+        # Space even though duplication itself succeeded.
+        _log(f"Using duplicated Space hardware: {hardware}")
+        if sleep_time is not None:
+            _log(f"Using duplicated Space sleep time: {sleep_time}s")
 
         # Inject secrets BEFORE uploading server files (which triggers rebuild).
         # Secrets added after a Space is running aren't available until restart,
