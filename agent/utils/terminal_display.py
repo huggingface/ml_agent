@@ -6,6 +6,7 @@ import asyncio
 import re
 
 from rich.console import Console
+from rich.markup import escape
 from rich.markdown import Heading, Markdown
 from rich.panel import Panel
 from rich.theme import Theme
@@ -446,18 +447,46 @@ def print_yolo_approve(count: int) -> None:
 
 # ── Help ───────────────────────────────────────────────────────────────
 
-HELP_TEXT = f"""\
-{_I}[bold]Commands[/bold]
-{_I}  [cyan]/help[/cyan]            Show this help
-{_I}  [cyan]/undo[/cyan]            Undo last turn
-{_I}  [cyan]/compact[/cyan]         Compact context window
-{_I}  [cyan]/resume[/cyan] [index|id|path] Pick up from a log in ./session_logs
-{_I}  [cyan]/model[/cyan] [id]      Show available models or switch
-{_I}  [cyan]/effort[/cyan] [level]  Reasoning effort (minimal|low|medium|high|xhigh|max|off)
-{_I}  [cyan]/yolo[/cyan]            Toggle auto-approve mode
-{_I}  [cyan]/status[/cyan]          Current model & turn count
-{_I}  [cyan]/share-traces[/cyan] [public|private]  Show/flip visibility of your HF trace dataset
-{_I}  [cyan]/quit[/cyan]            Exit"""
+HELP_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("/help", "", "Show this help"),
+    ("/undo", "", "Undo last turn"),
+    ("/compact", "", "Compact context window"),
+    ("/resume", "[index|id|path]", "Pick up from ./session_logs"),
+    ("/model", "[id]", "Show available models or switch"),
+    (
+        "/effort",
+        "[level]",
+        "Set reasoning effort preference",
+    ),
+    ("/yolo", "", "Toggle auto-approve mode"),
+    ("/status", "", "Current model & turn count"),
+    (
+        "/share-traces",
+        "[public|private]",
+        "Show or change HF trace visibility",
+    ),
+    ("/quit", "", "Exit"),
+)
+
+_HELP_COMMAND_WIDTH = max(len(command) for command, _, _ in HELP_ROWS)
+_HELP_ARGS_WIDTH = max(len(args) for _, args, _ in HELP_ROWS)
+
+
+def _format_help_row(command: str, args: str, description: str) -> str:
+    command_gap = " " * (_HELP_COMMAND_WIDTH - len(command) + 2)
+    args_gap = " " * (_HELP_ARGS_WIDTH - len(args) + 2)
+    command_markup = f"[cyan]{escape(command)}[/cyan]"
+    args_markup = f"[muted]{escape(args)}[/muted]" if args else ""
+    return f"{_I}  {command_markup}{command_gap}{args_markup}{args_gap}{description}"
+
+
+HELP_TEXT = "\n".join(
+    [f"{_I}[bold]Commands[/bold]"]
+    + [
+        _format_help_row(command, args, description)
+        for command, args, description in HELP_ROWS
+    ]
+)
 
 
 def print_help() -> None:
