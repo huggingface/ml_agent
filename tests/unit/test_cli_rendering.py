@@ -1,5 +1,6 @@
 """Regression tests for interactive CLI rendering and research model routing."""
 
+import asyncio
 import sys
 from io import StringIO
 from types import SimpleNamespace
@@ -272,3 +273,20 @@ async def test_interactive_main_passes_sandbox_runtime_to_tool_router(monkeypatc
 
     assert seen["hf_token"] == "hf-token"
     assert seen["local_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_initial_sandbox_preload_waits_before_prompt():
+    waited = False
+
+    async def preload():
+        nonlocal waited
+        await asyncio.sleep(0)
+        waited = True
+
+    task = asyncio.create_task(preload())
+    await main_mod._wait_for_initial_sandbox_preload(
+        [SimpleNamespace(sandbox_preload_task=task)]
+    )
+
+    assert waited is True

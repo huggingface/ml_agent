@@ -73,6 +73,20 @@ def _tool_runtime_label(local_mode: bool) -> str:
     return "local filesystem" if local_mode else "HF sandbox"
 
 
+async def _wait_for_initial_sandbox_preload(session_holder: list | None) -> None:
+    session = session_holder[0] if session_holder else None
+    task = getattr(session, "sandbox_preload_task", None)
+    if not task:
+        return
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # The sandbox tool will surface the stored preload error on first use.
+        return
+
+
 def _is_scheduled_hf_job_tool(tool_info: dict[str, Any]) -> bool:
     if tool_info.get("tool") != "hf_jobs":
         return False
@@ -1177,6 +1191,8 @@ async def main(model: str | None = None, sandbox_tools: bool = False):
     )
 
     await ready_event.wait()
+    if not local_mode:
+        await _wait_for_initial_sandbox_preload(session_holder)
 
     submission_id = [0]
     # Mirrors codex-rs/tui/src/bottom_pane/mod.rs:137
