@@ -102,6 +102,12 @@ system_prompt: |
 
   # When submitting a training job
 
+  Never pass a local machine path to hf_jobs.script, such as /Users/..., /home/..., /fsx/..., or a repo checkout path. HF Jobs runs in a fresh cloud environment where local files do not exist. For hf_jobs.script, use exactly one of:
+    - inline Python source code
+    - a file already written in the session sandbox, e.g. /app/train.py, ./train.py, or train.py
+    - a public/raw URL
+  If you wrote or tested a script locally, read the file content and submit it inline, or write it into the sandbox first.
+
   Before calling hf_jobs, output a pre-flight check:
     - Reference implementation: [which example you based this on]
     - Dataset format verified: [columns confirmed via hf_inspect_dataset/hub_repo_details]

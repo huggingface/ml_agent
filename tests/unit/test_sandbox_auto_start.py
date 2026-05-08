@@ -34,3 +34,12 @@ def test_prompt_and_tool_specs_do_not_require_cpu_sandbox_create():
         in tool_specs["sandbox_create"]
     )
     assert "started automatically for normal CPU work" in tool_specs["bash"]
+
+
+def test_prompt_rejects_local_machine_paths_for_hf_jobs_scripts():
+    prompt = Path("agent/prompts/system_prompt_v3.yaml").read_text()
+
+    assert "Never pass a local machine path to hf_jobs.script" in prompt
+    assert "/fsx/..." in prompt
+    assert "inline Python source code" in prompt
+    assert "a file already written in the session sandbox" in prompt
