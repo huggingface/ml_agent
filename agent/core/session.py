@@ -62,6 +62,7 @@ class OpType(Enum):
     INTERRUPT = "interrupt"
     UNDO = "undo"
     COMPACT = "compact"
+    NEW = "new"
     RESUME = "resume"
     SHUTDOWN = "shutdown"
 
@@ -373,6 +374,54 @@ class Session:
     def increment_turn(self) -> None:
         """Increment turn counter (called after each user interaction)"""
         self.turn_count += 1
+
+    def start_new_conversation(self) -> dict[str, Any]:
+        """Rotate this runtime into a fresh conversation.
+
+        The tool router, model/config choices, user identity, and external
+        resources stay attached to the CLI process. Conversation-specific
+        state gets reset so later saves do not merge with the prior chat.
+        """
+        previous_session_id = self.session_id
+        previous_turn_count = self.turn_count
+        previous_message_count = len(self.context_manager.items)
+        previous_non_system_count = sum(
+            1
+            for item in self.context_manager.items
+            if getattr(item, "role", None) != "system"
+        )
+
+        saved_path: str | None = None
+        if self.config.save_sessions and previous_non_system_count:
+            saved_path = self.save_and_upload_detached(self.config.session_dataset_repo)
+
+        system_msg = (
+            self.context_manager.items[0]
+            if self.context_manager.items
+            and getattr(self.context_manager.items[0], "role", None) == "system"
+            else None
+        )
+        self.context_manager.items = [system_msg] if system_msg is not None else []
+        self.context_manager.running_context_usage = 0
+
+        self.session_id = str(uuid.uuid4())
+        self.session_start_time = datetime.now().isoformat()
+        self.turn_count = 0
+        self.last_auto_save_turn = 0
+        self.logged_events = []
+        self._local_save_path = None
+        self._last_heartbeat_ts = None
+        self.pending_approval = None
+        self.auto_approval_estimated_spend_usd = 0.0
+        self.reset_cancel()
+
+        return {
+            "session_id": self.session_id,
+            "previous_session_id": previous_session_id,
+            "previous_turn_count": previous_turn_count,
+            "previous_message_count": previous_message_count,
+            "saved_path": saved_path,
+        }
 
     async def auto_save_if_needed(self) -> None:
         """Check if auto-save should trigger and save if so (completely non-blocking)"""

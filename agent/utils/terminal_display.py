@@ -449,6 +449,8 @@ def print_yolo_approve(count: int) -> None:
 
 HELP_ROWS: tuple[tuple[str, str, str], ...] = (
     ("/help", "", "Show this help"),
+    ("/new", "", "Start a fresh chat"),
+    ("/clear", "", "Clear terminal and start fresh"),
     ("/undo", "", "Undo last turn"),
     ("/compact", "", "Compact context window"),
     ("/resume", "[index|id|path]", "Pick up from ./session_logs"),

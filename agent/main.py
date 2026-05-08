@@ -167,6 +167,10 @@ def _create_rich_console():
     return get_console()
 
 
+def _clear_terminal() -> None:
+    os.system("clear" if os.name != "nt" else "cls")
+
+
 class _ThinkingShimmer:
     """Animated shiny/shimmer thinking indicator — a bright gradient sweeps across the text."""
 
@@ -369,6 +373,12 @@ async def event_listener(
                 turn_complete_event.set()
             elif event.event_type == "undo_complete":
                 console.print("[dim]Undone.[/dim]")
+                turn_complete_event.set()
+            elif event.event_type == "new_complete":
+                data = event.data or {}
+                if data.get("clear_screen"):
+                    _clear_terminal()
+                console.print("[dim]Started new chat.[/dim]")
                 turn_complete_event.set()
             elif event.event_type == "resume_complete":
                 data = event.data or {}
@@ -874,6 +884,20 @@ async def _handle_slash_command(
             operation=Operation(op_type=OpType.COMPACT),
         )
 
+    if command in {"/new", "/clear"}:
+        session = session_holder[0] if session_holder else None
+        if session is None:
+            get_console().print("[bold red]No active session to reset.[/bold red]")
+            return None
+        submission_id[0] += 1
+        return Submission(
+            id=f"sub_{submission_id[0]}",
+            operation=Operation(
+                op_type=OpType.NEW,
+                data={"clear_screen": command == "/clear"},
+            ),
+        )
+
     if command == "/resume":
         session = session_holder[0] if session_holder else None
         if session is None:
@@ -1080,7 +1104,7 @@ async def main(model: str | None = None):
     """Interactive chat with the agent"""
 
     # Clear screen
-    os.system("clear" if os.name != "nt" else "cls")
+    _clear_terminal()
 
     # Create prompt session for input (needed early for token prompt)
     prompt_session = PromptSession()
