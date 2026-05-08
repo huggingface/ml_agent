@@ -24,7 +24,10 @@ from huggingface_hub import HfApi, SpaceHardware
 from agent.core.hub_artifacts import wrap_shell_command_with_hub_artifact_bootstrap
 from agent.core.session import Event
 from agent.tools.sandbox_client import Sandbox
-from agent.tools.trackio_seed import ensure_trackio_dashboard
+from agent.tools.trackio_seed import (
+    ensure_trackio_dashboard,
+    normalize_trackio_space_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -542,7 +545,7 @@ SANDBOX_CREATE_TOOL_SPEC = {
         "Common picks: t4-small (16GB VRAM, fits ≤1-3B), a10g-small (24GB, ≤7B), a100-large (80GB, ≤30B). "
         "If the model won't fit, pick larger hardware upfront — OOM on a sandbox wastes time.\n\n"
         "If you intend to run a training script in this sandbox that uses report_to='trackio', "
-        "pass `trackio_space_id` (e.g. '<username>/mlintern-<8char>') and `trackio_project` so they "
+        "pass `trackio_space_id` (e.g. '<username>/ml-intern-<8char>') and `trackio_project` so they "
         "are set as TRACKIO_SPACE_ID/TRACKIO_PROJECT secrets in the sandbox and the UI can embed the live dashboard.\n\n"
         "Hardware: " + ", ".join([e.value for e in SpaceHardware]) + ".\n"
     ),
@@ -563,7 +566,7 @@ SANDBOX_CREATE_TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Optional. The HF Space hosting the trackio dashboard for runs in this sandbox "
-                    "(e.g. '<username>/mlintern-<8char>', under YOUR HF namespace). Injected as "
+                    "(e.g. '<username>/ml-intern-<8char>', under YOUR HF namespace). Injected as "
                     "TRACKIO_SPACE_ID secret and surfaced to the UI. The Space is auto-created and "
                     "seeded with the trackio dashboard — DO NOT pre-create it via hf_repo_git, "
                     "that produces an empty Space that breaks the embed."
@@ -586,7 +589,7 @@ async def sandbox_create_handler(
 ) -> tuple[str, bool]:
     """Handle sandbox_create tool calls."""
     hardware = args.get("hardware", DEFAULT_CPU_SANDBOX_HARDWARE)
-    trackio_space_id = args.get("trackio_space_id") or None
+    trackio_space_id = normalize_trackio_space_id(args.get("trackio_space_id") or None)
     trackio_project = args.get("trackio_project") or None
 
     async def _emit_trackio_state(sb: Sandbox) -> None:

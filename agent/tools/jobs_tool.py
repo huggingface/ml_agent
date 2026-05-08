@@ -23,7 +23,10 @@ from agent.core.hf_access import (
 )
 from agent.core.hub_artifacts import build_hub_artifact_sitecustomize
 from agent.core.session import Event
-from agent.tools.trackio_seed import ensure_trackio_dashboard
+from agent.tools.trackio_seed import (
+    ensure_trackio_dashboard,
+    normalize_trackio_space_id,
+)
 from agent.tools.types import ToolResult
 from agent.tools.utilities import (
     format_job_details,
@@ -592,7 +595,7 @@ class HfJobsTool:
             # so trackio.init() picks them up automatically. We also surface them
             # in tool_state_change so the frontend can embed the dashboard.
             env_dict = _add_default_env(args.get("env"))
-            trackio_space_id = args.get("trackio_space_id")
+            trackio_space_id = normalize_trackio_space_id(args.get("trackio_space_id"))
             trackio_project = args.get("trackio_project")
             if trackio_space_id:
                 env_dict["TRACKIO_SPACE_ID"] = trackio_space_id
@@ -1116,7 +1119,7 @@ HF_JOBS_TOOL_SPEC = {
         "Job storage is EPHEMERAL — all files are deleted when the job ends. Without push_to_hub, trained models are lost permanently.\n"
         "- Include trackio monitoring and provide the dashboard URL to the user. "
         "When the script uses report_to='trackio', also pass `trackio_space_id` "
-        "(e.g. '<username>/mlintern-<8char>') and `trackio_project` as tool args — "
+        "(e.g. '<username>/ml-intern-<8char>') and `trackio_project` as tool args — "
         "they are injected as TRACKIO_SPACE_ID/TRACKIO_PROJECT env vars and let the UI embed the live dashboard.\n\n"
         "BATCH/ABLATION JOBS: Submit ONE job first. Check logs to confirm it starts training successfully. "
         "Only then submit the remaining jobs. Never submit all at once — if there's a bug, all jobs fail.\n\n"
@@ -1204,7 +1207,7 @@ HF_JOBS_TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Optional. The HF Space hosting the trackio dashboard for this run "
-                    "(e.g. '<username>/mlintern-<8char>', under YOUR HF namespace). "
+                    "(e.g. '<username>/ml-intern-<8char>', under YOUR HF namespace). "
                     "Injected as TRACKIO_SPACE_ID env var and used by the UI to embed "
                     "the live dashboard. Set this whenever the script uses "
                     "report_to='trackio'. The Space is auto-created and seeded with the "
