@@ -6,6 +6,7 @@ import asyncio
 import re
 
 from rich.console import Console
+from rich.markup import escape
 from rich.markdown import Heading, Markdown
 from rich.panel import Panel
 from rich.theme import Theme
@@ -446,23 +447,72 @@ def print_yolo_approve(count: int) -> None:
 
 # ── Help ───────────────────────────────────────────────────────────────
 
-HELP_TEXT = f"""\
-{_I}[bold]Commands[/bold]
-{_I}  [cyan]/help[/cyan]            Show this help
-{_I}  [cyan]/undo[/cyan]            Undo last turn
-{_I}  [cyan]/compact[/cyan]         Compact context window
-{_I}  [cyan]/resume[/cyan] [index|id|path] Pick up from a log in ./session_logs
-{_I}  [cyan]/model[/cyan] [id]      Show available models or switch
-{_I}  [cyan]/effort[/cyan] [level]  Reasoning effort (minimal|low|medium|high|xhigh|max|off)
-{_I}  [cyan]/yolo[/cyan]            Toggle auto-approve mode
-{_I}  [cyan]/status[/cyan]          Current model & turn count
-{_I}  [cyan]/share-traces[/cyan] [public|private]  Show/flip visibility of your HF trace dataset
-{_I}  [cyan]/quit[/cyan]            Exit"""
+HELP_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("/help", "", "Show this help"),
+    ("/undo", "", "Undo last turn"),
+    ("/compact", "", "Compact context window"),
+    ("/resume", "[index|id|path]", "Pick up from ./session_logs"),
+    ("/model", "[id]", "Show available models or switch"),
+    (
+        "/effort",
+        "[level]",
+        "Set reasoning effort preference",
+    ),
+    ("/yolo", "", "Toggle auto-approve mode"),
+    ("/status", "", "Current model & turn count"),
+    (
+        "/share-traces",
+        "[public|private]",
+        "Show or change HF trace visibility",
+    ),
+    ("/quit", "", "Exit"),
+)
+
+
+def _help_column_widths(
+    rows: tuple[tuple[str, str, str], ...],
+) -> tuple[int, int]:
+    return (
+        max(len(command) for command, _, _ in rows),
+        max(len(args) for _, args, _ in rows),
+    )
+
+
+def _format_help_row(
+    command: str,
+    args: str,
+    description: str,
+    command_width: int,
+    args_width: int,
+) -> str:
+    command_gap = " " * (command_width - len(command) + 2)
+    args_gap = " " * (args_width - len(args) + 2)
+    command_markup = f"[cyan]{escape(command)}[/cyan]"
+    args_markup = f"[muted]{escape(args)}[/muted]" if args else ""
+    return f"{_I}  {command_markup}{command_gap}{args_markup}{args_gap}{description}"
+
+
+def format_help_text(rows: tuple[tuple[str, str, str], ...] | None = None) -> str:
+    help_rows = HELP_ROWS if rows is None else rows
+    command_width, args_width = _help_column_widths(help_rows)
+    return "\n".join(
+        [f"{_I}[bold]Commands[/bold]"]
+        + [
+            _format_help_row(
+                command,
+                args,
+                description,
+                command_width,
+                args_width,
+            )
+            for command, args, description in help_rows
+        ]
+    )
 
 
 def print_help() -> None:
     _console.print()
-    _console.print(HELP_TEXT)
+    _console.print(format_help_text())
     _console.print()
 
 

@@ -13,6 +13,28 @@ def _fail_metadata_update(*args, **kwargs):
     raise AssertionError("sandbox creation should not update Space metadata")
 
 
+def _capture_duplicate_repo_call(
+    captured,
+    *,
+    from_id,
+    to_id,
+    repo_type,
+    private,
+    space_hardware,
+    space_sleep_time=None,
+):
+    captured.update(
+        {
+            "from_id": from_id,
+            "to_id": to_id,
+            "repo_type": repo_type,
+            "private": private,
+            "space_hardware": space_hardware,
+            "space_sleep_time": space_sleep_time,
+        }
+    )
+
+
 def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     duplicate_kwargs = {}
     logs: list[str] = []
@@ -22,8 +44,25 @@ def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
         def __init__(self, token=None):
             self.token = token
 
-        def duplicate_space(self, **kwargs):
-            duplicate_kwargs.update(kwargs)
+        def duplicate_repo(
+            self,
+            *,
+            from_id,
+            to_id,
+            repo_type,
+            private,
+            space_hardware,
+            space_sleep_time=None,
+        ):
+            _capture_duplicate_repo_call(
+                duplicate_kwargs,
+                from_id=from_id,
+                to_id=to_id,
+                repo_type=repo_type,
+                private=private,
+                space_hardware=space_hardware,
+                space_sleep_time=space_sleep_time,
+            )
 
         def request_space_hardware(self, space_id, hardware, sleep_time=None):
             requested_hardware.append((space_id, hardware, sleep_time))
@@ -45,8 +84,9 @@ def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
 
     Sandbox.create(owner="alice", token="hf-token", log=logs.append)
 
+    assert duplicate_kwargs["repo_type"] == "space"
     assert duplicate_kwargs["private"] is True
-    assert duplicate_kwargs["hardware"] == "cpu-basic"
+    assert duplicate_kwargs["space_hardware"] == "cpu-basic"
     assert requested_hardware == []
     assert not any("sleep time" in log for log in logs)
 
@@ -67,7 +107,16 @@ def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
         def __init__(self, token=None):
             self.token = token
 
-        def duplicate_space(self, **kwargs):
+        def duplicate_repo(
+            self,
+            *,
+            from_id,
+            to_id,
+            repo_type,
+            private,
+            space_hardware,
+            space_sleep_time=None,
+        ):
             pass
 
         def request_space_hardware(self, space_id, hardware, sleep_time=None):
@@ -107,8 +156,25 @@ def test_sandbox_client_configures_gpu_at_duplication(monkeypatch):
         def __init__(self, token=None):
             self.token = token
 
-        def duplicate_space(self, **kwargs):
-            duplicate_kwargs.update(kwargs)
+        def duplicate_repo(
+            self,
+            *,
+            from_id,
+            to_id,
+            repo_type,
+            private,
+            space_hardware,
+            space_sleep_time=None,
+        ):
+            _capture_duplicate_repo_call(
+                duplicate_kwargs,
+                from_id=from_id,
+                to_id=to_id,
+                repo_type=repo_type,
+                private=private,
+                space_hardware=space_hardware,
+                space_sleep_time=space_sleep_time,
+            )
 
         def request_space_hardware(self, space_id, hardware, sleep_time=None):
             requested_hardware.append((space_id, hardware, sleep_time))
@@ -137,8 +203,9 @@ def test_sandbox_client_configures_gpu_at_duplication(monkeypatch):
     )
 
     assert sandbox.space_id.startswith("alice/sandbox-")
-    assert duplicate_kwargs["hardware"] == "t4-small"
-    assert duplicate_kwargs["sleep_time"] == 2700
+    assert duplicate_kwargs["repo_type"] == "space"
+    assert duplicate_kwargs["space_hardware"] == "t4-small"
+    assert duplicate_kwargs["space_sleep_time"] == 2700
     assert requested_hardware == []
     assert "Using duplicated Space hardware: t4-small" in logs
     assert "Using duplicated Space sleep time: 2700s" in logs
@@ -153,8 +220,25 @@ def test_sandbox_client_logs_cpu_sleep_time_as_hub_fixed(monkeypatch):
         def __init__(self, token=None):
             self.token = token
 
-        def duplicate_space(self, **kwargs):
-            duplicate_kwargs.update(kwargs)
+        def duplicate_repo(
+            self,
+            *,
+            from_id,
+            to_id,
+            repo_type,
+            private,
+            space_hardware,
+            space_sleep_time=None,
+        ):
+            _capture_duplicate_repo_call(
+                duplicate_kwargs,
+                from_id=from_id,
+                to_id=to_id,
+                repo_type=repo_type,
+                private=private,
+                space_hardware=space_hardware,
+                space_sleep_time=space_sleep_time,
+            )
 
         def request_space_hardware(self, space_id, hardware, sleep_time=None):
             requested_hardware.append((space_id, hardware, sleep_time))
@@ -180,8 +264,9 @@ def test_sandbox_client_logs_cpu_sleep_time_as_hub_fixed(monkeypatch):
         log=logs.append,
     )
 
-    assert duplicate_kwargs["hardware"] == "cpu-basic"
-    assert duplicate_kwargs["sleep_time"] == 2700
+    assert duplicate_kwargs["repo_type"] == "space"
+    assert duplicate_kwargs["space_hardware"] == "cpu-basic"
+    assert duplicate_kwargs["space_sleep_time"] == 2700
     assert requested_hardware == []
     assert "Using duplicated Space hardware: cpu-basic" in logs
     assert (
