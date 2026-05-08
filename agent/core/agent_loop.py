@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from litellm import (
@@ -26,10 +27,9 @@ from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
 from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
-from agent.core.hub_artifacts import start_session_artifact_collection_task
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
-from agent.core.session import Event, OpType, Session
+from agent.core.session import DEFAULT_SESSION_LOG_DIR, Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.tools.jobs_tool import CPU_FLAVORS
 from agent.tools.sandbox_tool import DEFAULT_CPU_SANDBOX_HARDWARE
@@ -1668,6 +1668,20 @@ class Handlers:
         await session.send_event(Event(event_type="undo_complete"))
 
     @staticmethod
+    async def resume(session: Session, path: str) -> None:
+        """Reload context from a saved session log into the active session."""
+        from agent.core.session_resume import restore_session_from_log
+
+        try:
+            result = restore_session_from_log(session, Path(path))
+        except Exception as e:
+            await session.send_event(
+                Event(event_type="error", data={"error": f"Resume failed: {e}"})
+            )
+            return
+        await session.send_event(Event(event_type="resume_complete", data=result))
+
+    @staticmethod
     async def exec_approval(session: Session, approvals: list[dict]) -> None:
         """Handle batch job execution approval"""
         if not session.pending_approval:
@@ -1953,6 +1967,16 @@ async def process_submission(session: Session, submission) -> bool:
         await Handlers.undo(session)
         return True
 
+    if op.op_type == OpType.RESUME:
+        path = op.data.get("path") if op.data else None
+        if path:
+            await Handlers.resume(session, path)
+        else:
+            await session.send_event(
+                Event(event_type="error", data={"error": "Resume requires a path"})
+            )
+        return True
+
     if op.op_type == OpType.EXEC_APPROVAL:
         approvals = op.data.get("approvals", []) if op.data else []
         await Handlers.exec_approval(session, approvals)
@@ -1999,7 +2023,6 @@ async def submission_loop(
     )
     if session_holder is not None:
         session_holder[0] = session
-    start_session_artifact_collection_task(session, token=hf_token)
     logger.info("Agent loop started")
 
     # Retry any failed uploads from previous sessions (fire-and-forget).
@@ -2007,7 +2030,7 @@ async def submission_loop(
     # to publish to the user's HF dataset gets a fresh attempt on next run.
     if config and config.save_sessions:
         Session.retry_failed_uploads_detached(
-            directory="session_logs",
+            directory=str(DEFAULT_SESSION_LOG_DIR),
             repo_id=config.session_dataset_repo,
             personal_repo_id=session._personal_trace_repo_id(),
         )

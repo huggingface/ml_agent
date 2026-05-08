@@ -518,7 +518,12 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
 
   setToolError: (toolCallId, hasError) => {
     set((state) => {
-      const updated = { ...state.toolErrors, [toolCallId]: hasError };
+      const updated = { ...state.toolErrors };
+      if (hasError) {
+        updated[toolCallId] = true;
+      } else {
+        delete updated[toolCallId];
+      }
       saveToolErrors(updated);
       return { toolErrors: updated };
     });
