@@ -118,6 +118,7 @@ class Session:
         self.session_id = session_id or str(uuid.uuid4())
         self.config = config
         self.is_running = True
+        self.current_plan: list[dict[str, str]] = []
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
