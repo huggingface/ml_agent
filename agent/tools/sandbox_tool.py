@@ -16,6 +16,7 @@ import logging
 import re
 import threading
 import weakref
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -56,6 +57,24 @@ def _get_sandbox_create_lock(owner: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         locks[owner] = lock
     return lock
+
+
+def _session_tool_logger(
+    session: Any, *, tool: str = "sandbox"
+) -> Callable[[str], object] | None:
+    event_queue = getattr(session, "event_queue", None)
+    if event_queue is None:
+        return None
+
+    loop = asyncio.get_running_loop()
+
+    def _log(msg: str) -> None:
+        loop.call_soon_threadsafe(
+            event_queue.put_nowait,
+            Event(event_type="tool_log", data={"tool": tool, "log": msg}),
+        )
+
+    return _log
 
 
 def _looks_like_path(script: str) -> bool:
@@ -309,14 +328,8 @@ async def _create_sandbox_locked(
         )
     )
 
-    # Thread-safe log callback: posts tool_log events from the worker thread
-    loop = asyncio.get_running_loop()
-
-    def _log(msg: str) -> None:
-        loop.call_soon_threadsafe(
-            session.event_queue.put_nowait,
-            Event(event_type="tool_log", data={"tool": "sandbox", "log": msg}),
-        )
+    # Thread-safe log callback: posts tool_log events from worker threads.
+    _log = _session_tool_logger(session) or (lambda msg: None)
 
     # Bridge asyncio cancel event to a threading.Event for the blocking create call.
     # We poll session._cancelled from the main loop in a background task and set
@@ -358,7 +371,7 @@ async def _create_sandbox_locked(
     if cancel_flag.is_set():
         if getattr(sb, "_owns_space", False):
             try:
-                await asyncio.to_thread(sb.delete)
+                await asyncio.to_thread(sb.delete, log=_log)
             except Exception as e:
                 logger.warning(
                     "Failed to delete cancelled sandbox %s: %s", sb.space_id, e
@@ -503,6 +516,7 @@ async def teardown_session_sandbox(session: Any) -> None:
             return
 
         space_id = getattr(sandbox, "space_id", None)
+        delete_log = _session_tool_logger(session)
         last_err: Exception | None = None
         for attempt in range(3):
             try:
@@ -511,7 +525,7 @@ async def teardown_session_sandbox(session: Any) -> None:
                     space_id,
                     attempt + 1,
                 )
-                await asyncio.to_thread(sandbox.delete)
+                await asyncio.to_thread(sandbox.delete, log=delete_log)
                 from agent.core import telemetry
 
                 await telemetry.record_sandbox_destroy(session, sandbox)
