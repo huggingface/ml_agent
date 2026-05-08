@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from types import SimpleNamespace
 
@@ -11,12 +10,10 @@ from agent.core.hub_artifacts import (
     artifact_collection_title,
     augment_repo_card_content,
     build_hub_artifact_sitecustomize,
-    ensure_session_artifact_collection,
     is_known_hub_artifact,
     is_sandbox_hub_repo,
     register_hub_artifact,
     remember_hub_artifact,
-    start_session_artifact_collection_task,
     wrap_shell_command_with_hub_artifact_bootstrap,
 )
 from agent.tools import local_tools, sandbox_tool
@@ -207,6 +204,7 @@ def test_register_hub_artifact_retries_after_partial_failure(monkeypatch):
     def add_to_collection(*args, **kwargs):
         nonlocal collection_attempts
         collection_attempts += 1
+        return True
 
     monkeypatch.setattr(
         hub_artifacts,
@@ -238,6 +236,7 @@ def test_register_hub_artifact_retries_after_collection_failure(monkeypatch):
         collection_attempts += 1
         if collection_attempts == 1:
             raise RuntimeError("temporary collection failure")
+        return True
 
     monkeypatch.setattr(hub_artifacts, "_update_repo_card", update_repo_card)
     monkeypatch.setattr(
@@ -269,63 +268,6 @@ def test_session_artifact_set_falls_back_when_session_rejects_attrs(caplog):
 
     assert is_known_hub_artifact(session, "alice/model", "model")
     assert "using process-local fallback state" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_ensure_session_artifact_collection_uses_user_token(monkeypatch):
-    session = _session()
-    calls = []
-
-    class FakeApi:
-        def __init__(self, token):
-            self.token = token
-
-    def fake_ensure_collection_slug(api, seen_session, **kwargs):
-        calls.append((api.token, seen_session, kwargs))
-        return "alice/ml-intern-artifacts"
-
-    monkeypatch.setattr(hub_artifacts, "HfApi", FakeApi)
-    monkeypatch.setattr(
-        hub_artifacts,
-        "_ensure_collection_slug",
-        fake_ensure_collection_slug,
-    )
-
-    slug = await ensure_session_artifact_collection(session, token="hf-token")
-
-    assert slug == "alice/ml-intern-artifacts"
-    assert calls == [
-        ("hf-token", session, {"token": "hf-token"}),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_start_session_artifact_collection_task_dedupes(monkeypatch):
-    session = _session()
-    calls = []
-
-    async def fake_ensure_session_artifact_collection(seen_session, **kwargs):
-        calls.append((seen_session, kwargs))
-        await asyncio.sleep(0)
-        return "alice/ml-intern-artifacts"
-
-    monkeypatch.setattr(
-        hub_artifacts,
-        "ensure_session_artifact_collection",
-        fake_ensure_session_artifact_collection,
-    )
-
-    task = start_session_artifact_collection_task(session, token="hf-token")
-    second = start_session_artifact_collection_task(session, token="hf-token")
-
-    assert task is not None
-    assert second is task
-    await task
-    assert calls == [(session, {"token": "hf-token"})]
-
-
-def test_start_session_artifact_collection_task_skips_without_token():
-    assert start_session_artifact_collection_task(_session()) is None
 
 
 @pytest.mark.asyncio
