@@ -15,6 +15,7 @@ def _fail_metadata_update(*args, **kwargs):
 
 def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     duplicate_kwargs = {}
+    logs: list[str] = []
     requested_hardware = []
 
     class FakeApi:
@@ -42,11 +43,12 @@ def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     )
     monkeypatch.setattr(Sandbox, "_wait_for_api", lambda self, *args, **kwargs: None)
 
-    Sandbox.create(owner="alice", token="hf-token", log=lambda msg: None)
+    Sandbox.create(owner="alice", token="hf-token", log=logs.append)
 
     assert duplicate_kwargs["private"] is True
     assert duplicate_kwargs["hardware"] == "cpu-basic"
     assert requested_hardware == []
+    assert not any("sleep time" in log for log in logs)
 
 
 def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
@@ -140,6 +142,52 @@ def test_sandbox_client_configures_gpu_at_duplication(monkeypatch):
     assert requested_hardware == []
     assert "Using duplicated Space hardware: t4-small" in logs
     assert "Using duplicated Space sleep time: 2700s" in logs
+
+
+def test_sandbox_client_logs_cpu_sleep_time_as_hub_fixed(monkeypatch):
+    duplicate_kwargs = {}
+    logs: list[str] = []
+    requested_hardware = []
+
+    class FakeApi:
+        def __init__(self, token=None):
+            self.token = token
+
+        def duplicate_space(self, **kwargs):
+            duplicate_kwargs.update(kwargs)
+
+        def request_space_hardware(self, space_id, hardware, sleep_time=None):
+            requested_hardware.append((space_id, hardware, sleep_time))
+
+        def add_space_secret(self, *args, **kwargs):
+            pass
+
+        def get_space_runtime(self, space_id):
+            return SimpleNamespace(stage="RUNNING", hardware="cpu-basic")
+
+    monkeypatch.setattr(sandbox_client, "HfApi", FakeApi)
+    monkeypatch.setattr(
+        Sandbox,
+        "_setup_server",
+        staticmethod(lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(Sandbox, "_wait_for_api", lambda self, *args, **kwargs: None)
+
+    Sandbox.create(
+        owner="alice",
+        token="hf-token",
+        sleep_time=2700,
+        log=logs.append,
+    )
+
+    assert duplicate_kwargs["hardware"] == "cpu-basic"
+    assert duplicate_kwargs["sleep_time"] == 2700
+    assert requested_hardware == []
+    assert "Using duplicated Space hardware: cpu-basic" in logs
+    assert (
+        "Requested duplicated Space sleep time: 2700s "
+        "(cpu-basic auto-sleep is fixed by the Hub)"
+    ) in logs
 
 
 def test_sandbox_tool_forces_private_spaces(monkeypatch):

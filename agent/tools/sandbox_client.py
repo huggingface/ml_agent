@@ -626,13 +626,21 @@ class Sandbox:
 
         _check_cancel()
 
-        # ``duplicate_space`` sends both hardware and sleepTimeSeconds in the
+        # ``duplicate_space`` sends hardware and sleepTimeSeconds in the
         # initial create request. Avoid a second /hardware call: deployed HF
         # OAuth tokens can 401 on that endpoint for a just-created private
-        # Space even though duplication itself succeeded.
+        # Space even though duplication itself succeeded. We rely on the
+        # duplicate endpoint to honor sleepTimeSeconds for upgraded hardware;
+        # cpu-basic auto-sleep is fixed by the Hub.
         _log(f"Using duplicated Space hardware: {hardware}")
         if sleep_time is not None:
-            _log(f"Using duplicated Space sleep time: {sleep_time}s")
+            if hardware == CPU_BASIC_HARDWARE:
+                _log(
+                    f"Requested duplicated Space sleep time: {sleep_time}s "
+                    "(cpu-basic auto-sleep is fixed by the Hub)"
+                )
+            else:
+                _log(f"Using duplicated Space sleep time: {sleep_time}s")
 
         # Inject secrets BEFORE uploading server files (which triggers rebuild).
         # Secrets added after a Space is running aren't available until restart,
