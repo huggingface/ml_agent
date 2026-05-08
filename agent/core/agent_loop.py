@@ -27,7 +27,6 @@ from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
 from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
-from agent.core.hub_artifacts import start_session_artifact_collection_task
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import DEFAULT_SESSION_LOG_DIR, Event, OpType, Session
@@ -2032,7 +2031,6 @@ async def submission_loop(
         session_holder[0] = session
     if not local_mode:
         start_cpu_sandbox_preload(session)
-    start_session_artifact_collection_task(session, token=hf_token)
     logger.info("Agent loop started")
 
     # Retry any failed uploads from previous sessions (fire-and-forget).

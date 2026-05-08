@@ -90,11 +90,6 @@ async def test_cli_sandbox_runtime_preloads_and_tears_down_sandbox(monkeypatch):
         torn_down.append(session)
 
     monkeypatch.setattr(
-        agent_loop,
-        "start_session_artifact_collection_task",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
         agent_loop, "start_cpu_sandbox_preload", fake_start_cpu_sandbox_preload
     )
     monkeypatch.setattr(
