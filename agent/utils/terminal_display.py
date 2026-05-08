@@ -92,7 +92,11 @@ def get_console() -> Console:
 # ── Banner ─────────────────────────────────────────────────────────────
 
 
-def print_banner(model: str | None = None, hf_user: str | None = None) -> None:
+def print_banner(
+    model: str | None = None,
+    hf_user: str | None = None,
+    tool_runtime: str | None = None,
+) -> None:
     """Print particle logo then CRT boot sequence with system info."""
     from agent.utils.particle_logo import run_particle_logo
     from agent.utils.crt_boot import run_boot_sequence
@@ -115,6 +119,7 @@ def print_banner(model: str | None = None, hf_user: str | None = None) -> None:
         (f"{_I}Initializing agent runtime...", gold),
         (f"{_I}  User: {user_label}", dim_gold),
         (f"{_I}  Model: {model_label}", dim_gold),
+        (f"{_I}  Tool runtime: {tool_runtime or 'local filesystem'}", dim_gold),
         (f"{_I}  Tools: loading...", dim_gold),
         ("", ""),
         (f"{_I}/help for commands · /model to switch · /quit to exit", gold),

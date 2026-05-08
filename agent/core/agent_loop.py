@@ -32,7 +32,11 @@ from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.tools.jobs_tool import CPU_FLAVORS
-from agent.tools.sandbox_tool import DEFAULT_CPU_SANDBOX_HARDWARE
+from agent.tools.sandbox_tool import (
+    DEFAULT_CPU_SANDBOX_HARDWARE,
+    start_cpu_sandbox_preload,
+    teardown_session_sandbox,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1926,6 +1930,8 @@ class Handlers:
             _ = session.save_and_upload_detached(repo_id)
 
         session.is_running = False
+        if not getattr(session, "local_mode", False):
+            await teardown_session_sandbox(session)
         await session.send_event(Event(event_type="shutdown"))
         return True
 
@@ -1999,6 +2005,8 @@ async def submission_loop(
     )
     if session_holder is not None:
         session_holder[0] = session
+    if not local_mode:
+        start_cpu_sandbox_preload(session)
     start_session_artifact_collection_task(session, token=hf_token)
     logger.info("Agent loop started")
 

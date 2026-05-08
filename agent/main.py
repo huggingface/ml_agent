@@ -57,6 +57,20 @@ litellm.suppress_debug_info = True
 CLI_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cli_agent_config.json"
 
 
+def _apply_tool_runtime_override(config: Any, *, sandbox_tools: bool) -> str:
+    if sandbox_tools:
+        config.tool_runtime = "sandbox"
+    return getattr(config, "tool_runtime", "local")
+
+
+def _is_local_tool_runtime(config: Any) -> bool:
+    return getattr(config, "tool_runtime", "local") == "local"
+
+
+def _tool_runtime_label(local_mode: bool) -> str:
+    return "local filesystem" if local_mode else "HF sandbox"
+
+
 def _is_scheduled_hf_job_tool(tool_info: dict[str, Any]) -> bool:
     if tool_info.get("tool") != "hf_jobs":
         return False
@@ -840,6 +854,7 @@ async def _handle_slash_command(
         session = session_holder[0] if session_holder else None
         print(f"Model: {config.model_name}")
         print(f"Reasoning effort: {config.reasoning_effort or 'off'}")
+        print(f"Tool runtime: {_tool_runtime_label(_is_local_tool_runtime(config))}")
         if session:
             print(f"Turns: {session.turn_count}")
             print(f"Context items: {len(session.context_manager.items)}")
@@ -959,7 +974,7 @@ async def _handle_share_traces_command(arg: str, config, session) -> None:
     console.print(f"[green]Dataset is now {label}.[/green] {url}")
 
 
-async def main(model: str | None = None):
+async def main(model: str | None = None, sandbox_tools: bool = False):
     """Interactive chat with the agent"""
 
     # Clear screen
@@ -971,16 +986,23 @@ async def main(model: str | None = None):
     config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     if model:
         config.model_name = model
+    _apply_tool_runtime_override(config, sandbox_tools=sandbox_tools)
+    local_mode = _is_local_tool_runtime(config)
 
-    # HF token — required for Hub-backed models/tools, but not for local LLMs.
+    # HF token — required for Hub-backed models/tools and sandbox tools, but
+    # not for local LLMs using only local filesystem tools.
     hf_token = resolve_hf_token()
-    if not hf_token and not is_local_model_id(config.model_name):
+    if not hf_token and (not is_local_model_id(config.model_name) or not local_mode):
         hf_token = await _prompt_and_save_hf_token(prompt_session)
 
     # Resolve username for banner
     hf_user = _get_hf_user(hf_token)
 
-    print_banner(model=config.model_name, hf_user=hf_user)
+    print_banner(
+        model=config.model_name,
+        hf_user=hf_user,
+        tool_runtime=_tool_runtime_label(local_mode),
+    )
 
     # Pre-warm the HF router catalog in the background so /model switches
     # don't block on a network fetch.
@@ -999,8 +1021,10 @@ async def main(model: str | None = None):
 
     notification_gateway = NotificationGateway(config.messaging)
     await notification_gateway.start()
-    # Create tool router with local mode
-    tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
+    # Create tool router with the selected CLI tool runtime.
+    tool_router = ToolRouter(
+        config.mcpServers, hf_token=hf_token, local_mode=local_mode
+    )
 
     # Session holder for interrupt/model/status access
     session_holder = [None]
@@ -1014,7 +1038,7 @@ async def main(model: str | None = None):
             session_holder=session_holder,
             hf_token=hf_token,
             user_id=hf_user,
-            local_mode=True,
+            local_mode=local_mode,
             stream=True,
             notification_gateway=notification_gateway,
             notification_destinations=config.messaging.default_auto_destinations(),
@@ -1192,6 +1216,7 @@ async def headless_main(
     model: str | None = None,
     max_iterations: int | None = None,
     stream: bool = True,
+    sandbox_tools: bool = False,
 ) -> None:
     """Run a single prompt headlessly and exit."""
     import logging
@@ -1204,11 +1229,13 @@ async def headless_main(
 
     if model:
         config.model_name = model
+    _apply_tool_runtime_override(config, sandbox_tools=sandbox_tools)
+    local_mode = _is_local_tool_runtime(config)
 
     hf_token = resolve_hf_token()
-    if not hf_token and not is_local_model_id(config.model_name):
+    if not hf_token and (not is_local_model_id(config.model_name) or not local_mode):
         print(
-            "ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.",
+            "ERROR: No HF token found. Set HF_TOKEN or run `hf auth login`.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1224,6 +1251,7 @@ async def headless_main(
         config.max_iterations = max_iterations
 
     print(f"Model: {config.model_name}", file=sys.stderr)
+    print(f"Tool runtime: {_tool_runtime_label(local_mode)}", file=sys.stderr)
     print(f"Max iterations: {config.max_iterations}", file=sys.stderr)
     print(f"Prompt: {prompt}", file=sys.stderr)
     print("---", file=sys.stderr)
@@ -1231,7 +1259,9 @@ async def headless_main(
     submission_queue: asyncio.Queue = asyncio.Queue()
     event_queue: asyncio.Queue = asyncio.Queue()
 
-    tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
+    tool_router = ToolRouter(
+        config.mcpServers, hf_token=hf_token, local_mode=local_mode
+    )
     session_holder: list = [None]
 
     agent_task = asyncio.create_task(
@@ -1243,7 +1273,7 @@ async def headless_main(
             session_holder=session_holder,
             hf_token=hf_token,
             user_id=hf_user,
-            local_mode=True,
+            local_mode=local_mode,
             stream=stream,
             notification_gateway=notification_gateway,
             notification_destinations=config.messaging.default_auto_destinations(),
@@ -1438,6 +1468,11 @@ def cli():
         action="store_true",
         help="Disable token streaming (use non-streaming LLM calls)",
     )
+    parser.add_argument(
+        "--sandbox-tools",
+        action="store_true",
+        help="Use HF Space sandbox tools instead of local filesystem tools",
+    )
     args = parser.parse_args()
 
     try:
@@ -1451,10 +1486,11 @@ def cli():
                     model=args.model,
                     max_iterations=max_iter,
                     stream=not args.no_stream,
+                    sandbox_tools=args.sandbox_tools,
                 )
             )
         else:
-            asyncio.run(main(model=args.model))
+            asyncio.run(main(model=args.model, sandbox_tools=args.sandbox_tools))
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
 
