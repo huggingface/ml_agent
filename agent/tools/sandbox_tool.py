@@ -24,10 +24,7 @@ from huggingface_hub import HfApi, SpaceHardware
 from agent.core.hub_artifacts import wrap_shell_command_with_hub_artifact_bootstrap
 from agent.core.session import Event
 from agent.tools.sandbox_client import Sandbox
-from agent.tools.trackio_seed import (
-    ensure_trackio_dashboard,
-    normalize_trackio_space_id,
-)
+from agent.tools.trackio_seed import ensure_trackio_dashboard
 
 logger = logging.getLogger(__name__)
 
@@ -589,7 +586,7 @@ async def sandbox_create_handler(
 ) -> tuple[str, bool]:
     """Handle sandbox_create tool calls."""
     hardware = args.get("hardware", DEFAULT_CPU_SANDBOX_HARDWARE)
-    trackio_space_id = normalize_trackio_space_id(args.get("trackio_space_id") or None)
+    trackio_space_id = args.get("trackio_space_id") or None
     trackio_project = args.get("trackio_project") or None
 
     async def _emit_trackio_state(sb: Sandbox) -> None:

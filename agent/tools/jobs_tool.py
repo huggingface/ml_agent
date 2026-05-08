@@ -23,10 +23,7 @@ from agent.core.hf_access import (
 )
 from agent.core.hub_artifacts import build_hub_artifact_sitecustomize
 from agent.core.session import Event
-from agent.tools.trackio_seed import (
-    ensure_trackio_dashboard,
-    normalize_trackio_space_id,
-)
+from agent.tools.trackio_seed import ensure_trackio_dashboard
 from agent.tools.types import ToolResult
 from agent.tools.utilities import (
     format_job_details,
@@ -595,7 +592,7 @@ class HfJobsTool:
             # so trackio.init() picks them up automatically. We also surface them
             # in tool_state_change so the frontend can embed the dashboard.
             env_dict = _add_default_env(args.get("env"))
-            trackio_space_id = normalize_trackio_space_id(args.get("trackio_space_id"))
+            trackio_space_id = args.get("trackio_space_id")
             trackio_project = args.get("trackio_project")
             if trackio_space_id:
                 env_dict["TRACKIO_SPACE_ID"] = trackio_space_id

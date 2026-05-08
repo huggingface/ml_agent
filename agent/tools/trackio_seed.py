@@ -67,25 +67,6 @@ _FILES = {
     "app.py": _APP_PY,
 }
 
-_LEGACY_TRACKIO_REPO_PREFIX = "mlintern-"
-_TRACKIO_REPO_PREFIX = "ml-intern-"
-
-
-def normalize_trackio_space_id(space_id: str | None) -> str | None:
-    """Rewrite the old dashboard repo prefix while preserving custom names."""
-    if not space_id:
-        return space_id
-
-    parts = space_id.rsplit("/", 1)
-    repo_name = parts[-1]
-    if not repo_name.startswith(_LEGACY_TRACKIO_REPO_PREFIX):
-        return space_id
-
-    repo_name = _TRACKIO_REPO_PREFIX + repo_name[len(_LEGACY_TRACKIO_REPO_PREFIX) :]
-    if len(parts) == 1:
-        return repo_name
-    return f"{parts[0]}/{repo_name}"
-
 
 def _already_seeded(api: HfApi, space_id: str) -> bool:
     """Cheap check: does the Space already have a trackio dashboard app.py?
