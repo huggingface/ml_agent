@@ -784,12 +784,15 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
   // Persist error states when tools error
   useEffect(() => {
     for (const tool of tools) {
-      const currentlyHasError = tool.state === 'output-error';
+      const currentlyHasError = tool.state === 'output-error' && !isCancelledTool(tool);
       const persistedError = getToolError(tool.toolCallId);
 
-      // Persist error state if we detect it and haven't already
+      // Persist real error states across refresh. Clear stale persisted errors
+      // once the SDK reports a successful output for the same tool call.
       if (currentlyHasError && !persistedError) {
         setToolError(tool.toolCallId, true);
+      } else if (tool.state === 'output-available' && persistedError) {
+        setToolError(tool.toolCallId, false);
       }
     }
   }, [tools, setToolError, getToolError]);

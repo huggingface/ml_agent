@@ -5,6 +5,7 @@ from io import StringIO
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
 import agent.main as main_mod
 from agent.tools.research_tool import _get_research_model
@@ -27,6 +28,50 @@ def test_bedrock_anthropic_research_model_stays_on_bedrock():
 
 def test_non_anthropic_research_model_is_unchanged():
     assert _get_research_model("openai/gpt-5.4") == "openai/gpt-5.4"
+
+
+def test_help_output_keeps_descriptions_aligned(monkeypatch):
+    output = StringIO()
+    console = Console(
+        file=output,
+        color_system=None,
+        theme=terminal_display._THEME,
+        width=120,
+    )
+    monkeypatch.setattr(terminal_display, "_console", console)
+
+    terminal_display.print_help()
+
+    lines = [line.rstrip() for line in output.getvalue().splitlines() if line.strip()]
+    description_columns = []
+    for command, args, description in terminal_display.HELP_ROWS:
+        line = next(line for line in lines if command in line)
+        if args:
+            assert args in line
+        description_columns.append(line.index(description))
+
+    assert len(set(description_columns)) == 1
+
+
+def test_help_output_recomputes_widths_from_rows():
+    rows = terminal_display.HELP_ROWS + (
+        ("/longer-command", "[longer-args]", "Synthetic help row"),
+    )
+    output = StringIO()
+    Console(
+        file=output,
+        color_system=None,
+        theme=terminal_display._THEME,
+        width=140,
+    ).print(terminal_display.format_help_text(rows))
+
+    lines = [line.rstrip() for line in output.getvalue().splitlines() if line.strip()]
+    description_columns = [
+        next(line for line in lines if command in line).index(description)
+        for command, _args, description in rows
+    ]
+
+    assert len(set(description_columns)) == 1
 
 
 def test_subagent_display_does_not_spawn_background_redraw(monkeypatch):

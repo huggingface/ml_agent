@@ -6,7 +6,7 @@
  *  - Connection / processing flags
  *  - Panel state (right panel — single-artifact pattern)
  *  - Plan state
- *  - User info / error banners
+ *  - User info / health and quota banners
  *  - Edited scripts (for hf_jobs code editing)
  *
  * Per-session state:
@@ -117,7 +117,6 @@ interface AgentStore {
   isConnected: boolean;
   activityStatus: ActivityStatus;
   user: User | null;
-  error: string | null;
   llmHealthError: LLMHealthError | null;
   /** Set when a premium-model send hits the daily quota; ChatInput opens the cap dialog. */
   claudeQuotaExhausted: boolean;
@@ -173,7 +172,6 @@ interface AgentStore {
   setConnected: (isConnected: boolean) => void;
   setActivityStatus: (status: ActivityStatus) => void;
   setUser: (user: User | null) => void;
-  setError: (error: string | null) => void;
   setLlmHealthError: (error: LLMHealthError | null) => void;
   setClaudeQuotaExhausted: (exhausted: boolean) => void;
   setJobsUpgradeRequired: (state: JobsUpgradeState | null) => void;
@@ -295,7 +293,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   isConnected: false,
   activityStatus: { type: 'idle' },
   user: null,
-  error: null,
   llmHealthError: null,
   claudeQuotaExhausted: false,
   jobsUpgradeRequired: null,
@@ -335,7 +332,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
     // (plus activityStatus when the processing→idle side-effect fires).
     // This prevents overwriting flat fields changed by global setters
     // (e.g. setPanelView called from CodePanel) with stale snapshot values.
-    let flatMirror: Record<string, unknown> = {};
+    const flatMirror: Record<string, unknown> = {};
     if (isActive) {
       for (const key of Object.keys(updates)) {
         flatMirror[key] = updated[key as keyof PerSessionState];
@@ -388,14 +385,13 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
       panelView: incoming.panelView,
       panelEditable: incoming.panelEditable,
       plan: incoming.plan,
-      // Clear transient error on switch
-      error: null,
     });
   },
 
   clearSessionState: (sessionId) => {
     set((state) => {
-      const { [sessionId]: _, ...rest } = state.sessionStates;
+      const rest = { ...state.sessionStates };
+      delete rest[sessionId];
       return { sessionStates: rest };
     });
   },
@@ -410,7 +406,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   setConnected: (isConnected) => set({ isConnected }),
   setActivityStatus: (status) => set({ activityStatus: status }),
   setUser: (user) => set({ user }),
-  setError: (error) => set({ error }),
   setLlmHealthError: (error) => set({ llmHealthError: error }),
   setClaudeQuotaExhausted: (exhausted) => set({ claudeQuotaExhausted: exhausted }),
   setJobsUpgradeRequired: (state) => set({ jobsUpgradeRequired: state }),
@@ -523,7 +518,12 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
 
   setToolError: (toolCallId, hasError) => {
     set((state) => {
-      const updated = { ...state.toolErrors, [toolCallId]: hasError };
+      const updated = { ...state.toolErrors };
+      if (hasError) {
+        updated[toolCallId] = true;
+      } else {
+        delete updated[toolCallId];
+      }
       saveToolErrors(updated);
       return { toolErrors: updated };
     });

@@ -35,7 +35,7 @@ DEV_USER: dict[str, Any] = {
     "user_id": "dev",
     "username": "dev",
     "authenticated": True,
-    "plan": "org",  # Dev runs at the Pro/Org quota tier so local testing isn't capped.
+    "plan": "pro",  # Dev runs at the Pro quota tier so local testing isn't capped.
 }
 
 INTERNAL_HF_TOKEN_KEY = "_hf_token"
@@ -53,8 +53,8 @@ REQUIRED_OAUTH_SCOPES: tuple[str, ...] = (
     "write-discussions",
 )
 
-# Plan field discovery — log the whoami-v2 shape once at DEBUG so we can
-# confirm the actual key in production without hammering the HF API.
+# Log the whoami-v2 shape once at DEBUG so we can confirm the production Pro
+# signal without hammering the HF API.
 _WHOAMI_SHAPE_LOGGED = False
 
 
@@ -136,10 +136,21 @@ def _user_from_info(user_info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_user_plan(whoami: Any) -> str:
+    """Normalize a whoami-v2 payload to the app's personal quota tiers."""
+    if not isinstance(whoami, dict):
+        return "free"
+
+    if whoami.get("isPro") is True:
+        return "pro"
+
+    return "free"
+
+
 async def _fetch_user_plan(token: str) -> str:
     """Look up the user's HF plan via /api/whoami-v2.
 
-    Returns 'free' | 'pro' | 'org'. Non-200, network errors, or an unknown
+    Returns 'free' | 'pro'. Non-200, network errors, or an unknown
     payload shape all collapse to 'free' — safe default; we'd rather under-
     grant the Pro cap than over-grant it on bad data.
     """
@@ -151,35 +162,14 @@ async def _fetch_user_plan(token: str) -> str:
     if not _WHOAMI_SHAPE_LOGGED:
         _WHOAMI_SHAPE_LOGGED = True
         logger.debug(
-            "whoami-v2 payload keys: %s (sample values: plan=%r type=%r isPro=%r)",
+            "whoami-v2 payload keys: %s (sample values: isPro=%r)",
             sorted(whoami.keys())
             if isinstance(whoami, dict)
             else type(whoami).__name__,
-            whoami.get("plan") if isinstance(whoami, dict) else None,
-            whoami.get("type") if isinstance(whoami, dict) else None,
             whoami.get("isPro") if isinstance(whoami, dict) else None,
         )
 
-    if not isinstance(whoami, dict):
-        return "free"
-
-    # OAuth whoami sets `type: "user"` and surfaces Pro via the `isPro` boolean
-    # — see Space discussion #21. HF-Jobs eligibility (PR #172) ignores plan
-    # entirely; the premium-model daily-cap tier is still a free vs pro/org split.
-    if whoami.get("isPro") is True or whoami.get("is_pro") is True:
-        return "pro"
-    plan_str = ""
-    for key in ("plan", "type", "accountType"):
-        value = whoami.get(key)
-        if isinstance(value, str) and value:
-            plan_str = value.lower()
-            break
-    if any(tag in plan_str for tag in ("pro", "enterprise", "team")):
-        return "pro"
-    orgs = whoami.get("orgs") or []
-    if isinstance(orgs, list) and orgs:
-        return "org"
-    return "free"
+    return _normalize_user_plan(whoami)
 
 
 async def _extract_user_from_token(token: str) -> dict[str, Any] | None:
