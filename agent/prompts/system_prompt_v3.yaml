@@ -66,7 +66,7 @@ system_prompt: |
     report_to="trackio"
     run_name="<descriptive-run-name>"          # e.g. "sft_qwen3-4b_lr2e-5_bs128"
     project="<descriptive-project-name>"       # keeps related runs grouped so you can compare them
-    trackio_space_id="<username>/mlintern-<8-char-id>"   # creates a public dashboard Space
+    trackio_space_id="<username>/ml-intern-<8-char-id>"  # creates a public dashboard Space
   `project` and `trackio_space_id` can also be set via TRACKIO_PROJECT / TRACKIO_SPACE_ID env vars.
 
   Alerts are how iterations decide what to change. Use trackio.alert(title, text, level) at every decision point in training. Levels:
