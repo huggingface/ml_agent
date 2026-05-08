@@ -32,7 +32,12 @@ def test_non_anthropic_research_model_is_unchanged():
 
 def test_help_output_keeps_descriptions_aligned(monkeypatch):
     output = StringIO()
-    console = Console(file=output, color_system=None, width=120)
+    console = Console(
+        file=output,
+        color_system=None,
+        theme=terminal_display._THEME,
+        width=120,
+    )
     monkeypatch.setattr(terminal_display, "_console", console)
 
     terminal_display.print_help()
@@ -44,6 +49,27 @@ def test_help_output_keeps_descriptions_aligned(monkeypatch):
         if args:
             assert args in line
         description_columns.append(line.index(description))
+
+    assert len(set(description_columns)) == 1
+
+
+def test_help_output_recomputes_widths_from_rows():
+    rows = terminal_display.HELP_ROWS + (
+        ("/longer-command", "[longer-args]", "Synthetic help row"),
+    )
+    output = StringIO()
+    Console(
+        file=output,
+        color_system=None,
+        theme=terminal_display._THEME,
+        width=140,
+    ).print(terminal_display.format_help_text(rows))
+
+    lines = [line.rstrip() for line in output.getvalue().splitlines() if line.strip()]
+    description_columns = [
+        next(line for line in lines if command in line).index(description)
+        for command, _args, description in rows
+    ]
 
     assert len(set(description_columns)) == 1
 

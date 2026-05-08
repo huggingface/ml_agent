@@ -468,30 +468,51 @@ HELP_ROWS: tuple[tuple[str, str, str], ...] = (
     ("/quit", "", "Exit"),
 )
 
-_HELP_COMMAND_WIDTH = max(len(command) for command, _, _ in HELP_ROWS)
-_HELP_ARGS_WIDTH = max(len(args) for _, args, _ in HELP_ROWS)
+
+def _help_column_widths(
+    rows: tuple[tuple[str, str, str], ...],
+) -> tuple[int, int]:
+    return (
+        max(len(command) for command, _, _ in rows),
+        max(len(args) for _, args, _ in rows),
+    )
 
 
-def _format_help_row(command: str, args: str, description: str) -> str:
-    command_gap = " " * (_HELP_COMMAND_WIDTH - len(command) + 2)
-    args_gap = " " * (_HELP_ARGS_WIDTH - len(args) + 2)
+def _format_help_row(
+    command: str,
+    args: str,
+    description: str,
+    command_width: int,
+    args_width: int,
+) -> str:
+    command_gap = " " * (command_width - len(command) + 2)
+    args_gap = " " * (args_width - len(args) + 2)
     command_markup = f"[cyan]{escape(command)}[/cyan]"
     args_markup = f"[muted]{escape(args)}[/muted]" if args else ""
     return f"{_I}  {command_markup}{command_gap}{args_markup}{args_gap}{description}"
 
 
-HELP_TEXT = "\n".join(
-    [f"{_I}[bold]Commands[/bold]"]
-    + [
-        _format_help_row(command, args, description)
-        for command, args, description in HELP_ROWS
-    ]
-)
+def format_help_text(rows: tuple[tuple[str, str, str], ...] | None = None) -> str:
+    help_rows = HELP_ROWS if rows is None else rows
+    command_width, args_width = _help_column_widths(help_rows)
+    return "\n".join(
+        [f"{_I}[bold]Commands[/bold]"]
+        + [
+            _format_help_row(
+                command,
+                args,
+                description,
+                command_width,
+                args_width,
+            )
+            for command, args, description in help_rows
+        ]
+    )
 
 
 def print_help() -> None:
     _console.print()
-    _console.print(HELP_TEXT)
+    _console.print(format_help_text())
     _console.print()
 
 
