@@ -1112,6 +1112,9 @@ HF_JOBS_TOOL_SPEC = {
         "- You MUST have called github_find_examples + github_read_file to find a working reference implementation. "
         "Scripts based on your internal knowledge WILL use outdated APIs and fail.\n"
         "- You MUST have validated dataset format via hf_inspect_dataset or hub_repo_details.\n"
+        "- If the job runs on GPU, or the script loads a model, uses CUDA, bf16/fp16, quantization, flash attention, "
+        "or torch.compile, you MUST create a GPU sandbox with sandbox_create first, run a tiny smoke test there, "
+        "and fix failures before submitting. If skipped, state why before calling hf_jobs.\n"
         "- Training config MUST include push_to_hub=True and hub_model_id. "
         "Job storage is EPHEMERAL — all files are deleted when the job ends. Without push_to_hub, trained models are lost permanently.\n"
         "- Include trackio monitoring and provide the dashboard URL to the user. "
@@ -1159,6 +1162,7 @@ HF_JOBS_TOOL_SPEC = {
                 "description": (
                     "Python code, sandbox file path (e.g. '/app/train.py', './train.py', or bare 'train.py'), or URL. "
                     "Triggers Python mode. For ML training: base this on a working example found via github_find_examples, not on internal knowledge. "
+                    "For GPU/model-loading training scripts, smoke-test in a GPU sandbox before submission. "
                     "Mutually exclusive with 'command'."
                 ),
             },

@@ -67,3 +67,4 @@ def test_hf_jobs_script_description_mentions_bare_python_filenames():
     ]
 
     assert "bare 'train.py'" in script_description
+    assert "smoke-test in a GPU sandbox before submission" in script_description

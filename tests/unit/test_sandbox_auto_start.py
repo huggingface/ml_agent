@@ -9,6 +9,7 @@ from agent.core import agent_loop
 from agent.core.agent_loop import _needs_approval
 from agent.core.session import OpType
 from agent.core.tools import create_builtin_tools
+from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC
 from agent.tools.sandbox_tool import get_sandbox_tools
 
 
@@ -50,6 +51,17 @@ def test_prompt_rejects_local_machine_paths_for_hf_jobs_scripts():
     assert "/fsx/..." in prompt
     assert "inline Python source code" in prompt
     assert "a file already written in the session sandbox" in prompt
+
+
+def test_prompt_and_hf_jobs_spec_require_gpu_preflight_for_gpu_jobs():
+    prompt = Path("agent/prompts/system_prompt_v3.yaml").read_text()
+    jobs_description = HF_JOBS_TOOL_SPEC["description"]
+
+    assert "GPU preflight is mandatory before hf_jobs" in prompt
+    assert "GPU sandbox smoke test" in prompt
+    assert "If you skip GPU sandbox preflight" in prompt
+    assert "you MUST create a GPU sandbox with sandbox_create first" in jobs_description
+    assert "If skipped, state why before calling hf_jobs" in jobs_description
 
 
 def test_local_tool_runtime_excludes_sandbox_create():
