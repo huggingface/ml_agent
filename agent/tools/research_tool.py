@@ -18,15 +18,10 @@ from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
-from agent.core.session import Event
+from agent.core.session import Event, _get_max_tokens_safe
 
 logger = logging.getLogger(__name__)
 
-# Context budget for the research subagent (tokens).
-# When usage exceeds WARN threshold, the subagent is told to wrap up.
-# At MAX, the loop is force-stopped and whatever content exists is returned.
-_RESEARCH_CONTEXT_WARN = 170_000  # 85% of 200k
-_RESEARCH_CONTEXT_MAX = 190_000
 
 # Tools the research agent can use (read-only subset)
 RESEARCH_TOOL_NAMES = {
@@ -254,6 +249,14 @@ async def research_handler(
     # Use a cheaper/faster model for research
     main_model = session.config.model_name
     research_model = _get_research_model(main_model)
+    _ctx_max = _get_max_tokens_safe(research_model)
+    # Context budget for the research subagent (tokens).
+    # When usage exceeds WARN threshold, the subagent is told to wrap up.
+    # At MAX, the loop is force-stopped and whatever content exists is returned.
+    _research_context_warn = int(
+        _ctx_max * 0.75
+    )  # Corresponding to the prompt "You have used 75% of your context budget."
+    _research_context_max = int(_ctx_max * 0.95)  # Hard-stop at 95%
     # Research is a cheap sub-call — cap the main session's effort at "high"
     # so a user preference of ``max``/``xhigh`` (valid for Opus 4.6/4.7) doesn't
     # propagate to a Sonnet research model that may not accept those levels.
@@ -322,7 +325,7 @@ async def research_handler(
             messages.append(Message(role="user", content=doom_prompt))
 
         # ── Context budget: warn at 75%, hard-stop at 95% ──
-        if _total_tokens >= _RESEARCH_CONTEXT_MAX:
+        if _total_tokens >= _research_context_max:
             logger.warning(
                 "Research sub-agent hit context max (%d tokens) — forcing summary",
                 _total_tokens,
@@ -374,7 +377,7 @@ async def research_handler(
             except Exception:
                 return "Research context exhausted and summary call failed.", False
 
-        if not _warned_context and _total_tokens >= _RESEARCH_CONTEXT_WARN:
+        if not _warned_context and _total_tokens >= _research_context_warn:
             _warned_context = True
             await _log(f"Context at {_total_tokens} tokens — nudging to wrap up")
             messages.append(
