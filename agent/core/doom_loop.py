@@ -122,11 +122,18 @@ def detect_identical_consecutive(
 
 def detect_repeating_sequence(
     signatures: list[ToolCallSignature],
+    min_reps: int = 2,
 ) -> list[ToolCallSignature] | None:
-    """Detect repeating patterns like [A,B,A,B] for sequences of length 2-5 with 2+ reps."""
+    """Detect repeating patterns like [A,B,A,B] for sequences of length 2-5.
+
+    ``min_reps`` controls how many full repetitions are required before the
+    pattern is flagged.  The default (2) matches the original behaviour.  Pass
+    ``min_reps=1`` when the budget is critical so even a single repeated cycle
+    is caught early (BAVT budget-aware pruning).
+    """
     n = len(signatures)
     for seq_len in range(2, 6):
-        min_required = seq_len * 2
+        min_required = seq_len * max(min_reps, 1)
         if n < min_required:
             continue
 
@@ -143,24 +150,37 @@ def detect_repeating_sequence(
             else:
                 break
 
-        if reps >= 2:
+        if reps >= min_reps:
             return pattern
 
     return None
 
 
-def check_for_doom_loop(messages: list[Message]) -> str | None:
-    """Check for doom loop patterns. Returns a corrective prompt or None."""
+def check_for_doom_loop(
+    messages: list[Message], budget_ratio: float = 1.0
+) -> str | None:
+    """Check for doom loop patterns. Returns a corrective prompt or None.
+
+    ``budget_ratio`` is the fraction of the iteration budget remaining (1.0 =
+    fresh, 0.0 = exhausted).  When the budget is low we tighten the detection
+    thresholds so repetitions are caught earlier — BAVT paper §4 "budget-aware
+    pruning" principle applied to doom-loop detection.
+    """
     signatures = extract_recent_tool_signatures(messages, lookback=30)
-    if len(signatures) < 3:
+
+    # Budget-aware identical-call threshold: 3 normally, 2 when budget is low.
+    ident_threshold = 2 if budget_ratio < 0.25 else 3
+    min_sigs = ident_threshold  # need at least threshold sigs to fire
+
+    if len(signatures) < min_sigs:
         return None
 
     # Check for identical consecutive calls
-    tool_name = detect_identical_consecutive(signatures, threshold=3)
+    tool_name = detect_identical_consecutive(signatures, threshold=ident_threshold)
     if tool_name:
         logger.warning(
             "Repetition guard activated: %d+ identical consecutive calls to '%s'",
-            3,
+            ident_threshold,
             tool_name,
         )
         return (
@@ -172,8 +192,10 @@ def check_for_doom_loop(messages: list[Message]) -> str | None:
             f"or explaining to the user what you're stuck on and asking for guidance."
         )
 
-    # Check for repeating sequences
-    pattern = detect_repeating_sequence(signatures)
+    # Check for repeating sequences.
+    # When budget is critically low (< 10 %) accept a single repetition cycle.
+    min_reps = 1 if budget_ratio < 0.10 else 2
+    pattern = detect_repeating_sequence(signatures, min_reps=min_reps)
     if pattern:
         pattern_desc = " → ".join(s.name for s in pattern)
         logger.warning(

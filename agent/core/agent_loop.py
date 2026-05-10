@@ -26,6 +26,7 @@ from agent.core.approval_policy import (
 from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
 from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
+from agent.core.bavt import BudgetConditionedController
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
@@ -1154,6 +1155,13 @@ class Handlers:
         errored = False
         max_iterations = session.config.max_iterations
 
+        # BAVT: budget-conditioned controller for iteration-budget management.
+        # Tracks remaining budget and injects corrective prompts / effort hints
+        # when the agent is burning iterations without meaningful progress.
+        # (arXiv:2603.12634 — "Spend Less, Reason Better")
+        budget_controller = BudgetConditionedController(max_iterations)
+        bavt_effort_hint: str | None = None
+
         while max_iterations == -1 or iteration < max_iterations:
             # ── Cancellation check: before LLM call ──
             if session.is_cancelled:
@@ -1169,12 +1177,39 @@ class Handlers:
             if not session.is_running:
                 break
 
-            # Doom-loop detection: break out of repeated tool call patterns
-            doom_prompt = check_for_doom_loop(session.context_manager.items)
+            # Doom-loop detection: break out of repeated tool call patterns.
+            # Pass budget_ratio so thresholds tighten as iterations deplete.
+            budget_ratio = budget_controller._tracker.ratio(iteration)
+            doom_prompt = check_for_doom_loop(
+                session.context_manager.items, budget_ratio=budget_ratio
+            )
             if doom_prompt:
                 session.context_manager.add_message(
                     Message(role="user", content=doom_prompt)
                 )
+
+            # BAVT budget-conditioned check: inject corrective messages and
+            # derive an effort hint when the budget is running low.
+            budget_signal = budget_controller.check(
+                messages=session.context_manager.items,
+                current_iteration=iteration,
+                current_effort=session.effective_effort_for(session.config.model_name),
+            )
+            if budget_signal.corrective_message:
+                session.context_manager.add_message(
+                    Message(role="user", content=budget_signal.corrective_message)
+                )
+                await session.send_event(
+                    Event(
+                        event_type="tool_log",
+                        data={
+                            "tool": "system",
+                            "log": budget_signal.corrective_message,
+                        },
+                    )
+                )
+            if budget_signal.effort_hint:
+                bavt_effort_hint = budget_signal.effort_hint
 
             malformed_tool = _detect_repeated_malformed(session.context_manager.items)
             if malformed_tool:
@@ -1211,9 +1246,8 @@ class Handlers:
                 llm_params = _resolve_llm_params(
                     session.config.model_name,
                     session.hf_token,
-                    reasoning_effort=session.effective_effort_for(
-                        session.config.model_name
-                    ),
+                    reasoning_effort=bavt_effort_hint
+                    or session.effective_effort_for(session.config.model_name),
                 )
                 if session.stream:
                     llm_result = await _call_llm_streaming(

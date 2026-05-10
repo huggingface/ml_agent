@@ -264,17 +264,20 @@ User Message
      ╔═══════════════════════════════════════════╗
      ║      Iteration Loop (max 300)             ║
      ║                                           ║
+     ║  BAVT budget check (ratio + progress)     ║
+     ║         ↓                                 ║
+     ║  Doom loop check (budget-aware)           ║
+     ║         ↓                                 ║
      ║  Get messages + tool specs                ║
      ║         ↓                                 ║
      ║  litellm.acompletion()                    ║
+     ║    (effort may be downgraded by BAVT)     ║
      ║         ↓                                 ║
      ║  Has tool_calls? ──No──> Done             ║
      ║         │                                 ║
      ║        Yes                                ║
      ║         ↓                                 ║
      ║  Add assistant msg (with tool_calls)      ║
-     ║         ↓                                 ║
-     ║  Doom loop check                          ║
      ║         ↓                                 ║
      ║  For each tool_call:                      ║
      ║    • Needs approval? ──Yes──> Wait for    ║
@@ -289,6 +292,38 @@ User Message
      ║         └───────────────────────┘         ║
      ╚═══════════════════════════════════════════╝
 ```
+
+### Budget-Aware Loop Control (BAVT)
+
+The agent loop integrates a training-free budget management system adapted from:
+
+> **"Spend Less, Reason Better: Budget-Aware Value Tree Search for LLM Agents"**  
+> Yushu Li, Wenlong Deng, Jiajin Li, Xiaoxiao Li — [arXiv:2603.12634](https://arxiv.org/abs/2603.12634) (March 2026)
+
+At each iteration, `BudgetConditionedController` computes:
+
+- **Budget ratio** — `remaining_iterations / max_iterations`. Drives a
+  continuous exploration→exploitation transition: broad when high, greedy when
+  low.
+- **Residual progress score** — lightweight heuristic (no LLM calls) over the
+  last 12 messages. Measures *relative* content-delta and tool-result quality,
+  avoiding the self-evaluation overconfidence the paper identifies as the key
+  flaw of naive value estimation.
+
+Based on `(budget_ratio, progress_score)` the controller may:
+
+| Condition | Action |
+|---|---|
+| ratio < 50 % and progress stalling | Inject a gentle nudge message |
+| ratio < 25 % and progress negative | Inject redirect + downgrade `reasoning_effort` one level |
+| ratio < 10 % | Inject a "wrap up now" directive + max effort downgrade |
+
+The doom-loop detector also tightens its thresholds under budget pressure:
+identical-call threshold drops from 3 → 2 at ratio < 25 %, and the
+sequence-repetition detector activates after a single cycle at ratio < 10 %.
+
+All BAVT behaviour is a **no-op** when `--max-iterations` is not set (unlimited
+runs), so existing workflows are unaffected.
 
 ## Events
 
