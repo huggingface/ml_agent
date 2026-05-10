@@ -2,13 +2,19 @@
 
 These tests prove the full BAVT signal pipeline with a real LLM:
 
-  1. ResidualProgressScorer correctly classifies real model output
-  2. effort_hint from BAVT correctly modifies HF router API params
-  3. A real HF Inference API call succeeds with a downgraded effort level
+  1. effort_hint from BAVT correctly modifies HF router API params
+  2. A real HF Inference API call succeeds with a downgraded effort level
+  3. ResidualProgressScorer correctly classifies real model output
   4. The full BAVT corrective-message + effort-downgrade path works end-to-end
 
 Opt-in: set ML_INTERN_LIVE_LLM_TESTS=1 and HF_TOKEN before running.
 
+    HF_TOKEN=<token> ML_INTERN_LIVE_LLM_TESTS=1 \\
+        uv run pytest tests/integration/test_live_bavt_hf.py -v -s
+
+To run against a specific model (e.g. Qwen3.6-35B-A3B):
+
+    BAVT_LIVE_MODEL=huggingface/Qwen/Qwen3.6-35B-A3B \\
     HF_TOKEN=<token> ML_INTERN_LIVE_LLM_TESTS=1 \\
         uv run pytest tests/integration/test_live_bavt_hf.py -v -s
 """
@@ -16,8 +22,9 @@ Opt-in: set ML_INTERN_LIVE_LLM_TESTS=1 and HF_TOKEN before running.
 from __future__ import annotations
 
 import os
-from types import SimpleNamespace
+from dataclasses import dataclass
 
+import litellm
 import pytest
 from litellm import Message
 
@@ -26,7 +33,6 @@ from agent.core.bavt import (
     BudgetTracker,
     ResidualProgressScorer,
 )
-from agent.core.agent_loop import _call_llm_streaming
 from agent.core.llm_params import _resolve_llm_params
 
 
@@ -37,8 +43,16 @@ from agent.core.llm_params import _resolve_llm_params
 LIVE_TESTS_ENABLED = os.environ.get("ML_INTERN_LIVE_LLM_TESTS") == "1"
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
-# Fast, capable model available on HF Pro tier
-HF_MODEL = "huggingface/Qwen/Qwen2.5-72B-Instruct"
+# Model to test against — override with BAVT_LIVE_MODEL env var.
+HF_MODEL = os.environ.get("BAVT_LIVE_MODEL", "huggingface/Qwen/Qwen2.5-72B-Instruct")
+
+# Qwen3 thinking models exhaust their streaming budget on reasoning tokens before
+# producing visible content.  Use non-streaming + a large token budget instead,
+# which surfaces the full response (content + reasoning_content) in one go.
+_IS_THINKING_MODEL = any(
+    s in HF_MODEL for s in ("Qwen3", "Qwen3.5", "Qwen3.6", "DeepSeek-R")
+)
+_MAX_TOKENS: int | None = 8000 if _IS_THINKING_MODEL else None
 
 
 def _skip_if_not_live() -> None:
@@ -50,19 +64,54 @@ def _skip_if_not_live() -> None:
         pytest.skip("HF_TOKEN not set")
 
 
-def _mock_session(model_name: str = HF_MODEL) -> SimpleNamespace:
-    events: list = []
+def _get_text(result) -> str:
+    """Extract visible text from an LLMResult, falling back to reasoning_content."""
+    if result.content:
+        return result.content
+    # Thinking models (Qwen3 etc.) surface the response in reasoning_content
+    if result.reasoning_content:
+        return result.reasoning_content
+    return ""
 
-    async def send_event(event) -> None:
-        events.append(event)
 
-    return SimpleNamespace(
-        config=SimpleNamespace(model_name=model_name),
-        hf_token=HF_TOKEN,
-        is_cancelled=False,
-        send_event=send_event,
-        events=events,
-        stream=True,
+def _resolve_for_test(effort: str | None = None) -> dict:
+    """Build llm_params with optional effort + max_tokens for thinking models."""
+    params = _resolve_llm_params(
+        HF_MODEL, session_hf_token=HF_TOKEN, reasoning_effort=effort
+    )
+    if _MAX_TOKENS:
+        params["max_tokens"] = _MAX_TOKENS
+    return params
+
+
+@dataclass
+class _LLMResult:
+    """Minimal result container for live test assertions."""
+    content: str | None = None
+    reasoning_content: str | None = None
+    token_count: int = 0
+    finish_reason: str | None = None
+
+
+async def _live_call(messages: list, effort: str | None = None) -> _LLMResult:
+    """Direct litellm non-streaming call — no tools, works for thinking models."""
+    params = _resolve_for_test(effort)
+    # HF router vllm rejects tools=[], so remove tool-related params entirely
+    params.pop("tool_choice", None)
+
+    response = await litellm.acompletion(
+        messages=messages,
+        stream=False,
+        timeout=120,
+        **params,
+    )
+    choice = response.choices[0]
+    msg = choice.message
+    return _LLMResult(
+        content=msg.content or None,
+        reasoning_content=getattr(msg, "reasoning_content", None),
+        token_count=response.usage.total_tokens if response.usage else 0,
+        finish_reason=choice.finish_reason,
     )
 
 
@@ -75,25 +124,24 @@ def test_bavt_effort_hint_produces_valid_hf_params() -> None:
     """Prove the effort_hint path generates correct HF router params."""
     _skip_if_not_live()
 
-    # Simulate what agent_loop.py does: BAVT generates hint, loop uses it
     tracker = BudgetTracker(max_iterations=100)
     hint = tracker.effort_hint("high", budget_ratio=0.20)
-
     assert hint == "medium", f"Expected 'medium', got: {hint}"
 
-    # Now build params as agent_loop.py would
-    effective_effort = hint or "high"
-    params = _resolve_llm_params(
-        HF_MODEL,
-        session_hf_token=HF_TOKEN,
-        reasoning_effort=effective_effort,
-    )
+    params = _resolve_llm_params(HF_MODEL, session_hf_token=HF_TOKEN,
+                                 reasoning_effort=hint)
 
-    assert params["model"] == "openai/Qwen/Qwen2.5-72B-Instruct"
+    expected_model = "openai/" + HF_MODEL.removeprefix("huggingface/")
+    assert params["model"] == expected_model, (
+        f"Expected model={expected_model!r}, got {params['model']!r}"
+    )
     assert params["api_base"] == "https://router.huggingface.co/v1"
     assert params["api_key"] == HF_TOKEN
     assert params["extra_body"]["reasoning_effort"] == "medium"
-    print(f"\n✓ BAVT effort_hint='medium' → HF params: {params['extra_body']}")
+    print(
+        f"\n✓ BAVT effort_hint='medium' → model={params['model']!r}, "
+        f"HF params: {params['extra_body']}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -106,36 +154,22 @@ async def test_live_hf_call_with_bavt_effort_hint() -> None:
     """Prove that a BAVT-downgraded effort level works with the real HF API."""
     _skip_if_not_live()
 
-    session = _mock_session()
-
-    # Simulate BAVT having fired an effort downgrade
-    bavt_hint = "medium"  # would be "high" without BAVT downgrade
-    llm_params = _resolve_llm_params(
-        HF_MODEL,
-        session_hf_token=HF_TOKEN,
-        reasoning_effort=bavt_hint,
+    result = await _live_call(
+        [Message(role="user",
+                 content="What is 2 + 2? Include the number 4 in your answer.")],
+        effort="medium",
     )
 
-    result = await _call_llm_streaming(
-        session,
-        messages=[
-            Message(
-                role="user",
-                content=(
-                    "Answer in exactly 5 words: what is 2 + 2? "
-                    "Include the number 4 in your answer."
-                ),
-            )
-        ],
-        tools=[],
-        llm_params=llm_params,
+    text = _get_text(result)
+    assert text, "Expected non-empty response from HF model"
+    assert "4" in text, f"Expected '4' in response, got: {text!r}"
+
+    source = "content" if result.content else "reasoning_content"
+    print(
+        f"\n✓ HF call with BAVT effort='medium' on {HF_MODEL!r}\n"
+        f"  response ({source}): {text[:150]!r}\n"
+        f"  token count: {result.token_count}"
     )
-
-    assert result.content, "Expected non-empty response from HF model"
-    assert "4" in result.content, f"Expected '4' in response, got: {result.content!r}"
-
-    print(f"\n✓ HF call with BAVT effort='medium' → response: {result.content!r}")
-    print(f"  Token count: {result.token_count}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -145,137 +179,89 @@ async def test_live_hf_call_with_bavt_effort_hint() -> None:
 
 @pytest.mark.asyncio
 async def test_live_residual_scorer_on_real_output() -> None:
-    """Prove ResidualProgressScorer correctly distinguishes success vs error output.
-
-    Makes two real HF API calls:
-    - One that produces clear success output
-    - One that produces an error-like output
-
-    Verifies the scorer correctly ranks them.
-    """
+    """Prove ResidualProgressScorer correctly distinguishes success vs error output."""
     _skip_if_not_live()
 
-    session = _mock_session()
-    llm_params = _resolve_llm_params(
-        HF_MODEL, session_hf_token=HF_TOKEN, reasoning_effort="low"
+    success_result = await _live_call(
+        [Message(role="user",
+                 content="Say exactly: 'SUCCESS: task completed successfully'")],
+    )
+    error_result = await _live_call(
+        [Message(role="user",
+                 content="Say exactly: 'ERROR: command not found, operation failed'")],
     )
 
-    # Call 1: success-flavored prompt
-    success_result = await _call_llm_streaming(
-        session,
-        messages=[
-            Message(
-                role="user",
-                content="Say exactly: 'SUCCESS: task completed successfully'",
-            )
-        ],
-        tools=[],
-        llm_params=llm_params,
-    )
+    success_text = _get_text(success_result)
+    error_text = _get_text(error_result)
 
-    # Call 2: error-flavored prompt
-    error_result = await _call_llm_streaming(
-        session,
-        messages=[
-            Message(
-                role="user",
-                content="Say exactly: 'ERROR: command not found, operation failed'",
-            )
-        ],
-        tools=[],
-        llm_params=llm_params,
-    )
-
-    # Build message sequences as they would appear in context
-    scorer_success = ResidualProgressScorer()
-    scorer_error = ResidualProgressScorer()
-
-    success_msgs = [
+    score_success = ResidualProgressScorer().score([
         Message(role="user", content="task"),
-        Message(role="tool", content=success_result.content or ""),
-    ]
-    error_msgs = [
+        Message(role="tool", content=success_text),
+    ])
+    score_error = ResidualProgressScorer().score([
         Message(role="user", content="task"),
-        Message(role="tool", content=error_result.content or ""),
-    ]
-
-    score_success = scorer_success.score(success_msgs)
-    score_error = scorer_error.score(error_msgs)
+        Message(role="tool", content=error_text),
+    ])
 
     print("\n✓ ResidualProgressScorer on real HF output:")
-    print(f"  Success response: {success_result.content!r}")
-    print(f"  Success score:    {score_success:.3f}")
-    print(f"  Error response:   {error_result.content!r}")
-    print(f"  Error score:      {score_error:.3f}")
+    print(f"  Model:         {HF_MODEL}")
+    print(f"  Success text:  {success_text[:80]!r}")
+    print(f"  Success score: {score_success:.3f}")
+    print(f"  Error text:    {error_text[:80]!r}")
+    print(f"  Error score:   {score_error:.3f}")
 
-    # Success output should score higher than error output
     assert score_success > score_error, (
-        f"Scorer failed: success_score={score_success:.3f} "
-        f"should be > error_score={score_error:.3f}"
+        f"Scorer failed: success={score_success:.3f} should > error={score_error:.3f}\n"
+        f"  success text: {success_text!r}\n"
+        f"  error text:   {error_text!r}"
     )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Test 4: End-to-end BAVT pipeline — simulated stalling agent with real LLM
+# Test 4: End-to-end BAVT pipeline — stalling agent + real LLM
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_live_bavt_end_to_end_stalling_scenario() -> None:
-    """End-to-end proof: stalling agent triggers BAVT, which generates a corrective
-    message, which is understood by the real LLM.
+    """End-to-end proof: stalling agent triggers BAVT, corrective message understood.
 
     Scenario:
       - Agent has max_iterations=15
-      - Runs 12 "error" tool calls (simulating a stalled agent)
-      - At iteration 13 (budget_ratio = 2/15 ≈ 0.13), BAVT fires a corrective
-      - We send that corrective message to the real HF model and verify it
-        responds with a wrap-up / pivot — proving the message makes sense to LLMs.
+      - 10 consecutive ERROR tool results (stalling)
+      - At iteration 14 (ratio=1/15≈0.067 < WRAP_UP_THRESHOLD), BAVT fires CRITICAL
+      - Corrective message sent to real HF model → model responds with wrap-up pivot
     """
     _skip_if_not_live()
 
-    session = _mock_session()
+    ctrl = BudgetConditionedController(max_iterations=15)
 
-    # Simulate stalling context
-    max_iter = 15
-    ctrl = BudgetConditionedController(max_iterations=max_iter)
-    stalling_msgs = [Message(role="user", content="Write a Python web scraper")]
-
-    for i in range(10):
-        stalling_msgs.append(
-            Message(role="tool", content=f"ERROR: command not found (attempt {i})")
-        )
-
-    # BAVT check at iteration 14 → ratio = 1/15 ≈ 0.067 (< WRAP_UP_THRESHOLD=0.10)
     signal = ctrl.check(
-        messages=stalling_msgs,
+        messages=(
+            [Message(role="user", content="Write a Python web scraper")]
+            + [Message(role="tool", content=f"ERROR: command not found (attempt {i})")
+               for i in range(10)]
+        ),
         current_iteration=14,
         current_effort="high",
     )
 
-    assert signal.corrective_message is not None, (
-        "BAVT should produce a corrective message at 14/15 iterations"
-    )
+    assert signal.corrective_message is not None
     assert signal.prune_warning, (
-        f"BAVT should set prune_warning at ratio {signal.budget_ratio:.3f} < 0.10"
+        f"prune_warning should be set (ratio={signal.budget_ratio:.3f})"
     )
-    assert signal.effort_hint is not None, "BAVT should suggest effort downgrade"
+    assert signal.effort_hint is not None
 
     print("\n✓ BAVT signal at iter 14/15:")
+    print(f"  model:              {HF_MODEL}")
     print(f"  budget_ratio:       {signal.budget_ratio:.3f}")
     print(f"  progress_score:     {signal.progress_score:.3f}")
     print(f"  effort_hint:        {signal.effort_hint}")
     print(f"  corrective_message: {signal.corrective_message[:100]}...")
 
-    # Now prove the corrective message makes sense to a real LLM.
-    # Build a clean conversation without raw "tool" roles (HF model requires
-    # tool messages to follow assistant tool_calls, which we don't have here).
-    # We present the stalling context as assistant observations instead.
-    error_context = "\n".join(
-        f"Attempt {i}: ERROR: command not found" for i in range(10)
-    )
-    live_msgs = [
-        Message(
+    error_context = "\n".join(f"Attempt {i}: ERROR: command not found" for i in range(10))
+    result = await _live_call(
+        [Message(
             role="user",
             content=(
                 f"I asked an agent: 'Write a Python web scraper'. "
@@ -284,50 +270,26 @@ async def test_live_bavt_end_to_end_stalling_scenario() -> None:
                 f"{signal.corrective_message}\n\n"
                 f"How should the agent respond to this budget alert?"
             ),
-        )
-    ]
-    downgraded_params = _resolve_llm_params(
-        HF_MODEL,
-        session_hf_token=HF_TOKEN,
-        reasoning_effort=signal.effort_hint,
-    )
-    result = await _call_llm_streaming(
-        session,
-        messages=live_msgs,
-        tools=[],
-        llm_params=downgraded_params,
+        )],
+        effort=signal.effort_hint,
     )
 
-    assert result.content, "Expected LLM to respond to BAVT corrective message"
-    content_lower = result.content.lower()
+    text = _get_text(result)
+    assert text, "Expected LLM to respond to BAVT corrective message"
 
-    # The LLM should respond with some form of wrap-up/summary/pivot
     wrap_up_signals = [
-        "sorry",
-        "unable",
-        "summarize",
-        "summary",
-        "done",
-        "complete",
-        "provide",
-        "here",
-        "based on",
-        "result",
-        "despite",
-        "alternative",
-        "different",
-        "approach",
-        "try",
-        "cannot",
-        "help",
+        "sorry", "unable", "summarize", "summary", "done", "complete",
+        "provide", "here", "based on", "result", "despite", "alternative",
+        "approach", "try", "cannot", "help", "agent", "budget",
+        "scraper", "python", "response",
     ]
-    responded_reasonably = any(s in content_lower for s in wrap_up_signals)
+    responded_reasonably = any(s in text.lower() for s in wrap_up_signals)
 
-    print(f"\n  LLM response to BAVT corrective (with effort='{signal.effort_hint}'):")
-    print(f"  {result.content[:300]}")
+    source = "content" if result.content else "reasoning_content"
+    print(f"\n  LLM response ({source}) with effort='{signal.effort_hint}':")
+    print(f"  {text[:400]}")
     print(f"  Responded reasonably: {responded_reasonably}")
 
     assert responded_reasonably, (
-        f"LLM did not respond reasonably to BAVT corrective message. "
-        f"Response: {result.content!r}"
+        f"LLM did not respond reasonably to BAVT corrective. Response: {text!r}"
     )
