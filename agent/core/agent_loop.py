@@ -24,6 +24,13 @@ from agent.core.approval_policy import (
     normalize_tool_operation,
 )
 from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
+from agent.core.codex_responses import (
+    CodexAPIError,
+    CodexAuthRequiredError,
+    call_codex_responses,
+    is_codex_llm_params,
+    resolve_codex_llm_params,
+)
 from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
@@ -496,15 +503,27 @@ async def _heal_effort_and_rebuild_params(
             session.model_effective_effort[model] = None
             logger.info("healed: %s probe inconclusive — stripped", model)
 
-    return _resolve_llm_params(
+    params = _resolve_llm_params(
         model,
         session.hf_token,
         reasoning_effort=session.effective_effort_for(model),
     )
+    if is_codex_llm_params(params):
+        return await resolve_codex_llm_params(
+            model,
+            user_id=session.user_id,
+            reasoning_effort=session.effective_effort_for(model),
+        )
+    return params
 
 
 def _friendly_error_message(error: Exception) -> str | None:
     """Return a user-friendly message for known error types, or None to fall back to traceback."""
+    if isinstance(error, CodexAuthRequiredError):
+        return str(error)
+    if isinstance(error, CodexAPIError):
+        return f"OpenAI Codex request failed: {error}"
+
     err_str = str(error).lower()
 
     if (
@@ -811,6 +830,22 @@ async def _call_llm_streaming(
     session: Session, messages, tools, llm_params
 ) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
+    if is_codex_llm_params(llm_params):
+        result = await call_codex_responses(
+            session,
+            messages,
+            tools,
+            llm_params,
+            emit_events=True,
+        )
+        return LLMResult(
+            content=result.content,
+            tool_calls_acc=result.tool_calls_acc,
+            token_count=result.token_count,
+            finish_reason=result.finish_reason,
+            usage=result.usage,
+        )
+
     response = None
     _healed_effort = False  # one-shot safety net per call
     _healed_thinking_signature = False
@@ -969,6 +1004,26 @@ async def _call_llm_non_streaming(
     session: Session, messages, tools, llm_params
 ) -> LLMResult:
     """Call the LLM without streaming, emit assistant_message at the end."""
+    if is_codex_llm_params(llm_params):
+        result = await call_codex_responses(
+            session,
+            messages,
+            tools,
+            llm_params,
+            emit_events=False,
+        )
+        if result.content:
+            await session.send_event(
+                Event(event_type="assistant_message", data={"content": result.content})
+            )
+        return LLMResult(
+            content=result.content,
+            tool_calls_acc=result.tool_calls_acc,
+            token_count=result.token_count,
+            finish_reason=result.finish_reason,
+            usage=result.usage,
+        )
+
     response = None
     _healed_effort = False
     _healed_thinking_signature = False
@@ -1215,6 +1270,14 @@ class Handlers:
                         session.config.model_name
                     ),
                 )
+                if is_codex_llm_params(llm_params):
+                    llm_params = await resolve_codex_llm_params(
+                        session.config.model_name,
+                        user_id=session.user_id,
+                        reasoning_effort=session.effective_effort_for(
+                            session.config.model_name
+                        ),
+                    )
                 if session.stream:
                     llm_result = await _call_llm_streaming(
                         session, messages, tools, llm_params

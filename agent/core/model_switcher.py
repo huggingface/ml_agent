@@ -19,6 +19,10 @@ import asyncio
 
 from litellm import acompletion
 
+from agent.core.codex_responses import (
+    CODEX_MODEL_PREFIX,
+    resolve_codex_llm_params,
+)
 from agent.core.effort_probe import ProbeInconclusive, probe_effort
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.local_models import (
@@ -34,6 +38,7 @@ from agent.core.local_models import (
 # ":cheapest" / ":preferred" / ":<provider>" to override the default
 # routing policy (auto = fastest with failover).
 SUGGESTED_MODELS = [
+    {"id": "openai-codex/gpt-5.5", "label": "GPT-5.5 Codex"},
     {"id": "openai/gpt-5.5", "label": "GPT-5.5"},
     {"id": "openai/gpt-5.4", "label": "GPT-5.4"},
     {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7"},
@@ -50,7 +55,7 @@ SUGGESTED_MODELS = [
 
 
 _ROUTING_POLICIES = {"fastest", "cheapest", "preferred"}
-_DIRECT_PREFIXES = ("anthropic/", "openai/", *LOCAL_MODEL_PREFIXES)
+_DIRECT_PREFIXES = ("anthropic/", "openai/", CODEX_MODEL_PREFIX, *LOCAL_MODEL_PREFIXES)
 _LOCAL_PROBE_TIMEOUT = 15.0
 
 
@@ -163,6 +168,7 @@ def print_model_listing(config, console) -> None:
         "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
         "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
         "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.\n"
+        "Use 'openai-codex/<model>' for ChatGPT Codex subscription access.\n"
         "Use 'ollama/<model>', 'vllm/<model>', 'lm_studio/<model>', or "
         "'llamacpp/<model>' for local OpenAI-compatible endpoints.[/dim]"
     )
@@ -175,6 +181,7 @@ def print_invalid_id(arg: str, console) -> None:
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
         "  • anthropic/<model>\n"
         "  • openai/<model>\n"
+        "  • openai-codex/<model>\n"
         "  • ollama/<model> | vllm/<model> | lm_studio/<model> | llamacpp/<model>[/dim]"
     )
 
@@ -215,6 +222,7 @@ async def probe_and_switch_model(
     persistent. Local models reject every probe error, including timeouts, and
     keep the current model.
     """
+    preference = config.reasoning_effort
     if is_local_model_id(model_id):
         console.print(f"[dim]checking local model {model_id}...[/dim]")
         try:
@@ -230,7 +238,25 @@ async def probe_and_switch_model(
         )
         return
 
-    preference = config.reasoning_effort
+    if model_id.startswith(CODEX_MODEL_PREFIX):
+        try:
+            await resolve_codex_llm_params(
+                model_id,
+                user_id=getattr(session, "user_id", None),
+                reasoning_effort=preference,
+            )
+        except Exception as e:
+            console.print(f"[bold red]Switch failed:[/bold red] {e}")
+            console.print(f"[dim]Keeping current model: {config.model_name}[/dim]")
+            return
+
+        _commit_switch(model_id, config, session, effective=None, cache=False)
+        console.print(
+            f"[green]Model switched to {model_id}[/green] "
+            "[dim](ChatGPT Codex OAuth)[/dim]"
+        )
+        return
+
     if not _print_hf_routing_info(model_id, console):
         return
 

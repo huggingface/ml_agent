@@ -16,6 +16,7 @@ def test_model_switcher_accepts_supported_local_prefixes():
     assert model_switcher.is_valid_model_id("vllm/meta-llama/Llama-3.1-8B")
     assert model_switcher.is_valid_model_id("lm_studio/google/gemma-3-4b")
     assert model_switcher.is_valid_model_id("llamacpp/llama-3.1-8b")
+    assert model_switcher.is_valid_model_id("openai-codex/gpt-5.5")
 
 
 def test_model_switcher_rejects_empty_or_whitespace_local_ids():
@@ -37,6 +38,17 @@ def test_local_models_skip_hf_router_catalog_output():
 
     assert model_switcher._print_hf_routing_info(
         "ollama/llama3.1:8b",
+        NoPrintConsole(),
+    )
+
+
+def test_codex_models_skip_hf_router_catalog_output():
+    class NoPrintConsole:
+        def print(self, *args, **kwargs):
+            raise AssertionError("Codex models should not print HF catalog info")
+
+    assert model_switcher._print_hf_routing_info(
+        "openai-codex/gpt-5.5",
         NoPrintConsole(),
     )
 
@@ -119,3 +131,51 @@ async def test_probe_and_switch_local_model_rejects_probe_errors(monkeypatch):
     assert config.model_name == "openai/gpt-5.5"
     assert session.model_id is None
     assert "ollama/llama3.1:8b" not in session.model_effective_effort
+
+
+@pytest.mark.asyncio
+async def test_probe_and_switch_codex_model_validates_oauth_without_litellm(
+    monkeypatch,
+):
+    calls = []
+
+    async def fake_resolve(model_id, *, user_id, reasoning_effort):
+        calls.append((model_id, user_id, reasoning_effort))
+        return {"_ml_intern_provider": "openai-codex"}
+
+    async def fail_acompletion(**kwargs):
+        raise AssertionError("Codex switch should not use LiteLLM")
+
+    monkeypatch.setattr(model_switcher, "resolve_codex_llm_params", fake_resolve)
+    monkeypatch.setattr(model_switcher, "acompletion", fail_acompletion)
+
+    class Config:
+        model_name = "openai/gpt-5.5"
+        reasoning_effort = "high"
+
+    class Session:
+        user_id = "user-1"
+
+        def __init__(self):
+            self.model_id = None
+            self.model_effective_effort = {}
+
+        def update_model(self, model_id):
+            self.model_id = model_id
+
+    class Console:
+        def print(self, *args, **kwargs):
+            pass
+
+    session = Session()
+    await model_switcher.probe_and_switch_model(
+        "openai-codex/gpt-5.5",
+        Config(),
+        session,
+        Console(),
+        hf_token=None,
+    )
+
+    assert calls == [("openai-codex/gpt-5.5", "user-1", "high")]
+    assert session.model_id == "openai-codex/gpt-5.5"
+    assert "openai-codex/gpt-5.5" not in session.model_effective_effort

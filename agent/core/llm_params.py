@@ -89,12 +89,14 @@ _patch_litellm_effort_validation()
 # Effort levels accepted on the wire.
 #   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
 #   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
+#   OpenAI Codex OAuth: low | medium | high | xhigh         (ChatGPT Codex backend)
 #   HF router:         low | medium | high                 (extra_body.reasoning_effort)
 #
 # We validate *shape* here and let the probe cascade walk down on rejection;
 # we deliberately do NOT maintain a per-model capability table.
 _ANTHROPIC_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _OPENAI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+_OPENAI_CODEX_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 _HF_EFFORTS = {"low", "medium", "high"}
 
 
@@ -171,6 +173,11 @@ def _resolve_llm_params(
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
 
+    • ``openai-codex/<model>`` — ChatGPT Codex OAuth. This is not a LiteLLM
+      provider and not the public OpenAI API; the agent loop recognizes the
+      returned marker and sends the request to ChatGPT's Codex backend with
+      credentials from ``~/.codex/auth.json``.
+
     • ``ollama/<model>``, ``vllm/<model>``, ``lm_studio/<model>``, and
       ``llamacpp/<model>`` — local OpenAI-compatible endpoints. The id prefix
       selects a configurable localhost base URL, and the model suffix is sent
@@ -241,6 +248,31 @@ def _resolve_llm_params(
                     )
             else:
                 params["reasoning_effort"] = reasoning_effort
+        return params
+
+    if model_name.startswith("openai-codex/"):
+        codex_model = model_name.removeprefix("openai-codex/").strip()
+        if not codex_model:
+            raise ValueError(f"Unsupported OpenAI Codex model id: {model_name}")
+        params = {
+            "_ml_intern_provider": "openai-codex",
+            "model": model_name,
+            "codex_model": codex_model,
+        }
+        if reasoning_effort:
+            level = "low" if reasoning_effort == "minimal" else reasoning_effort
+            if level == "max":
+                if strict:
+                    raise UnsupportedEffortError(
+                        "OpenAI Codex doesn't accept effort='max'"
+                    )
+            elif level not in _OPENAI_CODEX_EFFORTS:
+                if strict:
+                    raise UnsupportedEffortError(
+                        f"OpenAI Codex doesn't accept effort={level!r}"
+                    )
+            else:
+                params["reasoning_effort"] = level
         return params
 
     if is_reserved_local_model_id(model_name):
