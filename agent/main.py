@@ -56,6 +56,7 @@ litellm.drop_params = True
 litellm.suppress_debug_info = True
 
 CLI_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cli_agent_config.json"
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +372,46 @@ async def event_listener(
                 turn_complete_event.set()
             elif event.event_type == "undo_complete":
                 console.print("[dim]Undone.[/dim]")
+                turn_complete_event.set()
+            elif event.event_type == "resume_complete":
+                data = event.data or {}
+                path = data.get("path", "?")
+                count = data.get("restored_count", 0)
+                dropped = int(data.get("dropped_count", 0) or 0)
+                model = data.get("model_name", "?")
+                invalid_model = data.get("invalid_saved_model")
+                forked = bool(data.get("forked", False))
+                redacted = bool(data.get("had_redacted_content", False))
+                verb = "Forked from" if forked else "Resumed"
+                console.print(
+                    f"[green]{verb}[/green] {path} "
+                    f"([cyan]{count}[/cyan] messages, "
+                    f"model [cyan]{model}[/cyan])."
+                )
+                if dropped:
+                    console.print(
+                        f"[yellow]Warning:[/yellow] dropped {dropped} "
+                        "malformed message(s) while restoring — surrounding "
+                        "tool-call alignment may be off."
+                    )
+                if invalid_model:
+                    console.print(
+                        f"[yellow]Warning:[/yellow] saved model id "
+                        f"[cyan]{invalid_model}[/cyan] failed validation; "
+                        f"kept current model [cyan]{model}[/cyan]."
+                    )
+                if forked:
+                    console.print(
+                        "[dim]Saved log belongs to a different user — kept "
+                        "current session id; future saves go to a fresh file.[/dim]"
+                    )
+                if redacted:
+                    console.print(
+                        "[yellow]Note:[/yellow] tokens/secrets in restored "
+                        "messages were scrubbed at save time. Your live tokens "
+                        "are used for this session; [REDACTED_*] markers in "
+                        "past messages are not re-injected."
+                    )
                 turn_complete_event.set()
             elif event.event_type == "tool_log":
                 tool = event.data.get("tool", "") if event.data else ""
@@ -743,12 +784,69 @@ async def get_user_input(prompt_session: PromptSession) -> str:
 # Slash commands are defined in terminal_display
 
 
+async def _resume_picker(
+    arg: str,
+    prompt_session: PromptSession | None,
+) -> Path | None:
+    """Resolve a session log path via ``arg`` or interactive selection.
+
+    Returns ``None`` if the user cancels, no logs exist, or the argument
+    matches nothing — already prints the explanation in those cases.
+    """
+    from agent.core.session_resume import (
+        format_session_log_entry,
+        list_session_logs,
+        resolve_session_log_arg,
+    )
+    from agent.core.session import DEFAULT_SESSION_LOG_DIR
+
+    console = get_console()
+    directory = DEFAULT_SESSION_LOG_DIR
+    entries = list_session_logs(directory)
+    if not entries:
+        console.print(f"[yellow]No session logs found in ./{directory}.[/yellow]")
+        return None
+
+    if arg:
+        selected = resolve_session_log_arg(arg, entries, directory)
+        if selected is None:
+            console.print(f"[bold red]No matching session log:[/bold red] {arg}")
+        return selected
+
+    console.print()
+    console.print("[bold]Saved sessions[/bold]")
+    for index, entry in enumerate(entries, start=1):
+        console.print(format_session_log_entry(index, entry))
+    console.print()
+
+    if prompt_session is None:
+        console.print("[yellow]Cannot prompt for a selection here.[/yellow]")
+        return None
+
+    try:
+        choice = await prompt_session.prompt_async(
+            "Select session number (blank to cancel): "
+        )
+    except (EOFError, KeyboardInterrupt):
+        console.print("[dim]Resume cancelled.[/dim]")
+        return None
+    choice = choice.strip()
+    if not choice:
+        console.print("[dim]Resume cancelled.[/dim]")
+        return None
+    selected = resolve_session_log_arg(choice, entries, directory)
+    if selected is None:
+        console.print(f"[bold red]Invalid selection:[/bold red] {choice}")
+    return selected
+
+
 async def _handle_slash_command(
     cmd: str,
     config,
     session_holder: list,
     submission_queue: asyncio.Queue,
     submission_id: list[int],
+    prompt_session: PromptSession | None = None,
 ) -> Submission | None:
     """
     Handle a slash command. Returns a Submission to enqueue, or None if
@@ -777,6 +875,24 @@ async def _handle_slash_command(
         return Submission(
             id=f"sub_{submission_id[0]}",
             operation=Operation(op_type=OpType.COMPACT),
+        )
+
+    if command == "/resume":
+        session = session_holder[0] if session_holder else None
+        if session is None:
+            get_console().print(
+                "[bold red]No active session to restore into.[/bold red]"
+            )
+            return None
+        selected_path = await _resume_picker(arg, prompt_session)
+        if selected_path is None:
+            return None
+        submission_id[0] += 1
+        return Submission(
+            id=f"sub_{submission_id[0]}",
+            operation=Operation(
+                op_type=OpType.RESUME, data={"path": str(selected_path)}
+            ),
         )
 
     if command == "/model":
@@ -1140,6 +1256,7 @@ async def main(model: str | None = None):
                     session_holder,
                     submission_queue,
                     submission_id,
+                    prompt_session,
                 )
                 if sub is None:
                     # Command handled locally, loop back for input

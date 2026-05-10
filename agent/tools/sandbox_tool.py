@@ -33,7 +33,7 @@ DEFAULT_CPU_SANDBOX_HARDWARE = "cpu-basic"
 # Match the exact suffix pattern Sandbox.create produces: "sandbox-<8 hex>".
 # Used to identify orphan sandboxes from prior sessions safely (won't match
 # user-renamed lookalikes).
-_SANDBOX_NAME_RE = re.compile(r"^sandbox-[a-f0-9]{8}$")
+SANDBOX_SPACE_NAME_RE = re.compile(r"^sandbox-[a-f0-9]{8}$")
 
 # How stale a sandbox must be before we treat it as definitely orphan.
 # Anything more recent could be tied to a still-live session in another tab,
@@ -195,7 +195,7 @@ def _cleanup_user_orphan_sandboxes(
 
     for space in spaces:
         space_name = space.id.rsplit("/", 1)[-1]
-        if not _SANDBOX_NAME_RE.match(space_name):
+        if not SANDBOX_SPACE_NAME_RE.match(space_name):
             continue
 
         last_mod = getattr(space, "lastModified", None) or getattr(
@@ -374,18 +374,6 @@ async def _create_sandbox_locked(
         create_latency_s=int(_t.monotonic() - _t_start),
     )
 
-    # Set a descriptive title (template title is inherited on duplicate)
-    from huggingface_hub import metadata_update
-
-    await asyncio.to_thread(
-        metadata_update,
-        sb.space_id,
-        {"title": "ml-intern sandbox"},
-        repo_type="space",
-        overwrite=True,
-        token=token,
-    )
-
     await session.send_event(
         Event(
             event_type="tool_log",
@@ -554,7 +542,7 @@ SANDBOX_CREATE_TOOL_SPEC = {
         "Common picks: t4-small (16GB VRAM, fits ≤1-3B), a10g-small (24GB, ≤7B), a100-large (80GB, ≤30B). "
         "If the model won't fit, pick larger hardware upfront — OOM on a sandbox wastes time.\n\n"
         "If you intend to run a training script in this sandbox that uses report_to='trackio', "
-        "pass `trackio_space_id` (e.g. '<username>/mlintern-<8char>') and `trackio_project` so they "
+        "pass `trackio_space_id` (e.g. '<username>/ml-intern-<8char>') and `trackio_project` so they "
         "are set as TRACKIO_SPACE_ID/TRACKIO_PROJECT secrets in the sandbox and the UI can embed the live dashboard.\n\n"
         "Hardware: " + ", ".join([e.value for e in SpaceHardware]) + ".\n"
     ),
@@ -575,7 +563,7 @@ SANDBOX_CREATE_TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Optional. The HF Space hosting the trackio dashboard for runs in this sandbox "
-                    "(e.g. '<username>/mlintern-<8char>', under YOUR HF namespace). Injected as "
+                    "(e.g. '<username>/ml-intern-<8char>', under YOUR HF namespace). Injected as "
                     "TRACKIO_SPACE_ID secret and surfaced to the UI. The Space is auto-created and "
                     "seeded with the trackio dashboard — DO NOT pre-create it via hf_repo_git, "
                     "that produces an empty Space that breaks the embed."
