@@ -11,6 +11,7 @@ import {
   ListItemIcon,
   ListItemText,
   Chip,
+  LinearProgress,
   Snackbar,
   Tooltip,
 } from '@mui/material';
@@ -18,7 +19,7 @@ import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
-import { apiFetch } from '@/utils/api';
+import { apiFetch, apiUpload } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
 import JobsUpgradeDialog from '@/components/JobsUpgradeDialog';
@@ -182,6 +183,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   const [datasetUploadSuccess, setDatasetUploadSuccess] = useState<string | null>(null);
   const [uploadedDataset, setUploadedDataset] = useState<DatasetUploadResponse | null>(null);
   const [isUploadingDataset, setIsUploadingDataset] = useState(false);
+  const [datasetUploadProgress, setDatasetUploadProgress] = useState<number | null>(null);
   const lastSentRef = useRef<string>('');
 
   useEffect(() => {
@@ -289,12 +291,14 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
       const formData = new FormData();
       formData.append('file', file);
       setIsUploadingDataset(true);
+      setDatasetUploadProgress(0);
       setDatasetUploadError(null);
       setDatasetUploadSuccess(null);
       try {
-        const res = await apiFetch(`/api/session/${sessionId}/datasets`, {
-          method: 'POST',
-          body: formData,
+        const res = await apiUpload(`/api/session/${sessionId}/datasets`, formData, {
+          onProgress: ({ percent }) => {
+            setDatasetUploadProgress(percent);
+          },
         });
         if (!res.ok) {
           setDatasetUploadError(await readApiErrorMessage(res, 'Dataset upload failed.'));
@@ -310,6 +314,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
         );
       } finally {
         setIsUploadingDataset(false);
+        setDatasetUploadProgress(null);
       }
     },
     [sessionId, onDatasetUploaded],
@@ -603,6 +608,24 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
             </IconButton>
           )}
         </Box>
+        {isUploadingDataset && (
+          <Box sx={{ mt: 1, px: 0.5 }}>
+            <LinearProgress
+              variant={datasetUploadProgress === null ? 'indeterminate' : 'determinate'}
+              value={datasetUploadProgress ?? 0}
+              aria-label="Dataset upload progress"
+              sx={{
+                height: 4,
+                borderRadius: 999,
+                bgcolor: 'rgba(255,255,255,0.08)',
+                '& .MuiLinearProgress-bar': {
+                  borderRadius: 999,
+                  bgcolor: 'var(--accent-yellow)',
+                },
+              }}
+            />
+          </Box>
+        )}
         {uploadedDataset && (
           <Box sx={{ display: 'flex', justifyContent: 'center', mt: 1 }}>
             <Chip

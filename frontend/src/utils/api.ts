@@ -7,6 +7,26 @@
 
 import { triggerLogin } from '@/hooks/useAuth';
 
+export interface ApiUploadProgress {
+  loaded: number;
+  total: number | null;
+  percent: number | null;
+}
+
+async function handleUnauthorized(response: Response): Promise<void> {
+  if (response.status !== 401) return;
+  try {
+    const authStatus = await fetch('/auth/status', { credentials: 'include' });
+    const data = await authStatus.json();
+    if (data.auth_enabled) {
+      triggerLogin();
+      throw new Error('Authentication required — redirecting to login.');
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('redirecting')) throw e;
+  }
+}
+
 /** Wrapper around fetch with credentials and common headers. */
 export async function apiFetch(
   path: string,
@@ -24,19 +44,50 @@ export async function apiFetch(
     credentials: 'include', // Send cookies with every request
   });
 
-  // Handle 401 — redirect to login
-  if (response.status === 401) {
-    try {
-      const authStatus = await fetch('/auth/status', { credentials: 'include' });
-      const data = await authStatus.json();
-      if (data.auth_enabled) {
-        triggerLogin();
-        throw new Error('Authentication required — redirecting to login.');
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.includes('redirecting')) throw e;
-    }
-  }
+  await handleUnauthorized(response);
 
   return response;
+}
+
+function headersFromXhr(rawHeaders: string): Headers {
+  const headers = new Headers();
+  rawHeaders.trim().split(/[\r\n]+/).forEach((line) => {
+    const separator = line.indexOf(':');
+    if (separator <= 0) return;
+    headers.append(
+      line.slice(0, separator).trim(),
+      line.slice(separator + 1).trim(),
+    );
+  });
+  return headers;
+}
+
+export async function apiUpload(
+  path: string,
+  formData: FormData,
+  options: { onProgress?: (progress: ApiUploadProgress) => void } = {},
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', path);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (event) => {
+      const total = event.lengthComputable ? event.total : null;
+      const percent = total
+        ? Math.min(100, Math.round((event.loaded / total) * 100))
+        : null;
+      options.onProgress?.({ loaded: event.loaded, total, percent });
+    };
+    xhr.onerror = () => reject(new Error('Network error while uploading.'));
+    xhr.onabort = () => reject(new Error('Dataset upload was canceled.'));
+    xhr.onload = () => {
+      const response = new Response(xhr.responseText, {
+        status: xhr.status,
+        statusText: xhr.statusText,
+        headers: headersFromXhr(xhr.getAllResponseHeaders()),
+      });
+      handleUnauthorized(response).then(() => resolve(response)).catch(reject);
+    };
+    xhr.send(formData);
+  });
 }
