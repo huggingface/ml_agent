@@ -156,9 +156,8 @@ cp -r "$PTB_DIR/src/eval/templates" "$JOB_DIR/task/"
 if [ -d "$PTB_DIR/src/eval/tasks/${BENCHMARK}/task_context" ]; then
     cp -r "$PTB_DIR/src/eval/tasks/${BENCHMARK}/task_context/." "$JOB_DIR/task/"
 fi
-find "$JOB_DIR/task" \
-    \( -type d -name "__pycache__" -prune -exec rm -rf {} + \) -o \
-    \( -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete \)
+find "$JOB_DIR/task" -type d -name "__pycache__" -prune -exec rm -rf {} +
+find "$JOB_DIR/task" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 python3 "$TRUSTED_INTEGRITY" snapshot-protected-files \
     --task-dir "$JOB_DIR/task" \
     --output "$EVAL_DIR/protected_files_manifest.json"
