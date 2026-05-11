@@ -133,6 +133,7 @@ interface DatasetUploadResponse {
   repo_type: 'dataset';
   private: true;
   upload_id: string;
+  config_name: string;
   filename: string;
   path_in_repo: string;
   size_bytes: number;

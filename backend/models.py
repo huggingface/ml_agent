@@ -128,6 +128,7 @@ class DatasetUploadResponse(BaseModel):
     repo_type: Literal["dataset"] = "dataset"
     private: bool = True
     upload_id: str
+    config_name: str
     filename: str
     path_in_repo: str
     size_bytes: int

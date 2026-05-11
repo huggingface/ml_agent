@@ -23,6 +23,7 @@ class DatasetUpload:
     repo_type: str
     private: bool
     upload_id: str
+    config_name: str
     filename: str
     original_filename: str
     path_in_repo: str
@@ -38,6 +39,7 @@ class DatasetUpload:
             "repo_type": self.repo_type,
             "private": self.private,
             "upload_id": self.upload_id,
+            "config_name": self.config_name,
             "filename": self.filename,
             "path_in_repo": self.path_in_repo,
             "size_bytes": self.size_bytes,
@@ -126,22 +128,72 @@ def dataset_hub_url(repo_id: str, path_in_repo: str) -> str:
     return f"https://huggingface.co/datasets/{repo_id}/blob/main/{quoted_path}"
 
 
-def load_dataset_snippet(repo_id: str, path_in_repo: str, dataset_format: str) -> str:
-    builder = "csv" if dataset_format == "csv" else "json"
-    data_file = f"hf://datasets/{repo_id}/{path_in_repo}"
+def dataset_config_name(upload_id: str) -> str:
+    safe_upload_id = re.sub(r"[^A-Za-z0-9]+", "_", upload_id).strip("_").lower()
+    if not safe_upload_id:
+        safe_upload_id = "dataset"
+    return f"upload_{safe_upload_id[:32]}"
+
+
+def dataset_config_name_from_path(path_in_repo: str) -> str:
+    parts = path_in_repo.split("/")
+    if len(parts) >= 3 and parts[0] == "uploads":
+        return dataset_config_name(parts[1])
+    stem = os.path.splitext(os.path.basename(path_in_repo))[0]
+    return dataset_config_name(stem)
+
+
+def is_dataset_upload_path(path_in_repo: str) -> bool:
+    parts = path_in_repo.split("/")
+    if len(parts) != 3 or parts[0] != "uploads" or not parts[1] or not parts[2]:
+        return False
+    extension = os.path.splitext(path_in_repo)[1].lower().lstrip(".")
+    return extension in ALLOWED_DATASET_EXTENSIONS
+
+
+def unique_dataset_upload_paths(paths: list[str]) -> list[str]:
+    seen = set()
+    upload_paths = []
+    for path in paths:
+        if not is_dataset_upload_path(path) or path in seen:
+            continue
+        seen.add(path)
+        upload_paths.append(path)
+    return upload_paths
+
+
+def load_dataset_snippet(repo_id: str, config_name: str) -> str:
     return (
         "from datasets import load_dataset\n\n"
-        f'dataset = load_dataset("{builder}", data_files="{data_file}", '
+        f'dataset = load_dataset("{repo_id}", "{config_name}", '
         'split="train", token=True)'
     )
 
 
-def dataset_repo_card(repo_id: str) -> bytes:
+def dataset_repo_card(repo_id: str, upload_paths: list[str]) -> bytes:
+    config_lines = []
+    unique_upload_paths = unique_dataset_upload_paths(upload_paths)
+    if unique_upload_paths:
+        config_lines.append("configs:")
+        for path in unique_upload_paths:
+            config_lines.extend(
+                [
+                    f"- config_name: {dataset_config_name_from_path(path)}",
+                    "  data_files:",
+                    "  - split: train",
+                    f'    path: "{path}"',
+                ]
+            )
+
+    configs = "\n".join(config_lines)
+    if configs:
+        configs = f"{configs}\n"
+
     content = f"""---
 tags:
 - ml-intern
 - uploaded-dataset
----
+{configs}---
 
 # {repo_id}
 
@@ -150,6 +202,9 @@ Private dataset files uploaded through ML Intern.
 Files are stored under `uploads/<upload_id>/` and are attached to the
 corresponding ML Intern session context by Hub reference, not by copying file
 contents into the chat.
+
+Each uploaded file is exposed as its own dataset config so files with different
+schemas can coexist in the same session repo.
 """
     return content.encode("utf-8")
 
@@ -163,6 +218,7 @@ upload it again unless this Hub reference fails.
 
 - Repo ID: {upload.repo_id}
 - Repo type: dataset
+- Dataset config: {upload.config_name}
 - File in repo: {upload.path_in_repo}
 - Original filename: {upload.original_filename}
 - Stored filename: {upload.filename}
@@ -187,10 +243,11 @@ async def push_dataset_upload_to_hub(
     safe_filename, dataset_format, size = await validate_dataset_upload(upload)
     original_filename = display_filename(upload.filename, safe_filename)
     upload_id = uuid.uuid4().hex[:12]
+    config_name = dataset_config_name(upload_id)
     repo_id = session_dataset_repo_id(hf_username, session_id)
     path_in_repo = f"uploads/{upload_id}/{safe_filename}"
     hub_url = dataset_hub_url(repo_id, path_in_repo)
-    snippet = load_dataset_snippet(repo_id, path_in_repo, dataset_format)
+    snippet = load_dataset_snippet(repo_id, config_name)
     api = HfApi(token=hf_token)
 
     await asyncio.to_thread(
@@ -206,14 +263,12 @@ async def push_dataset_upload_to_hub(
         repo_type="dataset",
         private=True,
     )
-    await asyncio.to_thread(
-        api.upload_file,
-        path_or_fileobj=dataset_repo_card(repo_id),
-        path_in_repo="README.md",
+    repo_files = await asyncio.to_thread(
+        api.list_repo_files,
         repo_id=repo_id,
         repo_type="dataset",
-        commit_message="Update ML Intern dataset upload README",
     )
+    upload_paths = unique_dataset_upload_paths([*repo_files, path_in_repo])
     await asyncio.to_thread(upload.file.seek, 0)
     file_bytes = await asyncio.to_thread(upload.file.read)
     await asyncio.to_thread(
@@ -224,6 +279,14 @@ async def push_dataset_upload_to_hub(
         repo_type="dataset",
         commit_message=f"Upload dataset file {safe_filename}",
     )
+    await asyncio.to_thread(
+        api.upload_file,
+        path_or_fileobj=dataset_repo_card(repo_id, upload_paths),
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        repo_type="dataset",
+        commit_message="Update ML Intern dataset upload configs",
+    )
 
     return DatasetUpload(
         session_id=session_id,
@@ -231,6 +294,7 @@ async def push_dataset_upload_to_hub(
         repo_type="dataset",
         private=True,
         upload_id=upload_id,
+        config_name=config_name,
         filename=safe_filename,
         original_filename=original_filename,
         path_in_repo=path_in_repo,

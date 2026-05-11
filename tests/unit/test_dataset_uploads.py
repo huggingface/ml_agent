@@ -71,6 +71,25 @@ def test_dataset_format_rejects_unsupported_extension():
         dataset_uploads.dataset_format_from_filename("notes")
 
 
+def test_dataset_repo_card_exposes_each_upload_as_config():
+    card = dataset_uploads.dataset_repo_card(
+        "alice/ml-intern-s1-datasets",
+        [
+            "README.md",
+            "uploads/oldabc/rows.jsonl",
+            "uploads/oldabc/rows.jsonl",
+            "uploads/newdef/table.csv",
+        ],
+    ).decode("utf-8")
+
+    assert "configs:" in card
+    assert "- config_name: upload_oldabc" in card
+    assert '    path: "uploads/oldabc/rows.jsonl"' in card
+    assert "- config_name: upload_newdef" in card
+    assert '    path: "uploads/newdef/table.csv"' in card
+    assert card.count("- config_name: upload_oldabc") == 1
+
+
 @pytest.mark.asyncio
 async def test_validate_dataset_upload_rejects_size_over_limit(monkeypatch):
     monkeypatch.setattr(dataset_uploads, "MAX_DATASET_UPLOAD_BYTES", 3)
@@ -93,6 +112,7 @@ async def test_push_dataset_upload_creates_private_repo_and_uploads_file(monkeyp
             self.token = token
             self.create_calls = []
             self.settings_calls = []
+            self.list_calls = []
             self.upload_calls = []
             instances.append(self)
 
@@ -101,6 +121,14 @@ async def test_push_dataset_upload_creates_private_repo_and_uploads_file(monkeyp
 
         def update_repo_settings(self, **kwargs):
             self.settings_calls.append(kwargs)
+
+        def list_repo_files(self, **kwargs):
+            self.list_calls.append(kwargs)
+            return [
+                "README.md",
+                "uploads/oldupload/old.jsonl",
+                "uploads/notes.txt",
+            ]
 
         def upload_file(self, **kwargs):
             if kwargs["path_in_repo"] != "README.md":
@@ -142,13 +170,29 @@ async def test_push_dataset_upload_creates_private_repo_and_uploads_file(monkeyp
             "private": True,
         }
     ]
-    assert [call["path_in_repo"] for call in api.upload_calls] == [
-        "README.md",
-        "uploads/feedfacecafe/Data-Set.csv",
+    assert api.list_calls == [
+        {
+            "repo_id": "alice/ml-intern-12345678-datasets",
+            "repo_type": "dataset",
+        }
     ]
+    assert [call["path_in_repo"] for call in api.upload_calls] == [
+        "uploads/feedfacecafe/Data-Set.csv",
+        "README.md",
+    ]
+    readme = api.upload_calls[1]["path_or_fileobj"].decode("utf-8")
+    assert "- config_name: upload_oldupload" in readme
+    assert '    path: "uploads/oldupload/old.jsonl"' in readme
+    assert "- config_name: upload_feedfacecafe" in readme
+    assert '    path: "uploads/feedfacecafe/Data-Set.csv"' in readme
     assert result.repo_id == "alice/ml-intern-12345678-datasets"
+    assert result.config_name == "upload_feedfacecafe"
     assert result.format == "csv"
-    assert result.load_dataset_snippet.startswith("from datasets import load_dataset")
+    assert result.load_dataset_snippet == (
+        "from datasets import load_dataset\n\n"
+        'dataset = load_dataset("alice/ml-intern-12345678-datasets", '
+        '"upload_feedfacecafe", split="train", token=True)'
+    )
 
 
 @pytest.mark.asyncio
@@ -277,6 +321,7 @@ async def test_upload_route_appends_context_note_and_persists(monkeypatch):
         repo_type="dataset",
         private=True,
         upload_id="abc123",
+        config_name="upload_abc123",
         filename="rows.jsonl",
         original_filename="rows.jsonl",
         path_in_repo="uploads/abc123/rows.jsonl",
@@ -318,10 +363,12 @@ async def test_upload_route_appends_context_note_and_persists(monkeypatch):
     )
 
     assert response.repo_id == uploaded.repo_id
+    assert response.config_name == uploaded.config_name
     assert response.path_in_repo == uploaded.path_in_repo
     assert len(messages) == 1
     assert messages[0].role == "user"
     assert messages[0].content.startswith("[SYSTEM:")
+    assert uploaded.config_name in messages[0].content
     assert uploaded.path_in_repo in messages[0].content
     assert persisted == [agent_session]
     assert request_state["form_called"] is True
