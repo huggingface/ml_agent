@@ -21,6 +21,7 @@ from fastapi import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
+from huggingface_hub.errors import HfHubHTTPError
 from litellm import Message, acompletion
 from pydantic import ValidationError
 from starlette.datastructures import FormData, UploadFile
@@ -244,6 +245,28 @@ def _dataset_upload_file_from_form(form: FormData) -> UploadFile:
             detail="Missing 'file' upload field.",
         )
     return upload
+
+
+def _dataset_upload_hub_http_exception(error: HfHubHTTPError) -> HTTPException:
+    status_code = getattr(error.response, "status_code", None)
+    if status_code == 401:
+        detail = "Hugging Face rejected the token used for the dataset upload."
+        return HTTPException(status_code=401, detail=detail)
+    if status_code == 403:
+        detail = (
+            "Hugging Face denied permission to create or write to the dataset repo."
+        )
+        return HTTPException(status_code=403, detail=detail)
+    if status_code == 404:
+        detail = "Could not find the Hugging Face namespace or dataset repo."
+        return HTTPException(status_code=404, detail=detail)
+    if status_code == 429:
+        detail = "Hugging Face Hub rate limit reached while uploading the dataset."
+        return HTTPException(status_code=429, detail=detail)
+    return HTTPException(
+        status_code=502,
+        detail="Hugging Face Hub upload failed. Please try again.",
+    )
 
 
 async def _check_session_access(
@@ -646,9 +669,20 @@ async def upload_session_dataset(
         return DatasetUploadResponse(**uploaded.response_payload())
     except HTTPException:
         raise
-    except Exception as e:
+    except HfHubHTTPError as e:
+        logger.warning(
+            "Hub rejected dataset upload for session %s: status=%s request_id=%s",
+            session_id,
+            getattr(e.response, "status_code", None),
+            getattr(e, "request_id", None),
+        )
+        raise _dataset_upload_hub_http_exception(e)
+    except Exception:
         logger.exception("Dataset upload failed for session %s", session_id)
-        raise HTTPException(status_code=502, detail=f"Dataset upload failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail="Dataset upload failed. Please try again.",
+        )
     finally:
         if file is not None:
             await file.close()

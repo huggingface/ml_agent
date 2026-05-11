@@ -181,7 +181,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
   const [datasetUploadError, setDatasetUploadError] = useState<string | null>(null);
   const [datasetUploadSuccess, setDatasetUploadSuccess] = useState<string | null>(null);
-  const [uploadedDataset, setUploadedDataset] = useState<DatasetUploadResponse | null>(null);
+  const [uploadedDatasets, setUploadedDatasets] = useState<DatasetUploadResponse[]>([]);
   const [isUploadingDataset, setIsUploadingDataset] = useState(false);
   const [datasetUploadProgress, setDatasetUploadProgress] = useState<number | null>(null);
   const lastSentRef = useRef<string>('');
@@ -305,7 +305,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
           return;
         }
         const payload = await res.json() as DatasetUploadResponse;
-        setUploadedDataset(payload);
+        setUploadedDatasets((previous) => [payload, ...previous]);
         setDatasetUploadSuccess(`Uploaded ${payload.filename} to ${payload.repo_id}`);
         await onDatasetUploaded?.();
       } catch (error) {
@@ -559,7 +559,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
                   sx={{
                     p: 1,
                     borderRadius: '50%',
-                    color: uploadedDataset ? 'var(--accent-yellow)' : 'var(--muted-text)',
+                    color: uploadedDatasets.length ? 'var(--accent-yellow)' : 'var(--muted-text)',
                     transition: 'all 0.2s',
                     '&:hover': {
                       color: 'var(--accent-yellow)',
@@ -657,27 +657,30 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
             </Alert>
           </Box>
         )}
-        {uploadedDataset && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 1 }}>
-            <Chip
-              size="small"
-              label={`Dataset: ${uploadedDataset.filename}`}
-              component="a"
-              href={uploadedDataset.hub_url}
-              target="_blank"
-              rel="noreferrer"
-              clickable
-              sx={{
-                maxWidth: '100%',
-                bgcolor: 'rgba(255,255,255,0.08)',
-                color: 'var(--text)',
-                border: '1px solid var(--divider)',
-                '& .MuiChip-label': {
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                },
-              }}
-            />
+        {uploadedDatasets.length > 0 && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, justifyContent: 'center', mt: 1 }}>
+            {uploadedDatasets.map((dataset) => (
+              <Chip
+                key={dataset.upload_id}
+                size="small"
+                label={`Dataset: ${dataset.filename}`}
+                component="a"
+                href={dataset.hub_url}
+                target="_blank"
+                rel="noreferrer"
+                clickable
+                sx={{
+                  maxWidth: '100%',
+                  bgcolor: 'rgba(255,255,255,0.08)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--divider)',
+                  '& .MuiChip-label': {
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  },
+                }}
+              />
+            ))}
           </Box>
         )}
 

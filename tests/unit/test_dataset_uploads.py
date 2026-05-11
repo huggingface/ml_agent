@@ -3,8 +3,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException, UploadFile
+from huggingface_hub.errors import HfHubHTTPError
 from starlette.datastructures import FormData
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent / "backend"
@@ -360,5 +362,57 @@ async def test_upload_route_closes_upload_when_hub_upload_fails(monkeypatch):
         )
 
     assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "Dataset upload failed. Please try again."
+    assert request_state["form_called"] is True
+    assert close_state["closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_upload_route_maps_hub_permission_error_safely(monkeypatch):
+    upload = _upload("rows.csv")
+    close_state = _track_close(upload)
+    request, request_state = _request(upload)
+
+    async def fake_check_session_access(*_args, **_kwargs):
+        return SimpleNamespace(
+            is_active=True,
+            is_processing=False,
+            session=SimpleNamespace(pending_approval=None),
+            hf_username="alice",
+        )
+
+    async def fake_push_dataset_upload_to_hub(**_kwargs):
+        response = httpx.Response(
+            403,
+            request=httpx.Request("POST", "https://huggingface.co/api/datasets"),
+            headers={"x-request-id": "req-123"},
+        )
+        raise HfHubHTTPError(
+            "403 Forbidden: token hf_secret cannot write",
+            response=response,
+            server_message="token hf_secret cannot write",
+        )
+
+    monkeypatch.setattr(agent, "_check_session_access", fake_check_session_access)
+    monkeypatch.setattr(
+        agent, "push_dataset_upload_to_hub", fake_push_dataset_upload_to_hub
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await agent.upload_session_dataset(
+            "s1",
+            request,
+            {
+                "user_id": "u1",
+                "username": "alice",
+                agent.INTERNAL_HF_TOKEN_KEY: "hf-token",
+            },
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == (
+        "Hugging Face denied permission to create or write to the dataset repo."
+    )
+    assert "hf_secret" not in exc_info.value.detail
     assert request_state["form_called"] is True
     assert close_state["closed"] is True
