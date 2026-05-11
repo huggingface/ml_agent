@@ -155,6 +155,10 @@ const formatBytes = (bytes: number) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const datasetRepoUrl = (repoId: string) => (
+  `https://huggingface.co/datasets/${repoId.split('/').map(encodeURIComponent).join('/')}`
+);
+
 export default function ChatInput({ sessionId, initialModelPath, onSend, onStop, onDatasetUploaded, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -665,7 +669,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
                 size="small"
                 label={`Dataset: ${dataset.filename}`}
                 component="a"
-                href={dataset.hub_url}
+                href={datasetRepoUrl(dataset.repo_id)}
                 target="_blank"
                 rel="noreferrer"
                 clickable
