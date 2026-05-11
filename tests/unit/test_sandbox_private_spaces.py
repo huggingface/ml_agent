@@ -91,6 +91,31 @@ def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     assert not any("sleep time" in log for log in logs)
 
 
+def test_sandbox_delete_uses_log_callback_without_stdout(monkeypatch, capsys):
+    deleted: list[tuple[str, str]] = []
+
+    class FakeApi:
+        def __init__(self, token=None):
+            self.token = token
+
+        def delete_repo(self, repo_id, repo_type):
+            deleted.append((repo_id, repo_type))
+
+    monkeypatch.setattr(sandbox_client, "HfApi", FakeApi)
+
+    sandbox = Sandbox("alice/sandbox-12345678", token="hf-token", _owns_space=True)
+    logs: list[str] = []
+
+    sandbox.delete(log=logs.append)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert deleted == [("alice/sandbox-12345678", "space")]
+    assert logs == ["Deleting sandbox: alice/sandbox-12345678...", "Deleted."]
+    assert sandbox._owns_space is False
+
+
 def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
     runtime_calls = 0
 
@@ -395,6 +420,71 @@ def test_ensure_sandbox_overrides_private_argument(monkeypatch):
     assert persisted[-1]["sandbox_status"] == "active"
 
 
+def test_cancelled_sandbox_creation_logs_delete_through_tool_log(monkeypatch):
+    deleted: list[str] = []
+
+    class FakeSession:
+        def __init__(self):
+            self.hf_token = "hf-token"
+            self.sandbox = None
+            self.event_queue = asyncio.Queue()
+            self._cancelled = asyncio.Event()
+
+        async def send_event(self, event):
+            await self.event_queue.put(event)
+
+    def fake_create(**kwargs):
+        def delete(log=None):
+            deleted.append("alice/sandbox-12345678")
+            if log:
+                log("Deleting sandbox: alice/sandbox-12345678...")
+                log("Deleted.")
+
+        return SimpleNamespace(
+            space_id="alice/sandbox-12345678",
+            url="https://huggingface.co/spaces/alice/sandbox-12345678",
+            _owns_space=True,
+            delete=delete,
+        )
+
+    monkeypatch.setattr(Sandbox, "create", staticmethod(fake_create))
+
+    async def run():
+        session = FakeSession()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        sb, error = await sandbox_tool._create_sandbox_locked(
+            session,
+            api=SimpleNamespace(),
+            owner="alice",
+            hardware="cpu-basic",
+            cancel_event=cancel_event,
+        )
+        await asyncio.sleep(0)
+        events = []
+        while not session.event_queue.empty():
+            events.append(await session.event_queue.get())
+        return sb, error, events
+
+    sb, error, events = asyncio.run(run())
+
+    assert sb is None
+    assert error == "Sandbox creation cancelled by user."
+    assert deleted == ["alice/sandbox-12345678"]
+    assert [
+        event.data
+        for event in events
+        if event.event_type == "tool_log"
+        and event.data
+        and event.data.get("log")
+        in {"Deleting sandbox: alice/sandbox-12345678...", "Deleted."}
+    ] == [
+        {"tool": "sandbox", "log": "Deleting sandbox: alice/sandbox-12345678..."},
+        {"tool": "sandbox", "log": "Deleted."},
+    ]
+
+
 def test_sandbox_creation_is_serialized_per_owner(monkeypatch):
     active_creates = 0
     max_active_creates = 0
@@ -514,7 +604,7 @@ def test_sandbox_create_replaces_auto_cpu_sandbox(monkeypatch):
                 space_id="alice/sandbox-cpu",
                 url="https://huggingface.co/spaces/alice/sandbox-cpu",
                 _owns_space=True,
-                delete=lambda: deleted.append("alice/sandbox-cpu"),
+                delete=lambda log=None: deleted.append("alice/sandbox-cpu"),
             )
             self.sandbox_hardware = "cpu-basic"
             self.sandbox_preload_task = None
@@ -559,10 +649,11 @@ def test_sandbox_create_replaces_auto_cpu_sandbox(monkeypatch):
 
 def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
     deleted: list[str] = []
+    destroyed: list[str] = []
     persisted: list[dict] = []
 
-    async def fake_record_sandbox_destroy(*args, **kwargs):
-        pass
+    async def fake_record_sandbox_destroy(session, sandbox, *args, **kwargs):
+        destroyed.append(sandbox.space_id)
 
     monkeypatch.setattr(
         telemetry, "record_sandbox_destroy", fake_record_sandbox_destroy
@@ -570,20 +661,28 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
 
     async def run():
         cancel_event = threading.Event()
+        event_queue = asyncio.Queue()
 
         async def preload():
             await asyncio.sleep(0)
+
+        def delete(log=None):
+            deleted.append("alice/sandbox-12345678")
+            if log:
+                log("Deleting sandbox: alice/sandbox-12345678...")
+                log("Deleted.")
 
         session = SimpleNamespace(
             session_id="s1",
             sandbox=SimpleNamespace(
                 space_id="alice/sandbox-12345678",
                 _owns_space=True,
-                delete=lambda: deleted.append("alice/sandbox-12345678"),
+                delete=delete,
             ),
             sandbox_hardware="cpu-basic",
             sandbox_preload_task=asyncio.create_task(preload()),
             sandbox_preload_cancel_event=cancel_event,
+            event_queue=event_queue,
             persistence_store=SimpleNamespace(
                 update_session_fields=lambda session_id, **fields: _record_metadata(
                     session_id, fields
@@ -592,17 +691,33 @@ def test_teardown_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
         )
 
         await sandbox_tool.teardown_session_sandbox(session)
-        return session, cancel_event
+        await asyncio.sleep(0)
+        events = []
+        while not event_queue.empty():
+            events.append(await event_queue.get())
+        return session, cancel_event, events
 
     async def _record_metadata(session_id, fields):
         persisted.append({"session_id": session_id, **fields})
 
-    session, cancel_event = asyncio.run(run())
+    session, cancel_event, events = asyncio.run(run())
 
     assert cancel_event.is_set()
     assert deleted == ["alice/sandbox-12345678"]
+    assert destroyed == ["alice/sandbox-12345678"]
     assert session.sandbox is None
     assert session.sandbox_hardware is None
+    assert [
+        event.data
+        for event in events
+        if event.event_type == "tool_log"
+        and event.data
+        and event.data.get("log")
+        in {"Deleting sandbox: alice/sandbox-12345678...", "Deleted."}
+    ] == [
+        {"tool": "sandbox", "log": "Deleting sandbox: alice/sandbox-12345678..."},
+        {"tool": "sandbox", "log": "Deleted."},
+    ]
     assert persisted[-1]["session_id"] == "s1"
     assert persisted[-1]["sandbox_space_id"] is None
     assert persisted[-1]["sandbox_status"] == "destroyed"

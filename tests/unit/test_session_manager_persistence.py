@@ -207,7 +207,7 @@ async def test_close_cancels_preload_and_deletes_owned_sandbox(monkeypatch):
     session.sandbox = SimpleNamespace(
         space_id="owner/sandbox-12345678",
         _owns_space=True,
-        delete=lambda: deleted.append("owner/sandbox-12345678"),
+        delete=lambda log=None: deleted.append("owner/sandbox-12345678"),
     )
     session.sandbox_hardware = "cpu-basic"
     session.sandbox_preload_cancel_event = preload_cancel_event

@@ -32,7 +32,11 @@ from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import DEFAULT_SESSION_LOG_DIR, Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.tools.jobs_tool import CPU_FLAVORS
-from agent.tools.sandbox_tool import DEFAULT_CPU_SANDBOX_HARDWARE
+from agent.tools.sandbox_tool import (
+    DEFAULT_CPU_SANDBOX_HARDWARE,
+    start_cpu_sandbox_preload,
+    teardown_session_sandbox,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,43 @@ ToolCall = ChatCompletionMessageToolCall
 
 _MALFORMED_TOOL_PREFIX = "ERROR: Tool call to '"
 _MALFORMED_TOOL_SUFFIX = "' had malformed JSON arguments"
+_NO_TOOL_INCOMPLETE_PLAN_RETRY_LIMIT = 2
+
+
+def _unfinished_plan_items(session: Session) -> list[dict[str, str]]:
+    plan = getattr(session, "current_plan", None) or []
+    unfinished: list[dict[str, str]] = []
+    for item in plan:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
+        if status in {"pending", "in_progress"}:
+            unfinished.append(item)
+    return unfinished
+
+
+def _format_plan_items_for_guard(items: list[dict[str, str]], limit: int = 4) -> str:
+    formatted = []
+    for item in items[:limit]:
+        item_id = item.get("id") or "?"
+        content = item.get("content") or "(unnamed task)"
+        status = item.get("status") or "unknown"
+        formatted.append(f"{item_id}. {content} [{status}]")
+    if len(items) > limit:
+        formatted.append(f"... and {len(items) - limit} more")
+    return "; ".join(formatted)
+
+
+def _no_tool_incomplete_plan_prompt(items: list[dict[str, str]]) -> str:
+    summary = _format_plan_items_for_guard(items)
+    return (
+        "[SYSTEM: CONTINUATION GUARD] Your previous response ended without any "
+        "tool calls, but the task is not complete. The current plan still has "
+        f"unfinished items: {summary}. Do not return control to the user yet. "
+        "Continue from the next unfinished item and make at least one tool call "
+        "now. If you genuinely cannot continue, first use tools to inspect the "
+        "state or verify the blocker."
+    )
 
 
 def _malformed_tool_name(message: Message) -> str | None:
@@ -1153,6 +1194,7 @@ class Handlers:
         final_response = None
         errored = False
         max_iterations = session.config.max_iterations
+        no_tool_incomplete_plan_retries = 0
 
         while max_iterations == -1 or iteration < max_iterations:
             # ── Cancellation check: before LLM call ──
@@ -1301,6 +1343,51 @@ class Handlers:
 
                 # If no tool calls, add assistant message and we're done
                 if not tool_calls:
+                    unfinished_plan = _unfinished_plan_items(session)
+                    if (
+                        unfinished_plan
+                        and no_tool_incomplete_plan_retries
+                        < _NO_TOOL_INCOMPLETE_PLAN_RETRY_LIMIT
+                    ):
+                        logger.info(
+                            "No tool calls with unfinished plan; retrying agent turn "
+                            "(attempt %d/%d)",
+                            no_tool_incomplete_plan_retries + 1,
+                            _NO_TOOL_INCOMPLETE_PLAN_RETRY_LIMIT,
+                        )
+                        if content:
+                            assistant_msg = _assistant_message_from_result(
+                                llm_result,
+                                model_name=llm_params.get("model"),
+                            )
+                            session.context_manager.add_message(
+                                assistant_msg, token_count
+                            )
+                        session.context_manager.add_message(
+                            Message(
+                                role="user",
+                                content=_no_tool_incomplete_plan_prompt(
+                                    unfinished_plan
+                                ),
+                            )
+                        )
+                        no_tool_incomplete_plan_retries += 1
+                        await session.send_event(
+                            Event(
+                                event_type="tool_log",
+                                data={
+                                    "tool": "system",
+                                    "log": (
+                                        "Plan still has unfinished items after a "
+                                        "text-only response — retrying instead of "
+                                        "returning to the prompt."
+                                    ),
+                                },
+                            )
+                        )
+                        iteration += 1
+                        continue
+
                     logger.debug(
                         "Agent loop ending: no tool calls. "
                         "finish_reason=%s, token_count=%d, "
@@ -1323,6 +1410,8 @@ class Handlers:
                         session.context_manager.add_message(assistant_msg, token_count)
                         final_response = content
                     break
+
+                no_tool_incomplete_plan_retries = 0
 
                 # Validate tool call args (one json.loads per call, once)
                 # and split into good vs bad
@@ -1953,6 +2042,8 @@ class Handlers:
             _ = session.save_and_upload_detached(repo_id)
 
         session.is_running = False
+        if not getattr(session, "local_mode", False):
+            await teardown_session_sandbox(session)
         await session.send_event(Event(event_type="shutdown"))
         return True
 
@@ -2041,6 +2132,8 @@ async def submission_loop(
     )
     if session_holder is not None:
         session_holder[0] = session
+    if not local_mode:
+        start_cpu_sandbox_preload(session)
     logger.info("Agent loop started")
 
     # Retry any failed uploads from previous sessions (fire-and-forget).

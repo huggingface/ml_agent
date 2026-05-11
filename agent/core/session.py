@@ -100,6 +100,7 @@ class Session:
         self.hf_token: Optional[str] = hf_token
         self.user_id: Optional[str] = user_id
         self.hf_username: Optional[str] = hf_username
+        self.local_mode = local_mode
         self.persistence_store = persistence_store
         self.tool_router = tool_router
         self.stream = stream
@@ -118,6 +119,7 @@ class Session:
         self.session_id = session_id or str(uuid.uuid4())
         self.config = config
         self.is_running = True
+        self.current_plan: list[dict[str, str]] = []
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
