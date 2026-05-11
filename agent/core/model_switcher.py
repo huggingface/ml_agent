@@ -15,7 +15,17 @@ glues it to CLI output + session state.
 
 from __future__ import annotations
 
+import asyncio
+
+from litellm import acompletion
+
 from agent.core.effort_probe import ProbeInconclusive, probe_effort
+from agent.core.llm_params import _resolve_llm_params
+from agent.core.local_models import (
+    LOCAL_MODEL_PREFIXES,
+    is_local_model_id,
+    is_reserved_local_model_id,
+)
 
 
 # Suggested models shown by `/model` (not a gate). Users can paste any HF
@@ -40,6 +50,8 @@ SUGGESTED_MODELS = [
 
 
 _ROUTING_POLICIES = {"fastest", "cheapest", "preferred"}
+_DIRECT_PREFIXES = ("anthropic/", "openai/", *LOCAL_MODEL_PREFIXES)
+_LOCAL_PROBE_TIMEOUT = 15.0
 
 
 def is_valid_model_id(model_id: str) -> bool:
@@ -48,13 +60,22 @@ def is_valid_model_id(model_id: str) -> bool:
     Accepts:
       • anthropic/<model>
       • openai/<model>
+      • ollama/<model>, vllm/<model>, lm_studio/<model>, llamacpp/<model>
       • <org>/<model>[:<tag>]            (HF router; tag = provider or policy)
       • huggingface/<org>/<model>[:<tag>] (same, accepts legacy prefix)
 
     Actual availability is verified against the HF router catalog on
     switch, and by the provider on the probe's ping call.
     """
-    if not model_id or "/" not in model_id:
+    if not model_id:
+        return False
+    if is_local_model_id(model_id):
+        return True
+    if is_reserved_local_model_id(model_id):
+        return False
+    if any(model_id.startswith(prefix) for prefix in LOCAL_MODEL_PREFIXES):
+        return False
+    if "/" not in model_id:
         return False
     head = model_id.split(":", 1)[0]
     parts = head.split("/")
@@ -70,7 +91,7 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     Anthropic / OpenAI ids return ``True`` without printing anything —
     the probe below covers "does this model exist".
     """
-    if model_id.startswith(("anthropic/", "openai/")):
+    if model_id.startswith(_DIRECT_PREFIXES):
         return True
 
     from agent.core import hf_router_catalog as cat
@@ -141,7 +162,9 @@ def print_model_listing(config, console) -> None:
     console.print(
         "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
         "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
-        "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.[/dim]"
+        "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.\n"
+        "Use 'ollama/<model>', 'vllm/<model>', 'lm_studio/<model>', or "
+        "'llamacpp/<model>' for local OpenAI-compatible endpoints.[/dim]"
     )
 
 
@@ -151,7 +174,21 @@ def print_invalid_id(arg: str, console) -> None:
         "[dim]Expected:\n"
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
         "  • anthropic/<model>\n"
-        "  • openai/<model>[/dim]"
+        "  • openai/<model>\n"
+        "  • ollama/<model> | vllm/<model> | lm_studio/<model> | llamacpp/<model>[/dim]"
+    )
+
+
+async def _probe_local_model(model_id: str) -> None:
+    params = _resolve_llm_params(model_id)
+    await asyncio.wait_for(
+        acompletion(
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+            stream=False,
+            **params,
+        ),
+        timeout=_LOCAL_PROBE_TIMEOUT,
     )
 
 
@@ -173,9 +210,26 @@ async def probe_and_switch_model(
     * ✗ hard error (auth, model-not-found, quota) — we reject the switch
       and keep the current model so the user isn't stranded
 
-    Transient errors (5xx, timeout) complete the switch with a yellow
-    warning; the next real call re-surfaces the error if it's persistent.
+    For non-local models, transient errors (5xx, timeout) complete the switch
+    with a yellow warning; the next real call re-surfaces the error if it's
+    persistent. Local models reject every probe error, including timeouts, and
+    keep the current model.
     """
+    if is_local_model_id(model_id):
+        console.print(f"[dim]checking local model {model_id}...[/dim]")
+        try:
+            await _probe_local_model(model_id)
+        except Exception as e:
+            console.print(f"[bold red]Switch failed:[/bold red] {e}")
+            console.print(f"[dim]Keeping current model: {config.model_name}[/dim]")
+            return
+
+        _commit_switch(model_id, config, session, effective=None, cache=True)
+        console.print(
+            f"[green]Model switched to {model_id}[/green] [dim](effort: off)[/dim]"
+        )
+        return
+
     preference = config.reasoning_effort
     if not _print_hf_routing_info(model_id, console):
         return

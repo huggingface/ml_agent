@@ -3,24 +3,66 @@ import threading
 import time
 from types import SimpleNamespace
 
-import pytest
-
 from agent.core import telemetry
 from agent.tools import sandbox_client, sandbox_tool
 from agent.tools.sandbox_client import Sandbox
 from agent.tools.sandbox_tool import sandbox_create_handler
 
 
+def _fail_metadata_update(*args, **kwargs):
+    raise AssertionError("sandbox creation should not update Space metadata")
+
+
+def _capture_duplicate_repo_call(
+    captured,
+    *,
+    from_id,
+    to_id,
+    repo_type,
+    private,
+    space_hardware,
+    space_sleep_time=None,
+):
+    captured.update(
+        {
+            "from_id": from_id,
+            "to_id": to_id,
+            "repo_type": repo_type,
+            "private": private,
+            "space_hardware": space_hardware,
+            "space_sleep_time": space_sleep_time,
+        }
+    )
+
+
 def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     duplicate_kwargs = {}
+    logs: list[str] = []
     requested_hardware = []
 
     class FakeApi:
         def __init__(self, token=None):
             self.token = token
 
-        def duplicate_space(self, **kwargs):
-            duplicate_kwargs.update(kwargs)
+        def duplicate_repo(
+            self,
+            *,
+            from_id,
+            to_id,
+            repo_type,
+            private,
+            space_hardware,
+            space_sleep_time=None,
+        ):
+            _capture_duplicate_repo_call(
+                duplicate_kwargs,
+                from_id=from_id,
+                to_id=to_id,
+                repo_type=repo_type,
+                private=private,
+                space_hardware=space_hardware,
+                space_sleep_time=space_sleep_time,
+            )
 
         def request_space_hardware(self, space_id, hardware, sleep_time=None):
             requested_hardware.append((space_id, hardware, sleep_time))
@@ -40,11 +82,13 @@ def test_sandbox_client_defaults_to_private_spaces(monkeypatch):
     )
     monkeypatch.setattr(Sandbox, "_wait_for_api", lambda self, *args, **kwargs: None)
 
-    Sandbox.create(owner="alice", token="hf-token", log=lambda msg: None)
+    Sandbox.create(owner="alice", token="hf-token", log=logs.append)
 
+    assert duplicate_kwargs["repo_type"] == "space"
     assert duplicate_kwargs["private"] is True
-    assert duplicate_kwargs["hardware"] == "cpu-basic"
+    assert duplicate_kwargs["space_hardware"] == "cpu-basic"
     assert requested_hardware == []
+    assert not any("sleep time" in log for log in logs)
 
 
 def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
@@ -63,7 +107,16 @@ def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
         def __init__(self, token=None):
             self.token = token
 
-        def duplicate_space(self, **kwargs):
+        def duplicate_repo(
+            self,
+            *,
+            from_id,
+            to_id,
+            repo_type,
+            private,
+            space_hardware,
+            space_sleep_time=None,
+        ):
             pass
 
         def request_space_hardware(self, space_id, hardware, sleep_time=None):
@@ -94,32 +147,37 @@ def test_sandbox_client_retries_transient_runtime_404(monkeypatch):
     assert runtime_calls == 2
 
 
-def test_sandbox_client_retries_transient_hardware_401(monkeypatch):
-    hardware_calls = 0
+def test_sandbox_client_configures_gpu_at_duplication(monkeypatch):
+    duplicate_kwargs = {}
     logs: list[str] = []
-
-    class FakeResponse:
-        status_code = 401
-
-    class FakeHardware401(Exception):
-        response = FakeResponse()
-
-        def __str__(self):
-            return "401 Client Error: Repository Not Found"
+    requested_hardware = []
 
     class FakeApi:
         def __init__(self, token=None):
             self.token = token
 
-        def duplicate_space(self, **kwargs):
-            pass
+        def duplicate_repo(
+            self,
+            *,
+            from_id,
+            to_id,
+            repo_type,
+            private,
+            space_hardware,
+            space_sleep_time=None,
+        ):
+            _capture_duplicate_repo_call(
+                duplicate_kwargs,
+                from_id=from_id,
+                to_id=to_id,
+                repo_type=repo_type,
+                private=private,
+                space_hardware=space_hardware,
+                space_sleep_time=space_sleep_time,
+            )
 
         def request_space_hardware(self, space_id, hardware, sleep_time=None):
-            nonlocal hardware_calls
-            hardware_calls += 1
-            if hardware_calls == 1:
-                raise FakeHardware401()
-            return SimpleNamespace(stage="BUILDING", hardware=None)
+            requested_hardware.append((space_id, hardware, sleep_time))
 
         def add_space_secret(self, *args, **kwargs):
             pass
@@ -140,58 +198,81 @@ def test_sandbox_client_retries_transient_hardware_401(monkeypatch):
         owner="alice",
         token="hf-token",
         hardware="t4-small",
+        sleep_time=2700,
         log=logs.append,
     )
 
     assert sandbox.space_id.startswith("alice/sandbox-")
-    assert hardware_calls == 2
-    assert any("Hardware request not accepted yet (HTTP 401)" in log for log in logs)
+    assert duplicate_kwargs["repo_type"] == "space"
+    assert duplicate_kwargs["space_hardware"] == "t4-small"
+    assert duplicate_kwargs["space_sleep_time"] == 2700
+    assert requested_hardware == []
+    assert "Using duplicated Space hardware: t4-small" in logs
+    assert "Using duplicated Space sleep time: 2700s" in logs
 
 
-def test_sandbox_hardware_retry_reraises_after_timeout(monkeypatch):
-    calls = 0
+def test_sandbox_client_logs_cpu_sleep_time_as_hub_fixed(monkeypatch):
+    duplicate_kwargs = {}
     logs: list[str] = []
-    sleeps: list[float] = []
-
-    class FakeResponse:
-        status_code = 401
-
-    class FakeHardware401(Exception):
-        response = FakeResponse()
-
-        def __str__(self):
-            return "401 Client Error: Repository Not Found"
-
-    first_error = FakeHardware401("first")
-    timeout_error = FakeHardware401("timeout")
+    requested_hardware = []
 
     class FakeApi:
+        def __init__(self, token=None):
+            self.token = token
+
+        def duplicate_repo(
+            self,
+            *,
+            from_id,
+            to_id,
+            repo_type,
+            private,
+            space_hardware,
+            space_sleep_time=None,
+        ):
+            _capture_duplicate_repo_call(
+                duplicate_kwargs,
+                from_id=from_id,
+                to_id=to_id,
+                repo_type=repo_type,
+                private=private,
+                space_hardware=space_hardware,
+                space_sleep_time=space_sleep_time,
+            )
+
         def request_space_hardware(self, space_id, hardware, sleep_time=None):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                raise first_error
-            raise timeout_error
+            requested_hardware.append((space_id, hardware, sleep_time))
 
-    timestamps = iter([100.0, 100.0, 161.0])
+        def add_space_secret(self, *args, **kwargs):
+            pass
 
-    monkeypatch.setattr(sandbox_client.time, "time", lambda: next(timestamps))
-    monkeypatch.setattr(sandbox_client.time, "sleep", sleeps.append)
+        def get_space_runtime(self, space_id):
+            return SimpleNamespace(stage="RUNNING", hardware="cpu-basic")
 
-    with pytest.raises(FakeHardware401) as excinfo:
-        sandbox_client._request_space_hardware_with_retry(
-            FakeApi(),
-            "alice/sandbox-12345678",
-            hardware="cpu-basic",
-            sleep_time=None,
-            log=logs.append,
-            check_cancel=lambda: None,
-        )
+    monkeypatch.setattr(sandbox_client, "HfApi", FakeApi)
+    monkeypatch.setattr(
+        Sandbox,
+        "_setup_server",
+        staticmethod(lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(Sandbox, "_wait_for_api", lambda self, *args, **kwargs: None)
 
-    assert excinfo.value is timeout_error
-    assert calls == 2
-    assert sleeps == [sandbox_client.WAIT_INTERVAL]
-    assert len(logs) == 1
+    Sandbox.create(
+        owner="alice",
+        token="hf-token",
+        sleep_time=2700,
+        log=logs.append,
+    )
+
+    assert duplicate_kwargs["repo_type"] == "space"
+    assert duplicate_kwargs["space_hardware"] == "cpu-basic"
+    assert duplicate_kwargs["space_sleep_time"] == 2700
+    assert requested_hardware == []
+    assert "Using duplicated Space hardware: cpu-basic" in logs
+    assert (
+        "Requested duplicated Space sleep time: 2700s "
+        "(cpu-basic auto-sleep is fixed by the Hub)"
+    ) in logs
 
 
 def test_sandbox_tool_forces_private_spaces(monkeypatch):
@@ -295,7 +376,7 @@ def test_ensure_sandbox_overrides_private_argument(monkeypatch):
     monkeypatch.setattr(sandbox_tool, "_cleanup_user_orphan_sandboxes", lambda *args: 0)
     monkeypatch.setattr(Sandbox, "create", staticmethod(fake_create))
     monkeypatch.setattr(telemetry, "record_sandbox_create", fake_record_sandbox_create)
-    monkeypatch.setattr("huggingface_hub.metadata_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr("huggingface_hub.metadata_update", _fail_metadata_update)
 
     async def run():
         session = FakeSession()
@@ -356,7 +437,7 @@ def test_sandbox_creation_is_serialized_per_owner(monkeypatch):
     monkeypatch.setattr(sandbox_tool, "_cleanup_user_orphan_sandboxes", lambda *args: 0)
     monkeypatch.setattr(Sandbox, "create", staticmethod(fake_create))
     monkeypatch.setattr(telemetry, "record_sandbox_create", fake_record_sandbox_create)
-    monkeypatch.setattr("huggingface_hub.metadata_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr("huggingface_hub.metadata_update", _fail_metadata_update)
 
     async def run():
         await asyncio.gather(
