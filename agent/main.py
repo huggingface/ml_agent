@@ -378,7 +378,13 @@ async def event_listener(
                 data = event.data or {}
                 if data.get("clear_screen"):
                     _clear_terminal()
-                console.print("[dim]Started new chat.[/dim]")
+                saved_path = data.get("saved_path")
+                if saved_path:
+                    console.print(
+                        f"[dim]Started new chat. Prior chat saved to {saved_path}.[/dim]"
+                    )
+                else:
+                    console.print("[dim]Started new chat.[/dim]")
                 turn_complete_event.set()
             elif event.event_type == "resume_complete":
                 data = event.data or {}
