@@ -102,8 +102,7 @@ async def test_push_dataset_upload_creates_private_repo_and_uploads_file(monkeyp
 
         def upload_file(self, **kwargs):
             if kwargs["path_in_repo"] != "README.md":
-                assert kwargs["path_or_fileobj"].tell() == 0
-                kwargs["path_or_fileobj"].read()
+                assert kwargs["path_or_fileobj"] == b"a,b\n1,2\n"
             self.upload_calls.append(kwargs)
 
     monkeypatch.setattr(dataset_uploads, "HfApi", FakeApi)

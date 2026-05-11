@@ -215,9 +215,10 @@ async def push_dataset_upload_to_hub(
         commit_message="Update ML Intern dataset upload README",
     )
     await asyncio.to_thread(upload.file.seek, 0)
+    file_bytes = await asyncio.to_thread(upload.file.read)
     await asyncio.to_thread(
         api.upload_file,
-        path_or_fileobj=upload.file,
+        path_or_fileobj=file_bytes,
         path_in_repo=path_in_repo,
         repo_id=repo_id,
         repo_type="dataset",

@@ -297,7 +297,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
       try {
         const res = await apiUpload(`/api/session/${sessionId}/datasets`, formData, {
           onProgress: ({ percent }) => {
-            setDatasetUploadProgress(percent);
+            setDatasetUploadProgress(percent !== null && percent < 100 ? percent : null);
           },
         });
         if (!res.ok) {
