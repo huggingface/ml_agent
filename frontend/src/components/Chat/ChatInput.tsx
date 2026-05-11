@@ -328,6 +328,18 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
     }
   }, [claudeQuotaExhausted]);
 
+  useEffect(() => {
+    if (!datasetUploadError) return;
+    const timeout = window.setTimeout(() => setDatasetUploadError(null), 7000);
+    return () => window.clearTimeout(timeout);
+  }, [datasetUploadError]);
+
+  useEffect(() => {
+    if (!datasetUploadSuccess) return;
+    const timeout = window.setTimeout(() => setDatasetUploadSuccess(null), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [datasetUploadSuccess]);
+
   // Refresh the quota display whenever the session changes (user might
   // have started another tab that spent quota).
   useEffect(() => {
@@ -630,6 +642,21 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
             />
           </Box>
         )}
+        {(datasetUploadError || datasetUploadSuccess) && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 1 }}>
+            <Alert
+              severity={datasetUploadError ? 'error' : 'success'}
+              variant="filled"
+              onClose={() => {
+                setDatasetUploadError(null);
+                setDatasetUploadSuccess(null);
+              }}
+              sx={{ fontSize: '0.8rem', maxWidth: 520, width: '100%' }}
+            >
+              {datasetUploadError ?? datasetUploadSuccess}
+            </Alert>
+          </Box>
+        )}
         {uploadedDataset && (
           <Box sx={{ display: 'flex', justifyContent: 'center', mt: 1 }}>
             <Chip
@@ -798,36 +825,6 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
             sx={{ fontSize: '0.8rem', maxWidth: 480 }}
           >
             {modelSwitchError}
-          </Alert>
-        </Snackbar>
-        <Snackbar
-          open={!!datasetUploadError}
-          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
-          onClose={() => setDatasetUploadError(null)}
-          autoHideDuration={7000}
-        >
-          <Alert
-            severity="error"
-            variant="filled"
-            onClose={() => setDatasetUploadError(null)}
-            sx={{ fontSize: '0.8rem', maxWidth: 520 }}
-          >
-            {datasetUploadError}
-          </Alert>
-        </Snackbar>
-        <Snackbar
-          open={!!datasetUploadSuccess}
-          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
-          onClose={() => setDatasetUploadSuccess(null)}
-          autoHideDuration={5000}
-        >
-          <Alert
-            severity="success"
-            variant="filled"
-            onClose={() => setDatasetUploadSuccess(null)}
-            sx={{ fontSize: '0.8rem', maxWidth: 520 }}
-          >
-            {datasetUploadSuccess}
           </Alert>
         </Snackbar>
       </Box>
