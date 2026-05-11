@@ -27,7 +27,16 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
   const sessionMeta = sessions.find((s) => s.id === sessionId);
   const isExpired = sessionMeta?.expired === true;
 
-  const { messages, sendMessage, stop, status, undoLastTurn, editAndRegenerate, approveTools } = useAgentChat({
+  const {
+    messages,
+    sendMessage,
+    stop,
+    status,
+    undoLastTurn,
+    editAndRegenerate,
+    approveTools,
+    refreshMessages,
+  } = useAgentChat({
     sessionId,
     isActive,
     onReady: () => logger.log(`Session ${sessionId} ready`),
@@ -116,6 +125,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
           initialModelPath={sessionMeta?.model}
           onSend={handleSendMessage}
           onStop={handleStop}
+          onDatasetUploaded={refreshMessages}
           isProcessing={busy}
           disabled={!isConnected || activityStatus.type === 'waiting-approval'}
           placeholder={
