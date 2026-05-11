@@ -18,7 +18,7 @@ import {
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
-import UploadFileIcon from '@mui/icons-material/UploadFile';
+import AddIcon from '@mui/icons-material/Add';
 import { apiFetch, apiUpload } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
@@ -479,9 +479,12 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
         <Box
           className="composer"
           sx={{
-            display: 'flex',
-            gap: '10px',
-            alignItems: 'flex-start',
+            display: 'grid',
+            gridTemplateColumns: 'auto 1fr auto',
+            gridTemplateRows: 'auto auto',
+            columnGap: '10px',
+            rowGap: '4px',
+            alignItems: 'end',
             bgcolor: 'var(--composer-bg)',
             borderRadius: 'var(--radius-md)',
             p: '12px',
@@ -517,7 +520,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
                 }
             }}
             sx={{
-                flex: 1,
+                gridColumn: '1 / -1',
                 '& .MuiInputBase-root': {
                     p: 0,
                     backgroundColor: 'transparent',
@@ -535,40 +538,39 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
             onChange={handleDatasetFileChange}
             style={{ display: 'none' }}
           />
-          <Tooltip title="Upload dataset">
-            <span>
-              <IconButton
-                onClick={handleDatasetUploadClick}
-                disabled={disabled || isProcessing || isUploadingDataset || !sessionId}
-                sx={{
-                  mt: 1,
-                  p: 1,
-                  borderRadius: '10px',
-                  color: uploadedDataset ? 'var(--accent-yellow)' : 'var(--muted-text)',
-                  transition: 'all 0.2s',
-                  '&:hover': {
-                    color: 'var(--accent-yellow)',
-                    bgcolor: 'var(--hover-bg)',
-                  },
-                  '&.Mui-disabled': {
-                    opacity: 0.3,
-                  },
-                }}
-                aria-label="Upload dataset"
-              >
-                {isUploadingDataset ? (
-                  <CircularProgress size={18} thickness={4} sx={{ color: 'inherit' }} />
-                ) : (
-                  <UploadFileIcon fontSize="small" />
-                )}
-              </IconButton>
-            </span>
-          </Tooltip>
+          <Box sx={{ gridColumn: '1', gridRow: '2', display: 'flex' }}>
+            <Tooltip title="Upload dataset">
+              <span>
+                <IconButton
+                  onClick={handleDatasetUploadClick}
+                  disabled={disabled || isProcessing || isUploadingDataset || !sessionId}
+                  sx={{
+                    p: 1,
+                    borderRadius: '50%',
+                    color: uploadedDataset ? 'var(--accent-yellow)' : 'var(--muted-text)',
+                    transition: 'all 0.2s',
+                    '&:hover': {
+                      color: 'var(--accent-yellow)',
+                      bgcolor: 'var(--hover-bg)',
+                    },
+                    '&.Mui-disabled': {
+                      opacity: 0.3,
+                    },
+                  }}
+                  aria-label="Upload dataset"
+                >
+                  <AddIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Box>
           {isProcessing ? (
             <IconButton
               onClick={onStop}
               sx={{
-                mt: 1,
+                gridColumn: '3',
+                gridRow: '2',
+                justifySelf: 'end',
                 p: 1.5,
                 borderRadius: '10px',
                 color: 'var(--muted-text)',
@@ -590,7 +592,9 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
               onClick={handleSend}
               disabled={disabled || isUploadingDataset || !input.trim()}
               sx={{
-                mt: 1,
+                gridColumn: '3',
+                gridRow: '2',
+                justifySelf: 'end',
                 p: 1,
                 borderRadius: '10px',
                 color: 'var(--muted-text)',
