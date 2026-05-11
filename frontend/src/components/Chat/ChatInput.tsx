@@ -12,10 +12,12 @@ import {
   ListItemText,
   Chip,
   Snackbar,
+  Tooltip,
 } from '@mui/material';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
+import UploadFileIcon from '@mui/icons-material/UploadFile';
 import { apiFetch } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
@@ -118,18 +120,44 @@ interface ChatInputProps {
   initialModelPath?: string | null;
   onSend: (text: string) => void;
   onStop?: () => void;
+  onDatasetUploaded?: () => Promise<boolean> | boolean;
   isProcessing?: boolean;
   disabled?: boolean;
   placeholder?: string;
 }
 
+interface DatasetUploadResponse {
+  session_id: string;
+  repo_id: string;
+  repo_type: 'dataset';
+  private: true;
+  upload_id: string;
+  filename: string;
+  path_in_repo: string;
+  size_bytes: number;
+  format: 'csv' | 'json' | 'jsonl';
+  hub_url: string;
+  load_dataset_snippet: string;
+}
+
+const MAX_DATASET_UPLOAD_BYTES = 100 * 1024 * 1024;
+const DATASET_UPLOAD_ACCEPT = '.csv,.json,.jsonl';
+const DATASET_UPLOAD_EXTENSIONS = new Set(['csv', 'json', 'jsonl']);
+
 const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
 const isPremiumModel = (m: ModelOption) => isPremiumPath(m.modelPath);
 const firstFreeModel = (options: ModelOption[]) => options.find(m => !isPremiumModel(m)) ?? options[0];
 
-export default function ChatInput({ sessionId, initialModelPath, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
+const formatBytes = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+export default function ChatInput({ sessionId, initialModelPath, onSend, onStop, onDatasetUploaded, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
   const modelOptionsRef = useRef<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
   const sessionIdRef = useRef<string | undefined>(sessionId);
@@ -150,6 +178,10 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   const updateSessionModel = useSessionStore((s) => s.updateSessionModel);
   const [awaitingTopUp, setAwaitingTopUp] = useState(false);
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
+  const [datasetUploadError, setDatasetUploadError] = useState<string | null>(null);
+  const [datasetUploadSuccess, setDatasetUploadSuccess] = useState<string | null>(null);
+  const [uploadedDataset, setUploadedDataset] = useState<DatasetUploadResponse | null>(null);
+  const [isUploadingDataset, setIsUploadingDataset] = useState(false);
   const lastSentRef = useRef<string>('');
 
   useEffect(() => {
@@ -222,6 +254,66 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
       setInput('');
     }
   }, [input, disabled, onSend]);
+
+  const handleDatasetUploadClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleDatasetFileChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+
+      if (!sessionId) {
+        setDatasetUploadError('Start a session before uploading a dataset.');
+        return;
+      }
+
+      const extension = file.name.split('.').pop()?.toLowerCase() || '';
+      if (!DATASET_UPLOAD_EXTENSIONS.has(extension)) {
+        setDatasetUploadError('Only CSV, JSON, and JSONL dataset files are supported.');
+        return;
+      }
+      if (file.size > MAX_DATASET_UPLOAD_BYTES) {
+        setDatasetUploadError(
+          `Dataset files must be 100 MB or smaller. ${file.name} is ${formatBytes(file.size)}.`
+        );
+        return;
+      }
+      if (file.size === 0) {
+        setDatasetUploadError('Uploaded dataset file is empty.');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+      setIsUploadingDataset(true);
+      setDatasetUploadError(null);
+      setDatasetUploadSuccess(null);
+      try {
+        const res = await apiFetch(`/api/session/${sessionId}/datasets`, {
+          method: 'POST',
+          body: formData,
+        });
+        if (!res.ok) {
+          setDatasetUploadError(await readApiErrorMessage(res, 'Dataset upload failed.'));
+          return;
+        }
+        const payload = await res.json() as DatasetUploadResponse;
+        setUploadedDataset(payload);
+        setDatasetUploadSuccess(`Uploaded ${payload.filename} to ${payload.repo_id}`);
+        await onDatasetUploaded?.();
+      } catch (error) {
+        setDatasetUploadError(
+          error instanceof Error ? error.message : 'Dataset upload failed.'
+        );
+      } finally {
+        setIsUploadingDataset(false);
+      }
+    },
+    [sessionId, onDatasetUploaded],
+  );
 
   // When the chat transport reports a premium-model quota 429, restore the typed
   // text so the user doesn't lose their message.
@@ -431,6 +523,42 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
                 }
             }}
           />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={DATASET_UPLOAD_ACCEPT}
+            onChange={handleDatasetFileChange}
+            style={{ display: 'none' }}
+          />
+          <Tooltip title="Upload dataset">
+            <span>
+              <IconButton
+                onClick={handleDatasetUploadClick}
+                disabled={disabled || isProcessing || isUploadingDataset || !sessionId}
+                sx={{
+                  mt: 1,
+                  p: 1,
+                  borderRadius: '10px',
+                  color: uploadedDataset ? 'var(--accent-yellow)' : 'var(--muted-text)',
+                  transition: 'all 0.2s',
+                  '&:hover': {
+                    color: 'var(--accent-yellow)',
+                    bgcolor: 'var(--hover-bg)',
+                  },
+                  '&.Mui-disabled': {
+                    opacity: 0.3,
+                  },
+                }}
+                aria-label="Upload dataset"
+              >
+                {isUploadingDataset ? (
+                  <CircularProgress size={18} thickness={4} sx={{ color: 'inherit' }} />
+                ) : (
+                  <UploadFileIcon fontSize="small" />
+                )}
+              </IconButton>
+            </span>
+          </Tooltip>
           {isProcessing ? (
             <IconButton
               onClick={onStop}
@@ -475,6 +603,29 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
             </IconButton>
           )}
         </Box>
+        {uploadedDataset && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 1 }}>
+            <Chip
+              size="small"
+              label={`Dataset: ${uploadedDataset.filename}`}
+              component="a"
+              href={uploadedDataset.hub_url}
+              target="_blank"
+              rel="noreferrer"
+              clickable
+              sx={{
+                maxWidth: '100%',
+                bgcolor: 'rgba(255,255,255,0.08)',
+                color: 'var(--text)',
+                border: '1px solid var(--divider)',
+                '& .MuiChip-label': {
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                },
+              }}
+            />
+          </Box>
+        )}
 
         {/* Powered By Badge */}
         <Box
@@ -620,6 +771,36 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
             sx={{ fontSize: '0.8rem', maxWidth: 480 }}
           >
             {modelSwitchError}
+          </Alert>
+        </Snackbar>
+        <Snackbar
+          open={!!datasetUploadError}
+          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+          onClose={() => setDatasetUploadError(null)}
+          autoHideDuration={7000}
+        >
+          <Alert
+            severity="error"
+            variant="filled"
+            onClose={() => setDatasetUploadError(null)}
+            sx={{ fontSize: '0.8rem', maxWidth: 520 }}
+          >
+            {datasetUploadError}
+          </Alert>
+        </Snackbar>
+        <Snackbar
+          open={!!datasetUploadSuccess}
+          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+          onClose={() => setDatasetUploadSuccess(null)}
+          autoHideDuration={5000}
+        >
+          <Alert
+            severity="success"
+            variant="filled"
+            onClose={() => setDatasetUploadSuccess(null)}
+            sx={{ fontSize: '0.8rem', maxWidth: 520 }}
+          >
+            {datasetUploadSuccess}
           </Alert>
         </Snackbar>
       </Box>
