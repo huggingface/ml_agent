@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { useState, useCallback, type ReactNode } from 'react';
 import {
   Box,
   Typography,
@@ -8,18 +8,14 @@ import {
 } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import GroupAddIcon from '@mui/icons-material/GroupAdd';
 import LoginIcon from '@mui/icons-material/Login';
 import RocketLaunchIcon from '@mui/icons-material/RocketLaunch';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
 import { apiFetch } from '@/utils/api';
 import { isInIframe, triggerLogin } from '@/hooks/useAuth';
-import { useOrgMembership } from '@/hooks/useOrgMembership';
 
 const HF_ORANGE = '#FF9D00';
-const ORG_JOIN_URL =
-  'https://huggingface.co/organizations/ml-agent-explorers/share/GzPMJUivoFPlfkvFtIqEouZKSytatKQSZT';
 
 // ---------------------------------------------------------------------------
 // ChecklistStep sub-component
@@ -192,48 +188,6 @@ export default function WelcomeScreen() {
   const isAuthenticated = !!user?.authenticated;
   const isDevUser = user?.username === 'dev';
 
-  // Iframe: localStorage-based org tracking (no auth token available)
-  const [iframeOrgJoined, setIframeOrgJoined] = useState(() => {
-    try { return localStorage.getItem('hf-agent-org-joined') === '1'; } catch { return false; }
-  });
-  const joinLinkOpened = useRef(false);
-
-  // Auto-advance when user returns from org join link (iframe only)
-  useEffect(() => {
-    if (!inIframe) return;
-    const handleVisibility = () => {
-      if (document.visibilityState !== 'visible' || !joinLinkOpened.current) return;
-      joinLinkOpened.current = false;
-      try { localStorage.setItem('hf-agent-org-joined', '1'); } catch { /* ignore */ }
-      setIframeOrgJoined(true);
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [inIframe]);
-
-  const isOrgMember = inIframe ? iframeOrgJoined : !!user?.orgMember;
-
-  // Poll for org membership once authenticated (skipped in dev mode and iframe)
-  const popupRef = useOrgMembership(isAuthenticated && !isDevUser && !inIframe && !isOrgMember);
-
-  // ---- Actions ----
-
-  const handleJoinOrg = useCallback(() => {
-    if (inIframe) {
-      // Iframe: open link, track via visibilitychange + localStorage
-      joinLinkOpened.current = true;
-      window.open(ORG_JOIN_URL, '_blank', 'noopener,noreferrer');
-      return;
-    }
-    // Direct: open as popup, auto-close via polling
-    const popup = window.open(ORG_JOIN_URL, 'hf-org-join', 'noopener');
-    if (popup) {
-      popupRef.current = popup;
-    } else {
-      window.open(ORG_JOIN_URL, '_blank', 'noopener,noreferrer');
-    }
-  }, [popupRef, inIframe]);
-
   const handleStartSession = useCallback(async () => {
     if (isCreating) return;
     setIsCreating(true);
@@ -255,7 +209,7 @@ export default function WelcomeScreen() {
         return;
       }
       const data = await response.json();
-      createSession(data.session_id);
+      createSession(data.session_id, data.model);
       setPlan([]);
       clearPanel();
     } catch {
@@ -268,8 +222,7 @@ export default function WelcomeScreen() {
   // ---- Step status helpers ----
 
   const signInStatus: StepStatus = isAuthenticated ? 'completed' : 'active';
-  const joinOrgStatus: StepStatus = isOrgMember ? 'completed' : isAuthenticated ? 'active' : 'locked';
-  const startStatus: StepStatus = isAuthenticated && isOrgMember ? 'active' : 'locked';
+  const startStatus: StepStatus = isAuthenticated ? 'active' : 'locked';
 
   // Space URL for iframe "Open ML Intern" step
   const spaceHost =
@@ -372,31 +325,19 @@ export default function WelcomeScreen() {
               isLast
             />
           ) : inIframe ? (
-            /* Iframe: 2 steps */
-            <>
-              <ChecklistStep
-                stepNumber={1}
-                title="Join ML Agent Explorers"
-                description="Get free access to GPUs, inference APIs, and Hub resources."
-                status={isOrgMember ? 'completed' : 'active'}
-                actionLabel="Join Organization"
-                actionIcon={<GroupAddIcon sx={{ fontSize: 16 }} />}
-                onAction={handleJoinOrg}
-              />
-              <ChecklistStep
-                stepNumber={2}
-                title="Open ML Intern"
-                description="Open the agent in a full browser tab to get started."
-                status={isOrgMember ? 'active' : 'locked'}
-                lockedReason="Join the organization first."
-                actionLabel="Open ML Intern"
-                actionIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
-                actionHref={spaceHost}
-                isLast
-              />
-            </>
+            /* Iframe: open in a full tab */
+            <ChecklistStep
+              stepNumber={1}
+              title="Open ML Intern"
+              description="Open the agent in a full browser tab to get started."
+              status="active"
+              actionLabel="Open ML Intern"
+              actionIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
+              actionHref={spaceHost}
+              isLast
+            />
           ) : (
-            /* Direct access: 3 steps */
+            /* Direct access: sign in → start */
             <>
               <ChecklistStep
                 stepNumber={1}
@@ -409,20 +350,10 @@ export default function WelcomeScreen() {
               />
               <ChecklistStep
                 stepNumber={2}
-                title="Join ML Agent Explorers"
-                description="Get free access to GPUs, inference APIs, and Hub resources."
-                status={joinOrgStatus}
-                lockedReason="Sign in first to continue."
-                actionLabel="Join Organization"
-                actionIcon={<GroupAddIcon sx={{ fontSize: 16 }} />}
-                onAction={handleJoinOrg}
-              />
-              <ChecklistStep
-                stepNumber={3}
                 title="Start Session"
                 description="Launch an AI agent session for ML engineering."
                 status={startStatus}
-                lockedReason="Complete the steps above to continue."
+                lockedReason="Sign in first to continue."
                 actionLabel="Start Session"
                 actionIcon={<RocketLaunchIcon sx={{ fontSize: 16 }} />}
                 onAction={handleStartSession}
@@ -432,16 +363,6 @@ export default function WelcomeScreen() {
             </>
           )}
         </Box>
-
-        {/* Polling hint when waiting for org join */}
-        {isAuthenticated && !isOrgMember && !isDevUser && !inIframe && (
-          <Typography
-            variant="caption"
-            sx={{ mt: 2, color: 'var(--muted-text)', fontSize: '0.75rem', textAlign: 'center' }}
-          >
-            This page updates automatically when you join the organization.
-          </Typography>
-        )}
 
         {/* Error */}
         {error && (

@@ -84,7 +84,9 @@ def test_anthropic_overloaded_midstream_is_transient():
 
 def test_rate_limit_uses_longer_schedule():
     err = Exception("Too many tokens, please wait before trying again.")
-    delays = [_retry_delay_for(err, i) for i in range(len(_LLM_RATE_LIMIT_RETRY_DELAYS))]
+    delays = [
+        _retry_delay_for(err, i) for i in range(len(_LLM_RATE_LIMIT_RETRY_DELAYS))
+    ]
     assert delays == _LLM_RATE_LIMIT_RETRY_DELAYS
     # Just past the schedule → None (stop retrying).
     assert _retry_delay_for(err, len(_LLM_RATE_LIMIT_RETRY_DELAYS)) is None

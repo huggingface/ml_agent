@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Box,
@@ -25,12 +25,29 @@ interface SessionSidebarProps {
 }
 
 export default function SessionSidebar({ onClose }: SessionSidebarProps) {
-  const { sessions, activeSessionId, createSession, deleteSession, switchSession } =
+  const { sessions, activeSessionId, createSession, deleteSession, switchSession, mergeServerSessions } =
     useSessionStore();
   const { setPlan, clearPanel } =
     useAgentStore();
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [capacityError, setCapacityError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await apiFetch('/api/sessions');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled && Array.isArray(data)) {
+          mergeServerSessions(data);
+        }
+      } catch {
+        /* local sidebar metadata is still usable */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mergeServerSessions]);
 
   // -- Handlers -----------------------------------------------------------
 
@@ -46,7 +63,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
         return;
       }
       const data = await response.json();
-      createSession(data.session_id);
+      createSession(data.session_id, data.model);
       setPlan([]);
       clearPanel();
       onClose?.();
@@ -90,7 +107,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
         const response = await apiFetch('/api/session', { method: 'POST' });
         if (response.ok) {
           const data = await response.json();
-          createSession(data.session_id);
+          createSession(data.session_id, data.model);
           setPlan([]);
           clearPanel();
         }

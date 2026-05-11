@@ -56,6 +56,7 @@ frontend/yarn-error.log*
 eval/
 
 # Project-specific
+scratch/
 session_logs/
 /logs
 hf-agent-leaderboard/

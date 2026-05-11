@@ -55,9 +55,7 @@ class MessagingConfig(BaseModel):
         seen: set[str] = set()
         for event_type in event_types:
             if event_type not in SUPPORTED_AUTO_EVENT_TYPES:
-                raise ValueError(
-                    f"unsupported auto event type '{event_type}'"
-                )
+                raise ValueError(f"unsupported auto event type '{event_type}'")
             if event_type not in seen:
                 normalized.append(event_type)
                 seen.add(event_type)
@@ -83,11 +81,7 @@ class MessagingConfig(BaseModel):
     def default_auto_destinations(self) -> list[str]:
         if not self.enabled:
             return []
-        return [
-            name
-            for name in self.destinations
-            if self.can_auto_send(name)
-        ]
+        return [name for name in self.destinations if self.can_auto_send(name)]
 
 
 class NotificationRequest(BaseModel):

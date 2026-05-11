@@ -160,9 +160,7 @@ class SlackProvider(NotificationProvider):
             raise RetryableNotificationError("Slack transport error") from exc
 
         if response.status_code == 429 or response.status_code >= 500:
-            raise RetryableNotificationError(
-                f"Slack HTTP {response.status_code}"
-            )
+            raise RetryableNotificationError(f"Slack HTTP {response.status_code}")
         if response.status_code >= 400:
             raise NotificationError(f"Slack HTTP {response.status_code}")
 

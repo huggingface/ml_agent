@@ -39,7 +39,9 @@ class NotificationGateway:
         if not self.enabled or self._worker_task is not None:
             return
         self._client = httpx.AsyncClient(timeout=10.0)
-        self._worker_task = asyncio.create_task(self._worker(), name="notification-gateway")
+        self._worker_task = asyncio.create_task(
+            self._worker(), name="notification-gateway"
+        )
 
     async def flush(self) -> None:
         if not self.enabled:
@@ -87,7 +89,9 @@ class NotificationGateway:
                 provider=destination.provider,
                 error=f"No provider implementation for '{destination.provider}'",
             )
-        return await self._send_with_retries(provider, request.destination, destination, request)
+        return await self._send_with_retries(
+            provider, request.destination, destination, request
+        )
 
     async def send_many(
         self, requests: Iterable[NotificationRequest]
@@ -131,7 +135,9 @@ class NotificationGateway:
         try:
             for attempt in range(len(_RETRY_DELAYS) + 1):
                 try:
-                    return await provider.send(client, destination_name, destination, request)
+                    return await provider.send(
+                        client, destination_name, destination, request
+                    )
                 except RetryableNotificationError as exc:
                     if attempt >= len(_RETRY_DELAYS):
                         return NotificationResult(

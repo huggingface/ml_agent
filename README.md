@@ -2,6 +2,11 @@
   <img src="frontend/public/smolagents.webp" alt="smolagents logo" width="160" />
 </p>
 
+<p align="center">
+    <a href="https://github.com/huggingface/ml-intern/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
+    <a href="https://smolagents-ml-intern.hf.space/"><img alt="Website" src="https://img.shields.io/website/https/smolagents-ml-intern.hf.space.svg?down_color=red&down_message=offline&up_message=online"></a>
+</p>
+
 # ML Intern
 
 An ML intern that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
@@ -28,10 +33,14 @@ Create a `.env` file in the project root (or export these in your shell):
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
 OPENAI_API_KEY=<your-openai-api-key> # if using openai models
+LOCAL_LLM_BASE_URL=http://localhost:8000 # shared fallback for local model prefixes
+LOCAL_LLM_API_KEY=<optional-local-api-key> # optional shared local API key
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
-If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
+If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch
+unless you start on a local model. To get a GITHUB_TOKEN follow the tutorial
+[here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
 
 ### Usage
 
@@ -50,11 +59,103 @@ ml-intern "fine-tune llama on my dataset"
 **Options:**
 
 ```bash
-ml-intern --model anthropic/claude-opus-4-6 "your prompt"
-ml-intern --model openai/gpt-5.5 "your prompt"
+ml-intern --model anthropic/claude-opus-4-7 "your prompt"   # requires ANTHROPIC_API_KEY
+ml-intern --model openai/gpt-5.5 "your prompt"              # requires OPENAI_API_KEY
+ml-intern --model ollama/llama3.1:8b "your prompt"
+ml-intern --model vllm/meta-llama/Llama-3.1-8B-Instruct "your prompt"
+ml-intern --sandbox-tools "your prompt"                         # use HF Space sandbox tools
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
+
+Run `ml-intern` then `/model` to see the full list of suggested model ids
+(Claude, GPT, HF-router models like MiniMax, Kimi, GLM, DeepSeek, and local
+model prefixes).
+
+**Local models:**
+
+Local model support uses OpenAI-compatible HTTP endpoints through LiteLLM. The
+agent does not load model weights directly from disk; start your inference
+server first, then select it with a provider-specific model prefix:
+
+```bash
+ml-intern --model ollama/llama3.1:8b "your prompt"
+ml-intern --model vllm/meta-llama/Llama-3.1-8B-Instruct "your prompt"
+```
+
+Inside interactive mode, switch with `/model`:
+
+```text
+/model ollama/llama3.1:8b
+/model lm_studio/google/gemma-3-4b
+/model llamacpp/llama-3.1-8b-instruct
+```
+
+Supported local prefixes are `ollama/`, `vllm/`, `lm_studio/`, and
+`llamacpp/`. Set `LOCAL_LLM_BASE_URL` and optional `LOCAL_LLM_API_KEY` to use
+one shared local endpoint, or override a specific provider with its matching
+`*_BASE_URL` / `*_API_KEY` variable, such as `OLLAMA_BASE_URL` or
+`VLLM_API_KEY`. Provider-specific variables take precedence over the shared
+local variables. Base URLs may include or omit `/v1`.
+
+**CLI tool runtime:**
+
+By default, the CLI runs `bash`, `read`, `write`, and `edit` on your local
+filesystem. To use HF Space sandbox tools instead, including `sandbox_create`,
+opt in with `--sandbox-tools`:
+
+```bash
+ml-intern --sandbox-tools "test this training script in a GPU sandbox"
+ml-intern --model llamacpp/ggml-org/gemma-3-1b-it-GGUF --sandbox-tools
+```
+
+Sandbox tool runtime requires `HF_TOKEN`, even when the selected model is local,
+because it creates private HF Spaces. You can also make sandbox tools your CLI
+default in `~/.config/ml-intern/cli_agent_config.json`:
+
+```json
+{ "tool_runtime": "sandbox" }
+```
+
+Use the default local runtime when you want tools to inspect or edit files in
+your checkout. Use sandbox runtime when you want the agent to create or replace
+an HF Space sandbox, test code remotely, or request GPU sandbox hardware before
+launching larger HF Jobs.
+
+## Sharing Traces
+
+Every session is auto-uploaded to your **own private Hugging Face dataset**
+in [Claude Code JSONL format](https://huggingface.co/changelog/agent-trace-viewer),
+which the HF Agent Trace Viewer auto-detects so you can browse turns, tool
+calls, and model responses directly on the Hub.
+
+By default the dataset is named `{your-hf-username}/ml-intern-sessions` and is
+**created private**. You can flip it to public from inside the CLI:
+
+```bash
+/share-traces            # show current visibility + dataset URL
+/share-traces public     # publish (anyone can view)
+/share-traces private    # lock it back down
+```
+
+You can also flip visibility from the dataset page on huggingface.co — the
+agent honours whatever you set there for subsequent uploads.
+
+To opt out entirely, set in your CLI config (e.g. `configs/cli_agent_config.json`
+or `~/.config/ml-intern/cli_agent_config.json`):
+
+```json
+{ "share_traces": false }
+```
+
+To override the destination repo, set:
+
+```json
+{ "personal_trace_repo_template": "{hf_user}/my-custom-traces" }
+```
+
+The shared `smolagents/ml-intern-sessions` dataset is unrelated and only
+receives anonymized telemetry rows used by the backend KPI scheduler.
 
 ## Supported Gateways
 
@@ -237,6 +338,18 @@ The agent emits the following events via `event_queue`:
 
 ## Development
 
+### Pre-commit Checks
+
+Run Ruff before every commit:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+```
+
+If the format check fails, run `uv run ruff format .` and re-run the checks
+before committing.
+
 ### Adding Built-in Tools
 
 Edit `agent/core/tools.py`:
@@ -281,3 +394,14 @@ Edit `configs/cli_agent_config.json` for CLI defaults, or
 ```
 
 Note: Environment variables like `${YOUR_TOKEN}` are auto-substituted from `.env`.
+
+## Cite ml-intern
+If you use `ml-intern` in your work, please cite it by using the following BibTeX entry or similar.
+```bibtex
+@Misc{ml-intern,
+  title =        {ml-intern: an agent that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem},
+  author =       {Aksel Joonas Reedi, Henri Bonamy, Yoan Di Cosmo, Leandro von Werra, Lewis Tunstall},
+  howpublished = {\url{https://github.com/huggingface/ml-intern}},
+  year =         {2026}
+}
+```

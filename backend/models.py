@@ -52,7 +52,10 @@ class SubmitRequest(BaseModel):
     """Request to submit user input."""
 
     session_id: str
-    text: str
+    # Cap text size to prevent context-bloat / cost-amplification: a malicious
+    # or runaway client could otherwise attach megabytes that then ride along
+    # in every subsequent turn until /api/compact is called.
+    text: str = Field(..., min_length=1, max_length=100_000)
 
 
 class TruncateRequest(BaseModel):
@@ -66,6 +69,7 @@ class SessionResponse(BaseModel):
 
     session_id: str
     ready: bool = True
+    model: str | None = None
 
 
 class PendingApprovalTool(BaseModel):
@@ -74,6 +78,15 @@ class PendingApprovalTool(BaseModel):
     tool: str
     tool_call_id: str
     arguments: dict[str, Any] = {}
+
+
+class SessionAutoApprovalInfo(BaseModel):
+    """Per-session auto-approval budget state."""
+
+    enabled: bool = False
+    cost_cap_usd: float | None = None
+    estimated_spend_usd: float = 0.0
+    remaining_usd: float | None = None
 
 
 class SessionInfo(BaseModel):
@@ -87,13 +100,24 @@ class SessionInfo(BaseModel):
     user_id: str = "dev"
     pending_approval: list[PendingApprovalTool] | None = None
     model: str | None = None
+    title: str | None = None
     notification_destinations: list[str] = Field(default_factory=list)
+    auto_approval: SessionAutoApprovalInfo = Field(
+        default_factory=SessionAutoApprovalInfo
+    )
 
 
 class SessionNotificationsRequest(BaseModel):
     """Replace the session's auto-notification destinations."""
 
     destinations: list[str]
+
+
+class SessionYoloRequest(BaseModel):
+    """Update a session's auto-approval policy."""
+
+    enabled: bool
+    cost_cap_usd: float | None = Field(default=None, ge=0)
 
 
 class HealthResponse(BaseModel):
@@ -110,4 +134,6 @@ class LLMHealthResponse(BaseModel):
     status: str  # "ok" | "error"
     model: str
     error: str | None = None
-    error_type: str | None = None  # "auth" | "credits" | "rate_limit" | "network" | "unknown"
+    error_type: str | None = (
+        None  # "auth" | "credits" | "rate_limit" | "network" | "unknown"
+    )

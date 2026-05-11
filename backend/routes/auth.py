@@ -4,26 +4,45 @@ Handles the OAuth 2.0 authorization code flow with HF as provider.
 After successful auth, sets an HttpOnly cookie with the access token.
 """
 
+import logging
 import os
 import secrets
 import time
 from urllib.parse import urlencode
 
 import httpx
-from dependencies import AUTH_ENABLED, check_org_membership, get_current_user
+from dependencies import (
+    AUTH_ENABLED,
+    OAUTH_SCOPE_COOKIE,
+    REQUIRED_OAUTH_SCOPES,
+    configured_oauth_scopes,
+    get_current_user,
+    oauth_scope_fingerprint,
+)
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 # OAuth configuration from environment
 OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "")
 OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
 OPENID_PROVIDER_URL = os.environ.get("OPENID_PROVIDER_URL", "https://huggingface.co")
+OAUTH_SCOPES = configured_oauth_scopes()
 
 # In-memory OAuth state store with expiry (5 min TTL)
 _OAUTH_STATE_TTL = 300
 oauth_states: dict[str, dict] = {}
+
+
+def _missing_required_scopes(token_data: dict) -> set[str]:
+    raw_scopes = token_data.get("scope")
+    if not isinstance(raw_scopes, str) or not raw_scopes.strip():
+        logger.debug("OAuth token response omitted a usable scope field")
+        return set()
+    granted = set(raw_scopes.split())
+    return set(REQUIRED_OAUTH_SCOPES) - granted
 
 
 def _cleanup_expired_states() -> None:
@@ -63,16 +82,15 @@ async def oauth_login(request: Request) -> RedirectResponse:
         "expires_at": time.time() + _OAUTH_STATE_TTL,
     }
 
-    # Build authorization URL
+    # Build authorization URL. We no longer suggest a default `orgIds` —
+    # users no longer need to join the ML Agent Explorers org to use the
+    # app, and HF Jobs are billed per-namespace via credits.
     params = {
         "client_id": OAUTH_CLIENT_ID,
         "redirect_uri": get_redirect_uri(request),
-        "scope": "openid profile read-repos write-repos contribute-repos manage-repos inference-api jobs write-discussions",
+        "scope": " ".join(OAUTH_SCOPES),
         "response_type": "code",
         "state": state,
-        "orgIds": os.environ.get(
-            "HF_OAUTH_ORG_ID", "698dbf55845d85df163175f1"
-        ),  # ml-agent-explorers
     }
     auth_url = f"{OPENID_PROVIDER_URL}/oauth/authorize?{urlencode(params)}"
 
@@ -120,6 +138,15 @@ async def oauth_callback(
             status_code=500,
             detail="Token exchange succeeded but no access_token was returned.",
         )
+    missing_scopes = _missing_required_scopes(token_data)
+    if missing_scopes:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "OAuth token is missing required scopes: "
+                + ", ".join(sorted(missing_scopes))
+            ),
+        )
 
     # Fetch user info (optional — failure is not fatal)
     async with httpx.AsyncClient() as client:
@@ -145,6 +172,15 @@ async def oauth_callback(
         max_age=3600 * 24 * 7,  # 7 days
         path="/",
     )
+    response.set_cookie(
+        key=OAUTH_SCOPE_COOKIE,
+        value=oauth_scope_fingerprint(OAUTH_SCOPES),
+        httponly=True,
+        secure=is_production,
+        samesite="lax",
+        max_age=3600 * 24 * 7,
+        path="/",
+    )
     return response
 
 
@@ -153,6 +189,7 @@ async def logout() -> RedirectResponse:
     """Log out the user by clearing the auth cookie."""
     response = RedirectResponse(url="/")
     response.delete_cookie(key="hf_access_token", path="/")
+    response.delete_cookie(key=OAUTH_SCOPE_COOKIE, path="/")
     return response
 
 
@@ -168,21 +205,4 @@ async def get_me(user: dict = Depends(get_current_user)) -> dict:
 
     Uses the shared auth dependency which handles cookie + Bearer token.
     """
-    return user
-
-
-ORG_NAME = "ml-agent-explorers"
-
-
-@router.get("/org-membership")
-async def org_membership(
-    request: Request, user: dict = Depends(get_current_user)
-) -> dict:
-    """Check if the authenticated user belongs to the ml-agent-explorers org."""
-    if not AUTH_ENABLED:
-        return {"is_member": True}
-    token = request.cookies.get("hf_access_token") or ""
-    if not token:
-        return {"is_member": False}
-    is_member = await check_org_membership(token, ORG_NAME)
-    return {"is_member": is_member}
+    return {key: value for key, value in user.items() if not key.startswith("_")}

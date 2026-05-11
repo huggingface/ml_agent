@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Stack, Typography, Chip, Button, TextField, IconButton, Link, CircularProgress } from '@mui/material';
+import { Alert, Box, Stack, Typography, Chip, Button, TextField, IconButton, Link, CircularProgress } from '@mui/material';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
@@ -502,6 +502,7 @@ function InlineApproval({
 }) {
   const [feedback, setFeedback] = useState('');
   const args = input as Record<string, unknown> | undefined;
+  const autoApproval = useAgentStore((state) => state.budgetBlocks[toolCallId]);
   const { setPanel, getEditedScript } = useAgentStore();
   const { setRightPanelOpen, setLeftSidebarOpen } = useLayoutStore();
   const hasEditedScript = !!getEditedScript(toolCallId);
@@ -521,6 +522,24 @@ function InlineApproval({
 
   return (
     <Box sx={{ px: 1.5, py: 1.5, borderTop: '1px solid var(--tool-border)' }}>
+      {autoApproval && (
+        <Alert
+          severity="warning"
+          sx={{
+            mb: 1.5,
+            py: 0.5,
+            bgcolor: 'rgba(245,158,11,0.08)',
+            border: '1px solid rgba(245,158,11,0.18)',
+            color: 'var(--text)',
+            '& .MuiAlert-icon': { color: 'var(--accent-yellow)' },
+          }}
+        >
+          <Typography variant="body2" sx={{ fontSize: '0.72rem' }}>
+            YOLO paused: {autoApproval.reason || 'manual approval required.'}
+          </Typography>
+        </Alert>
+      )}
+
       {toolName === 'sandbox_create' && args && (() => {
         const hw = String(args.hardware || 'cpu-basic');
         const cost = costLabel(hw);
@@ -536,9 +555,7 @@ function InlineApproval({
                   {' '}({cost})
                 </Box>
               )}
-              {!!args.private && (
-                <Box component="span" sx={{ color: 'var(--muted-text)' }}>{' (private)'}</Box>
-              )}
+              <Box component="span" sx={{ color: 'var(--muted-text)' }}>{' (private)'}</Box>
             </Typography>
             <Typography variant="body2" sx={{ color: 'var(--muted-text)', fontSize: '0.7rem', opacity: 0.7 }}>
               Creates a temporary HF Space to develop and test scripts before running jobs. Takes 1-2 min to start.
@@ -767,12 +784,15 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
   // Persist error states when tools error
   useEffect(() => {
     for (const tool of tools) {
-      const currentlyHasError = tool.state === 'output-error';
+      const currentlyHasError = tool.state === 'output-error' && !isCancelledTool(tool);
       const persistedError = getToolError(tool.toolCallId);
 
-      // Persist error state if we detect it and haven't already
+      // Persist real error states across refresh. Clear stale persisted errors
+      // once the SDK reports a successful output for the same tool call.
       if (currentlyHasError && !persistedError) {
         setToolError(tool.toolCallId, true);
+      } else if (tool.state === 'output-available' && persistedError) {
+        setToolError(tool.toolCallId, false);
       }
     }
   }, [tools, setToolError, getToolError]);

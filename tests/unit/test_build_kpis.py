@@ -38,15 +38,25 @@ def _session(events, user_id="u1", start="2026-04-24T09:59:00"):
 def test_llm_call_accumulates_tokens_and_cost():
     mod = _load()
     events = [
-        _ev("llm_call", {
-            "prompt_tokens": 100, "completion_tokens": 50,
-            "cache_read_tokens": 40, "cache_creation_tokens": 10,
-            "cost_usd": 0.01,
-        }),
-        _ev("llm_call", {
-            "prompt_tokens": 200, "completion_tokens": 100,
-            "cache_read_tokens": 80, "cost_usd": 0.02,
-        }),
+        _ev(
+            "llm_call",
+            {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "cache_read_tokens": 40,
+                "cache_creation_tokens": 10,
+                "cost_usd": 0.01,
+            },
+        ),
+        _ev(
+            "llm_call",
+            {
+                "prompt_tokens": 200,
+                "completion_tokens": 100,
+                "cache_read_tokens": 80,
+                "cost_usd": 0.02,
+            },
+        ),
     ]
     m = mod._session_metrics(_session(events))
     assert m["llm_calls"] == 2
@@ -75,11 +85,14 @@ def test_hf_job_gpu_hours():
     mod = _load()
     events = [
         _ev("hf_job_submit", {"flavor": "a100-large", "job_id": "j1"}),
-        _ev("hf_job_complete", {
-            "flavor": "a100-large",
-            "final_status": "COMPLETED",
-            "wall_time_s": 3600,
-        }),
+        _ev(
+            "hf_job_complete",
+            {
+                "flavor": "a100-large",
+                "final_status": "COMPLETED",
+                "wall_time_s": 3600,
+            },
+        ),
     ]
     m = mod._session_metrics(_session(events))
     assert m["hf_jobs_submitted"] == 1
@@ -104,6 +117,42 @@ def test_hf_job_blocked_and_pro_clicks_are_counted():
     }
 
 
+def test_pro_conversions_and_credits_topped_up_per_session():
+    mod = _load()
+    events = [
+        _ev("pro_conversion", {"first_seen_at": "2026-04-20T10:00:00"}),
+        _ev("credits_topped_up", {"namespace": "smolagents"}),
+        _ev("credits_topped_up", {"namespace": "smolagents"}),
+    ]
+    m = mod._session_metrics(_session(events))
+    assert m["pro_conversions"] == 1
+    assert m["credits_topped_up"] == 2
+
+
+def test_aggregate_sums_pro_conversions_and_credits_topped_up():
+    mod = _load()
+    s1 = mod._session_metrics(
+        _session(
+            [
+                _ev("pro_conversion", {}),
+            ],
+            user_id="u1",
+        )
+    )
+    s2 = mod._session_metrics(
+        _session(
+            [
+                _ev("credits_topped_up", {"namespace": "ns"}),
+            ],
+            user_id="u2",
+        )
+    )
+    s3 = mod._session_metrics(_session([], user_id="u3"))
+    row = mod._aggregate([s1, s2, s3])
+    assert row["pro_conversions"] == 1
+    assert row["credits_topped_up"] == 1
+
+
 def test_feedback_counts():
     mod = _load()
     events = [
@@ -118,14 +167,28 @@ def test_feedback_counts():
 
 def test_aggregate_day_cache_hit_and_users():
     mod = _load()
-    s1 = mod._session_metrics(_session(
-        [_ev("llm_call", {"prompt_tokens": 100, "cache_read_tokens": 400, "cost_usd": 0.5})],
-        user_id="u1",
-    ))
-    s2 = mod._session_metrics(_session(
-        [_ev("llm_call", {"prompt_tokens": 200, "cache_read_tokens": 100, "cost_usd": 1.0})],
-        user_id="u2",
-    ))
+    s1 = mod._session_metrics(
+        _session(
+            [
+                _ev(
+                    "llm_call",
+                    {"prompt_tokens": 100, "cache_read_tokens": 400, "cost_usd": 0.5},
+                )
+            ],
+            user_id="u1",
+        )
+    )
+    s2 = mod._session_metrics(
+        _session(
+            [
+                _ev(
+                    "llm_call",
+                    {"prompt_tokens": 200, "cache_read_tokens": 100, "cost_usd": 1.0},
+                )
+            ],
+            user_id="u2",
+        )
+    )
     row = mod._aggregate_day([s1, s2])
     assert row["sessions"] == 2
     assert row["users"] == 2
@@ -155,17 +218,32 @@ def test_per_tool_counts_in_session_metrics():
 
 def test_aggregate_research_kpis_only_count_doer_sessions():
     mod = _load()
-    s1 = mod._session_metrics(_session([
-        _ev("tool_call", {"tool": "research"}),
-        _ev("tool_call", {"tool": "research"}),
-        _ev("tool_call", {"tool": "research"}),
-    ], user_id="u1"))
-    s2 = mod._session_metrics(_session([
-        _ev("tool_call", {"tool": "research"}),
-    ], user_id="u2"))
-    s3 = mod._session_metrics(_session([
-        _ev("tool_call", {"tool": "bash"}),
-    ], user_id="u3"))
+    s1 = mod._session_metrics(
+        _session(
+            [
+                _ev("tool_call", {"tool": "research"}),
+                _ev("tool_call", {"tool": "research"}),
+                _ev("tool_call", {"tool": "research"}),
+            ],
+            user_id="u1",
+        )
+    )
+    s2 = mod._session_metrics(
+        _session(
+            [
+                _ev("tool_call", {"tool": "research"}),
+            ],
+            user_id="u2",
+        )
+    )
+    s3 = mod._session_metrics(
+        _session(
+            [
+                _ev("tool_call", {"tool": "bash"}),
+            ],
+            user_id="u3",
+        )
+    )
     row = mod._aggregate([s1, s2, s3])
     assert row["sessions"] == 3
     assert row["sessions_with_research"] == 2
@@ -176,26 +254,39 @@ def test_aggregate_research_kpis_only_count_doer_sessions():
 
 def test_aggregate_tool_breadth_and_intensity():
     import json as _json
+
     mod = _load()
-    s1 = mod._session_metrics(_session([
-        _ev("tool_call", {"tool": "bash"}),
-        _ev("tool_call", {"tool": "research"}),
-    ], user_id="u1"))
+    s1 = mod._session_metrics(
+        _session(
+            [
+                _ev("tool_call", {"tool": "bash"}),
+                _ev("tool_call", {"tool": "research"}),
+            ],
+            user_id="u1",
+        )
+    )
     # Two user turns so calls/turn = 4/2 = 2
-    s2 = _session([
-        _ev("tool_call", {"tool": "bash"}),
-        _ev("tool_call", {"tool": "bash"}),
-        _ev("tool_call", {"tool": "edit"}),
-        _ev("tool_call", {"tool": "edit"}),
-    ], user_id="u2")
+    s2 = _session(
+        [
+            _ev("tool_call", {"tool": "bash"}),
+            _ev("tool_call", {"tool": "bash"}),
+            _ev("tool_call", {"tool": "edit"}),
+            _ev("tool_call", {"tool": "edit"}),
+        ],
+        user_id="u2",
+    )
     s2["messages"] = [{"role": "user"}, {"role": "user"}]
     s2_metrics = mod._session_metrics(s2)
     row = mod._aggregate([s1, s2_metrics])
     assert _json.loads(row["tool_calls_by_name_json"]) == {
-        "bash": 3, "research": 1, "edit": 2,
+        "bash": 3,
+        "research": 1,
+        "edit": 2,
     }
     assert _json.loads(row["sessions_using_tool_json"]) == {
-        "bash": 2, "research": 1, "edit": 1,
+        "bash": 2,
+        "research": 1,
+        "edit": 1,
     }
     # u1: 2 distinct, u2: 2 distinct -> p50 = 2
     assert row["distinct_tools_per_session_p50"] == 2.0
@@ -210,16 +301,24 @@ def test_breadth_intensity_percentiles_exclude_zero_tool_sessions():
     mod = _load()
     # Two productive sessions and three idle ones (no tool calls). Without
     # the doer-only filter, median of [0,0,0,2,4] = 0, which is useless.
-    productive_a = mod._session_metrics(_session([
-        _ev("tool_call", {"tool": "bash"}),
-        _ev("tool_call", {"tool": "research"}),
-    ], user_id="prod_a"))
-    productive_b = _session([
-        _ev("tool_call", {"tool": "bash"}),
-        _ev("tool_call", {"tool": "edit"}),
-        _ev("tool_call", {"tool": "edit"}),
-        _ev("tool_call", {"tool": "edit"}),
-    ], user_id="prod_b")
+    productive_a = mod._session_metrics(
+        _session(
+            [
+                _ev("tool_call", {"tool": "bash"}),
+                _ev("tool_call", {"tool": "research"}),
+            ],
+            user_id="prod_a",
+        )
+    )
+    productive_b = _session(
+        [
+            _ev("tool_call", {"tool": "bash"}),
+            _ev("tool_call", {"tool": "edit"}),
+            _ev("tool_call", {"tool": "edit"}),
+            _ev("tool_call", {"tool": "edit"}),
+        ],
+        user_id="prod_b",
+    )
     productive_b["messages"] = [{"role": "user"}, {"role": "user"}]
     productive_b_metrics = mod._session_metrics(productive_b)
     idle = [
@@ -239,15 +338,25 @@ def test_pro_clicks_and_blocked_jobs_in_aggregate():
     even if the dashboard doesn't currently chart them — they're cheap to
     keep and downstream consumers may still depend on the schema."""
     mod = _load()
-    s1 = mod._session_metrics(_session([
-        _ev("pro_cta_click", {"source": "hf_jobs_upgrade_dialog"}),
-        _ev("pro_cta_click", {"source": "claude_cap_dialog"}),
-        _ev("jobs_access_blocked", {}),
-    ], user_id="u1"))
-    s2 = mod._session_metrics(_session([
-        _ev("jobs_access_blocked", {}),
-        _ev("jobs_access_blocked", {}),
-    ], user_id="u2"))
+    s1 = mod._session_metrics(
+        _session(
+            [
+                _ev("pro_cta_click", {"source": "hf_jobs_upgrade_dialog"}),
+                _ev("pro_cta_click", {"source": "claude_cap_dialog"}),
+                _ev("jobs_access_blocked", {}),
+            ],
+            user_id="u1",
+        )
+    )
+    s2 = mod._session_metrics(
+        _session(
+            [
+                _ev("jobs_access_blocked", {}),
+                _ev("jobs_access_blocked", {}),
+            ],
+            user_id="u2",
+        )
+    )
     row = mod._aggregate([s1, s2])
     assert row["pro_cta_clicks"] == 2
     assert row["hf_jobs_blocked"] == 3
@@ -255,6 +364,7 @@ def test_pro_clicks_and_blocked_jobs_in_aggregate():
 
 def test_aggregate_sessions_by_model_split():
     import json as _json
+
     mod = _load()
     s_anthropic = _session([], user_id="a")
     s_anthropic["model_name"] = "anthropic/claude-opus-4-6"
@@ -262,11 +372,13 @@ def test_aggregate_sessions_by_model_split():
     s_bedrock["model_name"] = "bedrock/us.anthropic.claude-opus-4-6-v1"
     s_bedrock2 = _session([], user_id="c")
     s_bedrock2["model_name"] = "bedrock/us.anthropic.claude-opus-4-6-v1"
-    row = mod._aggregate([
-        mod._session_metrics(s_anthropic),
-        mod._session_metrics(s_bedrock),
-        mod._session_metrics(s_bedrock2),
-    ])
+    row = mod._aggregate(
+        [
+            mod._session_metrics(s_anthropic),
+            mod._session_metrics(s_bedrock),
+            mod._session_metrics(s_bedrock2),
+        ]
+    )
     assert _json.loads(row["sessions_by_model_json"]) == {
         "anthropic/claude-opus-4-6": 1,
         "bedrock/us.anthropic.claude-opus-4-6-v1": 2,
@@ -285,6 +397,7 @@ def test_failure_and_regenerate_rates():
 
 def test_window_filter_keeps_only_events_in_range():
     from datetime import datetime, timezone
+
     mod = _load()
     events = [
         _ev("llm_call", {"prompt_tokens": 100}, ts="2026-04-24T09:45:00"),
@@ -309,6 +422,7 @@ def test_window_filter_keeps_only_events_in_range():
 
 def test_window_filter_returns_none_when_nothing_in_range():
     from datetime import datetime, timezone
+
     mod = _load()
     events = [_ev("llm_call", {"prompt_tokens": 100}, ts="2026-04-24T09:45:00")]
     session = _session(events)
