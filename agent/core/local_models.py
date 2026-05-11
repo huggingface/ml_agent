@@ -21,10 +21,20 @@ LOCAL_MODEL_PROVIDERS: dict[str, dict[str, str]] = {
         "base_url_default": "http://localhost:8080",
         "api_key_env": "LLAMACPP_API_KEY",
     },
+    "openrouter/": {
+        "base_url_env": "OPENROUTER_BASE_URL",
+        "base_url_default": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+    },
+    "openai-compat/": {
+        "base_url_env": "LOCAL_LLM_BASE_URL",
+        "base_url_default": "http://localhost:8080",
+        "api_key_env": "LOCAL_LLM_API_KEY",
+    },
 }
 
 LOCAL_MODEL_PREFIXES = tuple(LOCAL_MODEL_PROVIDERS)
-RESERVED_LOCAL_MODEL_PREFIXES = ("openai-compat/",)
+RESERVED_LOCAL_MODEL_PREFIXES: tuple[str, ...] = ()
 LOCAL_MODEL_BASE_URL_ENV = "LOCAL_LLM_BASE_URL"
 LOCAL_MODEL_API_KEY_ENV = "LOCAL_LLM_API_KEY"
 LOCAL_MODEL_API_KEY_DEFAULT = "sk-local-no-key-required"
