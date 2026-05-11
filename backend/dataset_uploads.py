@@ -201,6 +201,12 @@ async def push_dataset_upload_to_hub(
         exist_ok=True,
     )
     await asyncio.to_thread(
+        api.update_repo_settings,
+        repo_id=repo_id,
+        repo_type="dataset",
+        private=True,
+    )
+    await asyncio.to_thread(
         api.upload_file,
         path_or_fileobj=dataset_repo_card(repo_id),
         path_in_repo="README.md",

@@ -248,12 +248,12 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   }, [disabled, isProcessing]);
 
   const handleSend = useCallback(() => {
-    if (input.trim() && !disabled) {
+    if (input.trim() && !disabled && !isUploadingDataset) {
       lastSentRef.current = input;
       onSend(input);
       setInput('');
     }
-  }, [input, disabled, onSend]);
+  }, [input, disabled, isUploadingDataset, onSend]);
 
   const handleDatasetUploadClick = useCallback(() => {
     fileInputRef.current?.click();
@@ -583,7 +583,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
           ) : (
             <IconButton
               onClick={handleSend}
-              disabled={disabled || !input.trim()}
+              disabled={disabled || isUploadingDataset || !input.trim()}
               sx={{
                 mt: 1,
                 p: 1,

@@ -16,16 +16,16 @@ from dependencies import (
 from fastapi import (
     APIRouter,
     Depends,
-    File,
     HTTPException,
     Request,
-    UploadFile,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from litellm import Message, acompletion
 from pydantic import ValidationError
+from starlette.datastructures import FormData, UploadFile
 from dataset_uploads import (
+    MAX_DATASET_UPLOAD_BYTES,
     dataset_context_note,
     push_dataset_upload_to_hub,
 )
@@ -65,6 +65,7 @@ PREMIUM_MODEL_IDS = {
     DEFAULT_CLAUDE_MODEL_ID,
     "openai/gpt-5.5",
 }
+DATASET_UPLOAD_MULTIPART_SLACK_BYTES = 1024 * 1024
 
 
 def _claude_picker_model_id() -> str:
@@ -208,6 +209,41 @@ def _user_hf_token(user: dict[str, Any] | None) -> str | None:
     if not isinstance(user, dict):
         return None
     return user.get(INTERNAL_HF_TOKEN_KEY)
+
+
+def _reject_oversize_dataset_upload(request: Request) -> None:
+    raw_content_length = request.headers.get("content-length")
+    if raw_content_length is None:
+        return
+    try:
+        content_length = int(raw_content_length)
+    except (TypeError, ValueError):
+        return
+    if content_length > MAX_DATASET_UPLOAD_BYTES + DATASET_UPLOAD_MULTIPART_SLACK_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Dataset upload exceeds the 100 MB limit.",
+        )
+
+
+def _dataset_upload_file_from_form(form: FormData) -> UploadFile:
+    uploaded_files = [
+        (key, value)
+        for key, value in form.multi_items()
+        if isinstance(value, UploadFile)
+    ]
+    if len(uploaded_files) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload exactly one dataset file.",
+        )
+    field_name, upload = uploaded_files[0]
+    if field_name != "file":
+        raise HTTPException(
+            status_code=400,
+            detail="Missing 'file' upload field.",
+        )
+    return upload
 
 
 async def _check_session_access(
@@ -553,11 +589,12 @@ async def set_session_notifications(
 async def upload_session_dataset(
     session_id: str,
     request: Request,
-    file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ) -> DatasetUploadResponse:
     """Upload a CSV/JSON dataset file to a private Hub dataset for this session."""
+    file: UploadFile | None = None
     try:
+        _reject_oversize_dataset_upload(request)
         agent_session = await _check_session_access(session_id, user, request)
         if not agent_session or not agent_session.is_active:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -583,6 +620,12 @@ async def upload_session_dataset(
                 detail="A Hugging Face token is required to upload datasets.",
             )
 
+        form = await request.form(
+            max_files=1,
+            max_fields=1,
+            max_part_size=MAX_DATASET_UPLOAD_BYTES,
+        )
+        file = _dataset_upload_file_from_form(form)
         hf_username = user.get("username") or agent_session.hf_username
         uploaded = await push_dataset_upload_to_hub(
             upload=file,
@@ -607,7 +650,8 @@ async def upload_session_dataset(
         logger.exception("Dataset upload failed for session %s", session_id)
         raise HTTPException(status_code=502, detail=f"Dataset upload failed: {e}")
     finally:
-        await file.close()
+        if file is not None:
+            await file.close()
 
 
 @router.patch("/session/{session_id}/yolo")

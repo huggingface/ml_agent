@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException, UploadFile
+from starlette.datastructures import FormData
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent / "backend"
 if str(_BACKEND_DIR) not in sys.path:
@@ -28,6 +29,26 @@ def _track_close(upload: UploadFile):
 
     upload.close = close
     return state
+
+
+def _request(
+    upload: UploadFile | None = None,
+    headers: dict[str, str] | None = None,
+):
+    state = {"form_called": False}
+
+    class FakeRequest:
+        def __init__(self):
+            self.headers = headers or {}
+            self.cookies = {}
+
+        async def form(self, **_kwargs):
+            state["form_called"] = True
+            if upload is None:
+                raise AssertionError("request.form() should not be called")
+            return FormData([("file", upload)])
+
+    return FakeRequest(), state
 
 
 def test_sanitize_dataset_filename_strips_paths_and_unsafe_chars():
@@ -69,11 +90,15 @@ async def test_push_dataset_upload_creates_private_repo_and_uploads_file(monkeyp
         def __init__(self, token):
             self.token = token
             self.create_calls = []
+            self.settings_calls = []
             self.upload_calls = []
             instances.append(self)
 
         def create_repo(self, **kwargs):
             self.create_calls.append(kwargs)
+
+        def update_repo_settings(self, **kwargs):
+            self.settings_calls.append(kwargs)
 
         def upload_file(self, **kwargs):
             if kwargs["path_in_repo"] != "README.md":
@@ -109,6 +134,13 @@ async def test_push_dataset_upload_creates_private_repo_and_uploads_file(monkeyp
             "exist_ok": True,
         }
     ]
+    assert api.settings_calls == [
+        {
+            "repo_id": "alice/ml-intern-12345678-datasets",
+            "repo_type": "dataset",
+            "private": True,
+        }
+    ]
     assert [call["path_in_repo"] for call in api.upload_calls] == [
         "README.md",
         "uploads/feedfacecafe/Data-Set.csv",
@@ -119,10 +151,11 @@ async def test_push_dataset_upload_creates_private_repo_and_uploads_file(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_upload_route_requires_hf_token_and_closes_upload(monkeypatch):
+async def test_upload_route_requires_hf_token_without_parsing_upload(monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     upload = _upload("rows.csv")
     close_state = _track_close(upload)
+    request, request_state = _request(upload)
 
     async def fake_check_session_access(*_args, **_kwargs):
         return SimpleNamespace(
@@ -134,22 +167,65 @@ async def test_upload_route_requires_hf_token_and_closes_upload(monkeypatch):
 
     monkeypatch.setattr(agent, "_check_session_access", fake_check_session_access)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await agent.upload_session_dataset(
-            "s1",
-            SimpleNamespace(headers={}, cookies={}),
-            upload,
-            {"user_id": "u1", "username": "alice"},
-        )
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await agent.upload_session_dataset(
+                "s1",
+                request,
+                {"user_id": "u1", "username": "alice"},
+            )
 
-    assert exc_info.value.status_code == 401
-    assert close_state["closed"] is True
+        assert exc_info.value.status_code == 401
+        assert request_state["form_called"] is False
+        assert close_state["closed"] is False
+    finally:
+        await upload.close()
 
 
 @pytest.mark.asyncio
-async def test_upload_route_rejects_busy_session_and_closes_upload(monkeypatch):
+async def test_upload_route_rejects_content_length_before_parsing(monkeypatch):
     upload = _upload("rows.csv")
     close_state = _track_close(upload)
+    request, request_state = _request(
+        upload,
+        headers={
+            "content-length": str(
+                dataset_uploads.MAX_DATASET_UPLOAD_BYTES
+                + agent.DATASET_UPLOAD_MULTIPART_SLACK_BYTES
+                + 1
+            )
+        },
+    )
+
+    async def fake_check_session_access(*_args, **_kwargs):
+        raise AssertionError("session access should not run for oversized uploads")
+
+    monkeypatch.setattr(agent, "_check_session_access", fake_check_session_access)
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await agent.upload_session_dataset(
+                "s1",
+                request,
+                {
+                    "user_id": "u1",
+                    "username": "alice",
+                    agent.INTERNAL_HF_TOKEN_KEY: "hf-token",
+                },
+            )
+
+        assert exc_info.value.status_code == 413
+        assert request_state["form_called"] is False
+        assert close_state["closed"] is False
+    finally:
+        await upload.close()
+
+
+@pytest.mark.asyncio
+async def test_upload_route_rejects_busy_session_without_parsing_upload(monkeypatch):
+    upload = _upload("rows.csv")
+    close_state = _track_close(upload)
+    request, request_state = _request(upload)
 
     async def fake_check_session_access(*_args, **_kwargs):
         return SimpleNamespace(
@@ -164,8 +240,7 @@ async def test_upload_route_rejects_busy_session_and_closes_upload(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         await agent.upload_session_dataset(
             "s1",
-            SimpleNamespace(headers={}, cookies={}),
-            upload,
+            request,
             {
                 "user_id": "u1",
                 "username": "alice",
@@ -174,13 +249,16 @@ async def test_upload_route_rejects_busy_session_and_closes_upload(monkeypatch):
         )
 
     assert exc_info.value.status_code == 409
-    assert close_state["closed"] is True
+    assert request_state["form_called"] is False
+    assert close_state["closed"] is False
+    await upload.close()
 
 
 @pytest.mark.asyncio
 async def test_upload_route_appends_context_note_and_persists(monkeypatch):
     upload = _upload("rows.jsonl", b'{"text":"hi"}\n')
     close_state = _track_close(upload)
+    request, request_state = _request(upload)
     messages = []
     persisted = []
     agent_session = SimpleNamespace(
@@ -230,8 +308,7 @@ async def test_upload_route_appends_context_note_and_persists(monkeypatch):
 
     response = await agent.upload_session_dataset(
         "s1",
-        SimpleNamespace(headers={}, cookies={}),
-        upload,
+        request,
         {
             "user_id": "u1",
             "username": "alice",
@@ -246,4 +323,43 @@ async def test_upload_route_appends_context_note_and_persists(monkeypatch):
     assert messages[0].content.startswith("[SYSTEM:")
     assert uploaded.path_in_repo in messages[0].content
     assert persisted == [agent_session]
+    assert request_state["form_called"] is True
+    assert close_state["closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_upload_route_closes_upload_when_hub_upload_fails(monkeypatch):
+    upload = _upload("rows.csv")
+    close_state = _track_close(upload)
+    request, request_state = _request(upload)
+
+    async def fake_check_session_access(*_args, **_kwargs):
+        return SimpleNamespace(
+            is_active=True,
+            is_processing=False,
+            session=SimpleNamespace(pending_approval=None),
+            hf_username="alice",
+        )
+
+    async def fake_push_dataset_upload_to_hub(**_kwargs):
+        raise RuntimeError("hub unavailable")
+
+    monkeypatch.setattr(agent, "_check_session_access", fake_check_session_access)
+    monkeypatch.setattr(
+        agent, "push_dataset_upload_to_hub", fake_push_dataset_upload_to_hub
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await agent.upload_session_dataset(
+            "s1",
+            request,
+            {
+                "user_id": "u1",
+                "username": "alice",
+                agent.INTERNAL_HF_TOKEN_KEY: "hf-token",
+            },
+        )
+
+    assert exc_info.value.status_code == 502
+    assert request_state["form_called"] is True
     assert close_state["closed"] is True
