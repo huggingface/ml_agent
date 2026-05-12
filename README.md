@@ -11,6 +11,13 @@
 
 An ML intern that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
 
+## Try It on Hugging Face
+
+You can try the hosted ML intern directly on the Hub:
+
+- Join the [ML intern explorers](https://huggingface.co/ml-agent-explorers) org to try out the ML intern on Hugging Face.
+- Launch the web UI in the [smolagents/ml-intern Space](https://huggingface.co/spaces/smolagents/ml-intern).
+
 ## Quick Start
 
 ### Installation
