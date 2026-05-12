@@ -12,6 +12,7 @@ from whoosh.analysis import StemmingAnalyzer
 from whoosh.fields import ID, TEXT, Schema
 from whoosh.filedb.filestore import RamStorage
 from whoosh.qparser import MultifieldParser, OrGroup
+from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -379,6 +380,28 @@ async def explore_hf_docs_handler(
         return f"Unexpected error: {str(e)}", False
 
 
+# Allowed origins for fetch_hf_docs -- prevents SSRF via LLM-generated URLs.
+_ALLOWED_DOC_ORIGINS = {
+    "huggingface.co",
+    "hf.co",
+    "gradio.app",
+}
+
+
+def _is_allowed_doc_url(url: str) -> bool:
+    """Return True if *url* points to an allowed documentation origin."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = parsed.hostname or ""
+    return host in _ALLOWED_DOC_ORIGINS or any(
+        host.endswith(f".{d}") for d in _ALLOWED_DOC_ORIGINS
+    )
+
+
 async def hf_docs_fetch_handler(
     arguments: dict[str, Any], session=None
 ) -> tuple[str, bool]:
@@ -386,6 +409,13 @@ async def hf_docs_fetch_handler(
     url = arguments.get("url", "")
     if not url:
         return "Error: No URL provided", False
+
+    if not _is_allowed_doc_url(url):
+        return (
+            f"Error: URL not allowed. Only huggingface.co, hf.co, and gradio.app "
+            f"documentation URLs are accepted. Got: {url}",
+            False,
+        )
 
     hf_token = session.hf_token if session else None
     if not hf_token:
