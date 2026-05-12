@@ -224,7 +224,12 @@ def _get_research_model(main_model: str) -> str:
     if main_model.startswith("anthropic/"):
         return "anthropic/claude-sonnet-4-6"
     if main_model.startswith("bedrock/") and "anthropic" in main_model:
-        return "bedrock/us.anthropic.claude-sonnet-4-6"
+        # Mirror the main model's Bedrock inference-profile prefix so the
+        # user's explicit profile choice carries through to the sub-agent
+        # instead of being silently overridden by a hard-coded one.
+        head = main_model.split("/", 1)[1]
+        region_prefix = head.split(".", 1)[0]
+        return f"bedrock/{region_prefix}.anthropic.claude-sonnet-4-6"
     # For non-Anthropic models (HF router etc.), use the same model
     return main_model
 
