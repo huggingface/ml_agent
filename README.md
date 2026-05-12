@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/huggingface-ml-intern-badge.png)](https://mseep.ai/app/huggingface-ml-intern)
+
 <p align="center">
   <img src="frontend/public/smolagents.webp" alt="smolagents logo" width="160" />
 </p>
