@@ -294,8 +294,8 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
             useAgentStore.getState().setJobsUpgradeRequired({
               namespace: namespace || null,
               message: namespace
-                ? `Hugging Face Jobs need credits on the "${namespace}" namespace. Add some, then re-run the same job — the agent will pick it back up.`
-                : 'Hugging Face Jobs need credits on this namespace. Add some, then re-run the same job — the agent will pick it back up.',
+                ? `Hugging Face Jobs need credits on the "${namespace}" namespace. Job credits are separate from HF Pro membership; add credits, then re-run the same job.`
+                : 'Hugging Face Jobs need namespace credits, which are separate from HF Pro membership. Add credits, then re-run the same job.',
             });
           }
           break;

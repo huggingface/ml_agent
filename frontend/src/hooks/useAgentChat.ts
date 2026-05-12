@@ -60,9 +60,6 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       },
       onError: (error: string) => {
         updateSession(sessionId, { isProcessing: false });
-        if (isActiveRef.current) {
-          useAgentStore.getState().setError(error);
-        }
         callbacksRef.current.onError?.(error);
       },
       onProcessing: () => {
@@ -369,9 +366,6 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         return;
       }
       logger.error('useChat error:', error);
-      if (isActiveRef.current) {
-        useAgentStore.getState().setError(error.message);
-      }
     },
   });
 
@@ -810,6 +804,48 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     }
   }, [sessionId, chat]);
 
+  const refreshMessages = useCallback(async () => {
+    try {
+      const [msgsRes, infoRes] = await Promise.all([
+        apiFetch(`/api/session/${sessionId}/messages`),
+        apiFetch(`/api/session/${sessionId}`),
+      ]);
+      if (!msgsRes.ok) return false;
+
+      const data = await msgsRes.json();
+      if (!Array.isArray(data) || data.length === 0) return false;
+      saveBackendMessages(sessionId, data);
+
+      let pendingIds: Set<string> | undefined;
+      if (infoRes.ok) {
+        const info = await infoRes.json();
+        if (info.pending_approval && Array.isArray(info.pending_approval)) {
+          pendingIds = new Set(
+            info.pending_approval.map((t: { tool_call_id: string }) => t.tool_call_id)
+          );
+          if (pendingIds.size > 0) setNeedsAttention(sessionId, true);
+        }
+        if (info.auto_approval) {
+          updateSessionYolo(sessionId, info.auto_approval);
+        }
+      }
+
+      const uiMsgs = llmMessagesToUIMessages(
+        data,
+        pendingIds,
+        chatActionsRef.current.messages,
+      );
+      const setMsgs = chatActionsRef.current.setMessages;
+      if (setMsgs && uiMsgs.length > 0) {
+        setMsgs(uiMsgs);
+        saveMessages(sessionId, uiMsgs);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, [sessionId, setNeedsAttention, updateSessionYolo]);
+
   return {
     messages: chat.messages,
     sendMessage: chat.sendMessage,
@@ -818,5 +854,6 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     undoLastTurn,
     editAndRegenerate,
     approveTools,
+    refreshMessages,
   };
 }

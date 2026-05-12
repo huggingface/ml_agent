@@ -9,6 +9,7 @@ Supports two modes:
 import argparse
 import asyncio
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -27,6 +28,7 @@ from agent.core.approval_policy import is_scheduled_operation
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
 from agent.core.hf_tokens import resolve_hf_token
+from agent.core.local_models import is_local_model_id
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.messaging.gateway import NotificationGateway
@@ -56,6 +58,35 @@ litellm.drop_params = True
 litellm.suppress_debug_info = True
 
 CLI_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cli_agent_config.json"
+logger = logging.getLogger(__name__)
+
+
+def _apply_tool_runtime_override(config: Any, *, sandbox_tools: bool) -> str:
+    if sandbox_tools:
+        config.tool_runtime = "sandbox"
+    return getattr(config, "tool_runtime", "local")
+
+
+def _is_local_tool_runtime(config: Any) -> bool:
+    return getattr(config, "tool_runtime", "local") == "local"
+
+
+def _tool_runtime_label(local_mode: bool) -> str:
+    return "local filesystem" if local_mode else "HF sandbox"
+
+
+async def _wait_for_initial_sandbox_preload(session_holder: list | None) -> None:
+    session = session_holder[0] if session_holder else None
+    task = getattr(session, "sandbox_preload_task", None)
+    if not task:
+        return
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # The sandbox tool will surface the stored preload error on first use.
+        return
 
 
 def _is_scheduled_hf_job_tool(tool_info: dict[str, Any]) -> bool:
@@ -433,6 +464,46 @@ async def event_listener(
                 turn_complete_event.set()
             elif event.event_type == "undo_complete":
                 console.print("[dim]Undone.[/dim]")
+                turn_complete_event.set()
+            elif event.event_type == "resume_complete":
+                data = event.data or {}
+                path = data.get("path", "?")
+                count = data.get("restored_count", 0)
+                dropped = int(data.get("dropped_count", 0) or 0)
+                model = data.get("model_name", "?")
+                invalid_model = data.get("invalid_saved_model")
+                forked = bool(data.get("forked", False))
+                redacted = bool(data.get("had_redacted_content", False))
+                verb = "Forked from" if forked else "Resumed"
+                console.print(
+                    f"[green]{verb}[/green] {path} "
+                    f"([cyan]{count}[/cyan] messages, "
+                    f"model [cyan]{model}[/cyan])."
+                )
+                if dropped:
+                    console.print(
+                        f"[yellow]Warning:[/yellow] dropped {dropped} "
+                        "malformed message(s) while restoring — surrounding "
+                        "tool-call alignment may be off."
+                    )
+                if invalid_model:
+                    console.print(
+                        f"[yellow]Warning:[/yellow] saved model id "
+                        f"[cyan]{invalid_model}[/cyan] failed validation; "
+                        f"kept current model [cyan]{model}[/cyan]."
+                    )
+                if forked:
+                    console.print(
+                        "[dim]Saved log belongs to a different user — kept "
+                        "current session id; future saves go to a fresh file.[/dim]"
+                    )
+                if redacted:
+                    console.print(
+                        "[yellow]Note:[/yellow] tokens/secrets in restored "
+                        "messages were scrubbed at save time. Your live tokens "
+                        "are used for this session; [REDACTED_*] markers in "
+                        "past messages are not re-injected."
+                    )
                 turn_complete_event.set()
             elif event.event_type == "tool_log":
                 tool = event.data.get("tool", "") if event.data else ""
@@ -813,12 +884,69 @@ async def get_user_input(prompt_session: PromptSession) -> str:
 # Slash commands are defined in terminal_display
 
 
+async def _resume_picker(
+    arg: str,
+    prompt_session: PromptSession | None,
+) -> Path | None:
+    """Resolve a session log path via ``arg`` or interactive selection.
+
+    Returns ``None`` if the user cancels, no logs exist, or the argument
+    matches nothing — already prints the explanation in those cases.
+    """
+    from agent.core.session_resume import (
+        format_session_log_entry,
+        list_session_logs,
+        resolve_session_log_arg,
+    )
+    from agent.core.session import DEFAULT_SESSION_LOG_DIR
+
+    console = get_console()
+    directory = DEFAULT_SESSION_LOG_DIR
+    entries = list_session_logs(directory)
+    if not entries:
+        console.print(f"[yellow]No session logs found in ./{directory}.[/yellow]")
+        return None
+
+    if arg:
+        selected = resolve_session_log_arg(arg, entries, directory)
+        if selected is None:
+            console.print(f"[bold red]No matching session log:[/bold red] {arg}")
+        return selected
+
+    console.print()
+    console.print("[bold]Saved sessions[/bold]")
+    for index, entry in enumerate(entries, start=1):
+        console.print(format_session_log_entry(index, entry))
+    console.print()
+
+    if prompt_session is None:
+        console.print("[yellow]Cannot prompt for a selection here.[/yellow]")
+        return None
+
+    try:
+        choice = await prompt_session.prompt_async(
+            "Select session number (blank to cancel): "
+        )
+    except (EOFError, KeyboardInterrupt):
+        console.print("[dim]Resume cancelled.[/dim]")
+        return None
+    choice = choice.strip()
+    if not choice:
+        console.print("[dim]Resume cancelled.[/dim]")
+        return None
+    selected = resolve_session_log_arg(choice, entries, directory)
+    if selected is None:
+        console.print(f"[bold red]Invalid selection:[/bold red] {choice}")
+    return selected
+
+
 async def _handle_slash_command(
     cmd: str,
     config,
     session_holder: list,
     submission_queue: asyncio.Queue,
     submission_id: list[int],
+    prompt_session: PromptSession | None = None,
 ) -> Submission | None:
     """
     Handle a slash command. Returns a Submission to enqueue, or None if
@@ -847,6 +975,24 @@ async def _handle_slash_command(
         return Submission(
             id=f"sub_{submission_id[0]}",
             operation=Operation(op_type=OpType.COMPACT),
+        )
+
+    if command == "/resume":
+        session = session_holder[0] if session_holder else None
+        if session is None:
+            get_console().print(
+                "[bold red]No active session to restore into.[/bold red]"
+            )
+            return None
+        selected_path = await _resume_picker(arg, prompt_session)
+        if selected_path is None:
+            return None
+        submission_id[0] += 1
+        return Submission(
+            id=f"sub_{submission_id[0]}",
+            operation=Operation(
+                op_type=OpType.RESUME, data={"path": str(selected_path)}
+            ),
         )
 
     if command == "/model":
@@ -914,6 +1060,7 @@ async def _handle_slash_command(
         session = session_holder[0] if session_holder else None
         print(f"Model: {config.model_name}")
         print(f"Reasoning effort: {config.reasoning_effort or 'off'}")
+        print(f"Tool runtime: {_tool_runtime_label(_is_local_tool_runtime(config))}")
         if session:
             print(f"Turns: {session.turn_count}")
             print(f"Context items: {len(session.context_manager.items)}")
@@ -1036,6 +1183,7 @@ async def _handle_share_traces_command(arg: str, config, session) -> None:
 async def main(
     model: str | None = None,
     *,
+    sandbox_tools: bool = False,
     notify_on_block: bool = False,
     notification_method: str = "auto",
 ):
@@ -1047,19 +1195,26 @@ async def main(
     # Create prompt session for input (needed early for token prompt)
     prompt_session = PromptSession()
 
-    # HF token — required, prompt if missing
-    hf_token = resolve_hf_token()
-    if not hf_token:
-        hf_token = await _prompt_and_save_hf_token(prompt_session)
-
     config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     if model:
         config.model_name = model
+    _apply_tool_runtime_override(config, sandbox_tools=sandbox_tools)
+    local_mode = _is_local_tool_runtime(config)
+
+    # HF token — required for Hub-backed models/tools and sandbox tools, but
+    # not for local LLMs using only local filesystem tools.
+    hf_token = resolve_hf_token()
+    if not hf_token and (not is_local_model_id(config.model_name) or not local_mode):
+        hf_token = await _prompt_and_save_hf_token(prompt_session)
 
     # Resolve username for banner
     hf_user = _get_hf_user(hf_token)
 
-    print_banner(model=config.model_name, hf_user=hf_user)
+    print_banner(
+        model=config.model_name,
+        hf_user=hf_user,
+        tool_runtime=_tool_runtime_label(local_mode),
+    )
 
     # Pre-warm the HF router catalog in the background so /model switches
     # don't block on a network fetch.
@@ -1078,8 +1233,10 @@ async def main(
 
     notification_gateway = NotificationGateway(config.messaging)
     await notification_gateway.start()
-    # Create tool router with local mode
-    tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
+    # Create tool router with the selected CLI tool runtime.
+    tool_router = ToolRouter(
+        config.mcpServers, hf_token=hf_token, local_mode=local_mode
+    )
 
     # Session holder for interrupt/model/status access
     session_holder = [None]
@@ -1093,7 +1250,7 @@ async def main(
             session_holder=session_holder,
             hf_token=hf_token,
             user_id=hf_user,
-            local_mode=True,
+            local_mode=local_mode,
             stream=True,
             notification_gateway=notification_gateway,
             notification_destinations=config.messaging.default_auto_destinations(),
@@ -1117,6 +1274,8 @@ async def main(
     )
 
     await ready_event.wait()
+    if not local_mode:
+        await _wait_for_initial_sandbox_preload(session_holder)
 
     submission_id = [0]
     # Mirrors codex-rs/tui/src/bottom_pane/mod.rs:137
@@ -1217,6 +1376,7 @@ async def main(
                     session_holder,
                     submission_queue,
                     submission_id,
+                    prompt_session,
                 )
                 if sub is None:
                     # Command handled locally, loop back for input
@@ -1273,6 +1433,7 @@ async def headless_main(
     model: str | None = None,
     max_iterations: int | None = None,
     stream: bool = True,
+    sandbox_tools: bool = False,
 ) -> None:
     """Run a single prompt headlessly and exit."""
     import logging
@@ -1280,29 +1441,34 @@ async def headless_main(
     logging.basicConfig(level=logging.WARNING)
     _configure_runtime_logging()
 
+    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
+    config.yolo_mode = True  # Auto-approve everything in headless mode
+
+    if model:
+        config.model_name = model
+    _apply_tool_runtime_override(config, sandbox_tools=sandbox_tools)
+    local_mode = _is_local_tool_runtime(config)
+
     hf_token = resolve_hf_token()
-    if not hf_token:
+    if not hf_token and (not is_local_model_id(config.model_name) or not local_mode):
         print(
-            "ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.",
+            "ERROR: No HF token found. Set HF_TOKEN or run `hf auth login`.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    print("HF token loaded", file=sys.stderr)
+    if hf_token:
+        print("HF token loaded", file=sys.stderr)
 
-    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
-    config.yolo_mode = True  # Auto-approve everything in headless mode
     notification_gateway = NotificationGateway(config.messaging)
     await notification_gateway.start()
     hf_user = _get_hf_user(hf_token)
-
-    if model:
-        config.model_name = model
 
     if max_iterations is not None:
         config.max_iterations = max_iterations
 
     print(f"Model: {config.model_name}", file=sys.stderr)
+    print(f"Tool runtime: {_tool_runtime_label(local_mode)}", file=sys.stderr)
     print(f"Max iterations: {config.max_iterations}", file=sys.stderr)
     print(f"Prompt: {prompt}", file=sys.stderr)
     print("---", file=sys.stderr)
@@ -1310,7 +1476,9 @@ async def headless_main(
     submission_queue: asyncio.Queue = asyncio.Queue()
     event_queue: asyncio.Queue = asyncio.Queue()
 
-    tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
+    tool_router = ToolRouter(
+        config.mcpServers, hf_token=hf_token, local_mode=local_mode
+    )
     session_holder: list = [None]
 
     agent_task = asyncio.create_task(
@@ -1322,7 +1490,7 @@ async def headless_main(
             session_holder=session_holder,
             hf_token=hf_token,
             user_id=hf_user,
-            local_mode=True,
+            local_mode=local_mode,
             stream=stream,
             notification_gateway=notification_gateway,
             notification_destinations=config.messaging.default_auto_destinations(),
@@ -1518,6 +1686,11 @@ def cli():
         help="Disable token streaming (use non-streaming LLM calls)",
     )
     parser.add_argument(
+        "--sandbox-tools",
+        action="store_true",
+        help="Use HF Space sandbox tools instead of local filesystem tools",
+    )
+    parser.add_argument(
         "--notify-on-block",
         action="store_true",
         help="Alert when interactive CLI is waiting for approval or other input",
@@ -1541,14 +1714,18 @@ def cli():
                     model=args.model,
                     max_iterations=max_iter,
                     stream=not args.no_stream,
+                    sandbox_tools=args.sandbox_tools,
                 )
             )
         else:
-            asyncio.run(main(
-                model=args.model,
-                notify_on_block=args.notify_on_block,
-                notification_method=args.notify_method,
-            ))
+            asyncio.run(
+                main(
+                    model=args.model,
+                    sandbox_tools=args.sandbox_tools,
+                    notify_on_block=args.notify_on_block,
+                    notification_method=args.notify_method,
+                )
+            )
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
 

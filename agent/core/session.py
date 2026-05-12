@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_TOKENS = 200_000
 _TURN_COMPLETE_NOTIFICATION_CHARS = 39000
 
+DEFAULT_SESSION_LOG_DIR = Path("session_logs")
+
 
 def _get_max_tokens_safe(model_name: str) -> int:
     """Return the max input-context tokens for a model.
@@ -60,6 +62,7 @@ class OpType(Enum):
     INTERRUPT = "interrupt"
     UNDO = "undo"
     COMPACT = "compact"
+    RESUME = "resume"
     SHUTDOWN = "shutdown"
 
 
@@ -96,6 +99,7 @@ class Session:
         self.hf_token: Optional[str] = hf_token
         self.user_id: Optional[str] = user_id
         self.hf_username: Optional[str] = hf_username
+        self.local_mode = local_mode
         self.persistence_store = persistence_store
         self.tool_router = tool_router
         self.stream = stream
@@ -114,6 +118,7 @@ class Session:
         self.session_id = session_id or str(uuid.uuid4())
         self.config = config
         self.is_running = True
+        self.current_plan: list[dict[str, str]] = []
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
@@ -418,7 +423,7 @@ class Session:
 
     def save_trajectory_local(
         self,
-        directory: str = "session_logs",
+        directory: str = str(DEFAULT_SESSION_LOG_DIR),
         upload_status: str = "pending",
         dataset_url: Optional[str] = None,
     ) -> Optional[str]:
@@ -613,7 +618,7 @@ class Session:
 
     @staticmethod
     def retry_failed_uploads_detached(
-        directory: str = "session_logs",
+        directory: str = str(DEFAULT_SESSION_LOG_DIR),
         repo_id: Optional[str] = None,
         *,
         personal_repo_id: Optional[str] = None,

@@ -12,7 +12,6 @@ from typing import Any, Optional
 
 from agent.config import load_config
 from agent.core.agent_loop import process_submission
-from agent.core.hub_artifacts import start_session_artifact_collection_task
 from agent.core.session import Event, OpType, Session
 from agent.core.session_persistence import get_session_store
 from agent.core.tools import ToolRouter
@@ -136,7 +135,6 @@ class SessionManager:
         self.sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
         self.persistence_store = None
-        self.enable_hub_artifact_collections = True
 
     async def start(self) -> None:
         """Start shared background resources."""
@@ -413,28 +411,6 @@ class SessionManager:
         session.sandbox_preload_cancel_event = None
         self._start_cpu_sandbox_preload(agent_session)
 
-    def _start_hub_artifact_collection(self, agent_session: AgentSession) -> None:
-        """Kick off best-effort Hub collection creation for the session."""
-        if not getattr(self, "enable_hub_artifact_collections", False):
-            return
-        session = agent_session.session
-        if not getattr(session, "session_id", None):
-            try:
-                session.session_id = agent_session.session_id
-            except Exception:
-                logger.debug("Could not attach session id for Hub artifact collection")
-        token = agent_session.hf_token or getattr(session, "hf_token", None)
-        if not token:
-            return
-        try:
-            start_session_artifact_collection_task(session, token=token)
-        except Exception as e:
-            logger.debug(
-                "Failed to schedule Hub artifact collection for %s: %s",
-                agent_session.session_id,
-                e,
-            )
-
     async def _clear_persisted_sandbox_metadata(self, session_id: str) -> None:
         try:
             await self._store().update_session_fields(
@@ -591,7 +567,6 @@ class SessionManager:
                     existing,
                     preload_sandbox=preload_sandbox,
                 )
-                self._start_hub_artifact_collection(existing)
                 return existing
             return None
 
@@ -613,7 +588,6 @@ class SessionManager:
                     existing,
                     preload_sandbox=preload_sandbox,
                 )
-                self._start_hub_artifact_collection(existing)
                 return existing
             return None
 
@@ -700,9 +674,7 @@ class SessionManager:
                 hf_token=hf_token,
                 hf_username=hf_username,
             )
-            self._start_hub_artifact_collection(started)
             return started
-        self._start_hub_artifact_collection(agent_session)
         if preload_sandbox:
             self._start_cpu_sandbox_preload(agent_session)
         logger.info("Restored session %s for user %s", session_id, owner or user_id)
@@ -785,7 +757,6 @@ class SessionManager:
             event_queue=event_queue,
             tool_router=tool_router,
         )
-        self._start_hub_artifact_collection(agent_session)
         await self.persist_session_snapshot(agent_session, runtime_state="idle")
         self._start_cpu_sandbox_preload(agent_session)
 
