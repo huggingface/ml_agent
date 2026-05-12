@@ -549,7 +549,7 @@ def test_sitecustomize_caches_lazy_collection_slug_across_bootstraps(
     ]
 
 
-def test_sitecustomize_skips_sandbox_space_registration(monkeypatch):
+def test_sitecustomize_skips_sandbox_space_registration(monkeypatch, tmp_path):
     import huggingface_hub as hub
     from huggingface_hub import HfApi
 
@@ -579,6 +579,10 @@ def test_sitecustomize_skips_sandbox_space_registration(monkeypatch):
     def fake_add_collection_item(self, **kwargs):
         collection_items.append(kwargs)
 
+    monkeypatch.setenv(
+        "ML_INTERN_ARTIFACT_COLLECTION_CACHE",
+        str(tmp_path / "collection-slug.txt"),
+    )
     monkeypatch.setattr(HfApi, "upload_file", fake_upload_file)
     monkeypatch.setattr(HfApi, "create_collection", fake_create_collection)
     monkeypatch.setattr(HfApi, "add_collection_item", fake_add_collection_item)

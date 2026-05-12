@@ -776,21 +776,23 @@ class Sandbox:
             f"Last status: {last_status}, last error: {last_err}"
         )
 
-    def delete(self):
+    def delete(self, log: Callable[[str], object] | None = None):
         """Delete the Space. Only works if this Sandbox created it."""
         if not self._owns_space:
             raise RuntimeError(
                 f"This Sandbox did not create {self.space_id}. "
                 f"Use self._hf_api.delete_repo() directly if you're sure."
             )
-        print(f"Deleting sandbox: {self.space_id}...")
+        if log:
+            log(f"Deleting sandbox: {self.space_id}...")
         self._hf_api.delete_repo(self.space_id, repo_type="space")
         # Clear ownership so a second cleanup call (e.g. delete_session +
         # _run_session.finally both fire) early-returns instead of retrying
         # a 404 delete and emitting a spurious ERROR log.
         self._owns_space = False
         self._client.close()
-        print("Deleted.")
+        if log:
+            log("Deleted.")
 
     def pause(self):
         """Pause the Space (stops billing, preserves state)."""

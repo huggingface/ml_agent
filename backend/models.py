@@ -1,7 +1,7 @@
 """Pydantic models for API requests and responses."""
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -118,6 +118,23 @@ class SessionYoloRequest(BaseModel):
 
     enabled: bool
     cost_cap_usd: float | None = Field(default=None, ge=0)
+
+
+class DatasetUploadResponse(BaseModel):
+    """Response for a dataset file uploaded to the Hub."""
+
+    session_id: str
+    repo_id: str
+    repo_type: Literal["dataset"] = "dataset"
+    private: bool = True
+    upload_id: str
+    config_name: str
+    filename: str
+    path_in_repo: str
+    size_bytes: int
+    format: Literal["csv", "json", "jsonl"]
+    hub_url: str
+    load_dataset_snippet: str
 
 
 class HealthResponse(BaseModel):

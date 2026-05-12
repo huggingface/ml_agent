@@ -2,7 +2,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Literal, Union
 
 from dotenv import load_dotenv
 from fastmcp.mcp_config import (
@@ -46,6 +46,7 @@ class Config(BaseModel):
     # Permission control parameters
     confirm_cpu_jobs: bool = True
     auto_file_upload: bool = False
+    tool_runtime: Literal["local", "sandbox"] = "local"
 
     # Reasoning effort *preference* — the ceiling the user wants. The probe
     # on `/model` walks a cascade down from here (``max`` → ``xhigh`` → ``high``

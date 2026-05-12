@@ -16,6 +16,7 @@ import logging
 import re
 import threading
 import weakref
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -58,17 +59,41 @@ def _get_sandbox_create_lock(owner: str) -> asyncio.Lock:
     return lock
 
 
+def _session_tool_logger(
+    session: Any, *, tool: str = "sandbox"
+) -> Callable[[str], object] | None:
+    event_queue = getattr(session, "event_queue", None)
+    if event_queue is None:
+        return None
+
+    loop = asyncio.get_running_loop()
+
+    def _log(msg: str) -> None:
+        loop.call_soon_threadsafe(
+            event_queue.put_nowait,
+            Event(event_type="tool_log", data={"tool": tool, "log": msg}),
+        )
+
+    return _log
+
+
 def _looks_like_path(script: str) -> bool:
     """Return True if the script string looks like a file path (not inline code)."""
-    return (
+    if not (
         isinstance(script, str)
         and script.strip() == script
         and not any(c in script for c in "\r\n\0")
-        and (
-            script.startswith("/")
-            or script.startswith("./")
-            or script.startswith("../")
-        )
+    ):
+        return False
+
+    if script.startswith("http://") or script.startswith("https://"):
+        return False
+
+    return (
+        script.startswith("/")
+        or script.startswith("./")
+        or script.startswith("../")
+        or (script.endswith(".py") and not any(c.isspace() for c in script))
     )
 
 
@@ -303,14 +328,8 @@ async def _create_sandbox_locked(
         )
     )
 
-    # Thread-safe log callback: posts tool_log events from the worker thread
-    loop = asyncio.get_running_loop()
-
-    def _log(msg: str) -> None:
-        loop.call_soon_threadsafe(
-            session.event_queue.put_nowait,
-            Event(event_type="tool_log", data={"tool": "sandbox", "log": msg}),
-        )
+    # Thread-safe log callback: posts tool_log events from worker threads.
+    _log = _session_tool_logger(session) or (lambda msg: None)
 
     # Bridge asyncio cancel event to a threading.Event for the blocking create call.
     # We poll session._cancelled from the main loop in a background task and set
@@ -352,7 +371,7 @@ async def _create_sandbox_locked(
     if cancel_flag.is_set():
         if getattr(sb, "_owns_space", False):
             try:
-                await asyncio.to_thread(sb.delete)
+                await asyncio.to_thread(sb.delete, log=_log)
             except Exception as e:
                 logger.warning(
                     "Failed to delete cancelled sandbox %s: %s", sb.space_id, e
@@ -497,6 +516,7 @@ async def teardown_session_sandbox(session: Any) -> None:
             return
 
         space_id = getattr(sandbox, "space_id", None)
+        delete_log = _session_tool_logger(session)
         last_err: Exception | None = None
         for attempt in range(3):
             try:
@@ -505,7 +525,7 @@ async def teardown_session_sandbox(session: Any) -> None:
                     space_id,
                     attempt + 1,
                 )
-                await asyncio.to_thread(sandbox.delete)
+                await asyncio.to_thread(sandbox.delete, log=delete_log)
                 from agent.core import telemetry
 
                 await telemetry.record_sandbox_destroy(session, sandbox)
@@ -542,7 +562,7 @@ SANDBOX_CREATE_TOOL_SPEC = {
         "Common picks: t4-small (16GB VRAM, fits ≤1-3B), a10g-small (24GB, ≤7B), a100-large (80GB, ≤30B). "
         "If the model won't fit, pick larger hardware upfront — OOM on a sandbox wastes time.\n\n"
         "If you intend to run a training script in this sandbox that uses report_to='trackio', "
-        "pass `trackio_space_id` (e.g. '<username>/mlintern-<8char>') and `trackio_project` so they "
+        "pass `trackio_space_id` (e.g. '<username>/ml-intern-<8char>') and `trackio_project` so they "
         "are set as TRACKIO_SPACE_ID/TRACKIO_PROJECT secrets in the sandbox and the UI can embed the live dashboard.\n\n"
         "Hardware: " + ", ".join([e.value for e in SpaceHardware]) + ".\n"
     ),
@@ -563,7 +583,7 @@ SANDBOX_CREATE_TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Optional. The HF Space hosting the trackio dashboard for runs in this sandbox "
-                    "(e.g. '<username>/mlintern-<8char>', under YOUR HF namespace). Injected as "
+                    "(e.g. '<username>/ml-intern-<8char>', under YOUR HF namespace). Injected as "
                     "TRACKIO_SPACE_ID secret and surfaced to the UI. The Space is auto-created and "
                     "seeded with the trackio dashboard — DO NOT pre-create it via hf_repo_git, "
                     "that produces an empty Space that breaks the embed."
