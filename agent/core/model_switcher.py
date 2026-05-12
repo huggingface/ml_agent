@@ -34,6 +34,8 @@ from agent.core.local_models import (
 # ":cheapest" / ":preferred" / ":<provider>" to override the default
 # routing policy (auto = fastest with failover).
 SUGGESTED_MODELS = [
+    {"id": "openai/deepseek-v4-flash", "label": "deepseek-v4-flash (Custom API)"},
+    {"id": "openai/deepseek-v4-pro", "label": "deepseek-v4-pro (Custom API)"},
     {"id": "openai/gpt-5.5", "label": "GPT-5.5"},
     {"id": "openai/gpt-5.4", "label": "GPT-5.4"},
     {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7"},

@@ -478,7 +478,7 @@ class Session:
             # Atomic-ish write: stage to .tmp then rename so a crash mid-write
             # doesn't leave a truncated JSON that breaks the retry scanner.
             tmp_path = filepath.with_suffix(filepath.suffix + ".tmp")
-            with open(tmp_path, "w") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(trajectory, f, indent=2)
             tmp_path.replace(filepath)
 
@@ -492,14 +492,14 @@ class Session:
     ) -> bool:
         """Update the upload status of an existing local save file"""
         try:
-            with open(filepath, "r") as f:
+            with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
             data["upload_status"] = upload_status
             data["upload_url"] = dataset_url
             data["last_save_time"] = datetime.now().isoformat()
 
-            with open(filepath, "w") as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
 
             return True

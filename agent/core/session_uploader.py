@@ -276,7 +276,7 @@ def _write_row_payload(data: dict, tmp_path: str) -> None:
         "tools": json.dumps(scrubbed["tools"]),
     }
 
-    with open(tmp_path, "w") as tmp:
+    with open(tmp_path, "w", encoding="utf-8") as tmp:
         json.dump(session_row, tmp)
 
 
@@ -285,7 +285,7 @@ def _write_claude_code_payload(data: dict, tmp_path: str) -> None:
     # Scrub before conversion so secrets never reach the upload temp file.
     scrubbed = _scrub_session_for_upload(data)
     events = to_claude_code_jsonl(scrubbed)
-    with open(tmp_path, "w") as tmp:
+    with open(tmp_path, "w", encoding="utf-8") as tmp:
         for event in events:
             tmp.write(json.dumps(event))
             tmp.write("\n")
@@ -302,14 +302,20 @@ def _url_field(format: str) -> str:
 
 def _read_session_file(session_file: str) -> dict:
     """Read a local session file while respecting uploader file locks."""
-    import fcntl
+    has_fcntl = True
+    try:
+        import fcntl
+    except ImportError:
+        has_fcntl = False
 
-    with open(session_file, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
+    with open(session_file, "r", encoding="utf-8") as f:
+        if has_fcntl:
+            fcntl.flock(f, fcntl.LOCK_SH)
         try:
             return json.load(f)
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            if has_fcntl:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _update_upload_status(
@@ -325,10 +331,15 @@ def _update_upload_status(
     local session JSON file. Re-read under an exclusive lock so one uploader
     cannot clobber fields written by the other.
     """
-    import fcntl
+    has_fcntl = True
+    try:
+        import fcntl
+    except ImportError:
+        has_fcntl = False
 
-    with open(session_file, "r+") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with open(session_file, "r+", encoding="utf-8") as f:
+        if has_fcntl:
+            fcntl.flock(f, fcntl.LOCK_EX)
         try:
             data = json.load(f)
             data[status_key] = status
@@ -341,7 +352,8 @@ def _update_upload_status(
             f.flush()
             os.fsync(f.fileno())
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            if has_fcntl:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def dataset_card_readme(repo_id: str) -> str:
