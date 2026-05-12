@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -196,7 +197,11 @@ def _create_rich_console():
 
 
 def _clear_terminal() -> None:
-    os.system("clear" if os.name != "nt" else "cls")
+    command = ["cmd", "/c", "cls"] if os.name == "nt" else ["clear"]
+    try:
+        subprocess.run(command, check=False)
+    except OSError:
+        pass
 
 
 class _ThinkingShimmer:
