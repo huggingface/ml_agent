@@ -62,6 +62,7 @@ _background_teardown_tasks: set[asyncio.Task] = set()
 
 DEFAULT_CLAUDE_MODEL_ID = "bedrock/us.anthropic.claude-opus-4-6-v1"
 DEFAULT_FREE_MODEL_ID = "moonshotai/Kimi-K2.6"
+DEFAULT_CODEX_MODEL_ID = "openai-codex/gpt-5.5"
 PREMIUM_MODEL_IDS = {
     DEFAULT_CLAUDE_MODEL_ID,
     "openai/gpt-5.5",
@@ -102,6 +103,12 @@ def _available_models() -> list[dict[str, Any]]:
             "label": "GPT-5.5",
             "provider": "openai",
             "tier": "pro",
+        },
+        {
+            "id": DEFAULT_CODEX_MODEL_ID,
+            "label": "GPT-5.5 Codex",
+            "provider": "openai-codex",
+            "tier": "subscription",
         },
         {
             "id": "MiniMaxAI/MiniMax-M2.7",

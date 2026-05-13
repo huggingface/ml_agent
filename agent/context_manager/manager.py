@@ -143,6 +143,29 @@ async def summarize_messages(
 
     prompt_messages = list(messages) + [Message(role="user", content=prompt)]
     llm_params = _resolve_llm_params(model_name, hf_token, reasoning_effort="high")
+    if llm_params.get("_ml_intern_provider") == "openai-codex":
+        if session is None:
+            raise RuntimeError("OpenAI Codex summarization requires a session")
+        from agent.core.codex_responses import (
+            call_codex_responses,
+            resolve_codex_llm_params,
+        )
+
+        codex_params = await resolve_codex_llm_params(
+            model_name,
+            user_id=getattr(session, "user_id", None),
+            reasoning_effort="high",
+        )
+        result = await call_codex_responses(
+            session,
+            prompt_messages,
+            tool_specs,
+            codex_params,
+            emit_events=False,
+        )
+        completion_tokens = int(result.usage.get("completion_tokens") or 0)
+        return result.content or "", completion_tokens
+
     prompt_messages, tool_specs = with_prompt_caching(
         prompt_messages, tool_specs, llm_params.get("model")
     )

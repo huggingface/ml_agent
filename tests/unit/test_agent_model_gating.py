@@ -26,6 +26,7 @@ def test_premium_model_predicate_includes_bedrock_claude_and_gpt55_only():
     assert agent._is_premium_model("bedrock/us.anthropic.claude-opus-4-6-v1")
     assert agent._is_premium_model("openai/gpt-5.5")
     assert not agent._is_premium_model("anthropic/claude-opus-4-6")
+    assert not agent._is_premium_model("openai-codex/gpt-5.5")
     assert not agent._is_premium_model("moonshotai/Kimi-K2.6")
 
 

@@ -32,6 +32,28 @@ def test_openai_max_effort_is_still_rejected():
         raise AssertionError("Expected UnsupportedEffortError for max effort")
 
 
+def test_openai_codex_model_uses_chatgpt_backend_marker():
+    params = _resolve_llm_params(
+        "openai-codex/gpt-5.5",
+        reasoning_effort="xhigh",
+        strict=True,
+    )
+
+    assert params["_ml_intern_provider"] == "openai-codex"
+    assert params["model"] == "openai-codex/gpt-5.5"
+    assert params["codex_model"] == "gpt-5.5"
+    assert params["reasoning_effort"] == "xhigh"
+
+
+def test_openai_codex_max_effort_is_rejected_in_strict_mode():
+    with pytest.raises(UnsupportedEffortError, match="OpenAI Codex"):
+        _resolve_llm_params(
+            "openai-codex/gpt-5.5",
+            reasoning_effort="max",
+            strict=True,
+        )
+
+
 def test_resolve_ollama_params_adds_v1_and_uses_default_key(monkeypatch):
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")

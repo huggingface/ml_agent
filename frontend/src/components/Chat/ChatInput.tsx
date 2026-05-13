@@ -27,6 +27,7 @@ import { useAgentStore } from '@/store/agentStore';
 import { useSessionStore } from '@/store/sessionStore';
 import {
   CLAUDE_MODEL_PATH,
+  CODEX_GPT_55_MODEL_PATH,
   FIRST_FREE_MODEL_PATH,
   GPT_55_MODEL_PATH,
   isClaudePath,
@@ -70,6 +71,13 @@ const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
     name: 'GPT-5.5',
     description: 'OpenAI',
     modelPath: GPT_55_MODEL_PATH,
+    avatarUrl: 'https://huggingface.co/api/avatars/openai',
+  },
+  {
+    id: 'codex-gpt-5.5',
+    name: 'GPT-5.5 Codex',
+    description: 'ChatGPT subscription',
+    modelPath: CODEX_GPT_55_MODEL_PATH,
     avatarUrl: 'https://huggingface.co/api/avatars/openai',
   },
   {

@@ -8,6 +8,7 @@
 
 export const CLAUDE_MODEL_PATH = 'bedrock/us.anthropic.claude-opus-4-6-v1';
 export const GPT_55_MODEL_PATH = 'openai/gpt-5.5';
+export const CODEX_GPT_55_MODEL_PATH = 'openai-codex/gpt-5.5';
 export const FIRST_FREE_MODEL_PATH = 'moonshotai/Kimi-K2.6';
 
 export function isClaudePath(modelPath: string | undefined): boolean {
