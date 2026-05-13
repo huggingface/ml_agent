@@ -92,6 +92,32 @@ def test_resolve_llamacpp_params_strips_provider_prefix(monkeypatch):
     assert params["api_base"] == "http://localhost:8080/v1"
 
 
+def test_resolve_openrouter_params(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+
+    params = _resolve_llm_params("openrouter/anthropic/claude-3")
+
+    assert params == {
+        "model": "openai/anthropic/claude-3",
+        "api_base": "https://openrouter.ai/api/v1",
+        "api_key": "openrouter-secret",
+    }
+
+
+def test_resolve_openai_compat_params(monkeypatch):
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", "http://my-proxy:8888")
+    monkeypatch.setenv("LOCAL_LLM_API_KEY", "proxy-secret")
+
+    params = _resolve_llm_params("openai-compat/custom-model")
+
+    assert params == {
+        "model": "openai/custom-model",
+        "api_base": "http://my-proxy:8888/v1",
+        "api_key": "proxy-secret",
+    }
+
+
 def test_local_params_reject_reasoning_effort_in_strict_mode():
     with pytest.raises(UnsupportedEffortError, match="reasoning_effort"):
         _resolve_llm_params("ollama/llama3.1", reasoning_effort="high", strict=True)
@@ -109,9 +135,10 @@ def test_local_params_drop_reasoning_effort_in_non_strict_mode():
     assert "extra_body" not in params
 
 
-def test_openai_compat_prefix_is_not_a_local_escape_hatch():
-    with pytest.raises(ValueError, match="Unsupported local model id"):
-        _resolve_llm_params("openai-compat/custom-model")
+def test_openai_compat_prefix_is_now_a_local_escape_hatch(monkeypatch):
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", "http://localhost:8080")
+    params = _resolve_llm_params("openai-compat/custom-model")
+    assert params["model"] == "openai/custom-model"
 
 
 def test_empty_local_model_id_is_not_treated_as_hf_router():

@@ -163,8 +163,8 @@ def print_model_listing(config, console) -> None:
         "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
         "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
         "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.\n"
-        "Use 'ollama/<model>', 'vllm/<model>', 'lm_studio/<model>', or "
-        "'llamacpp/<model>' for local OpenAI-compatible endpoints.[/dim]"
+        "Use 'ollama/<model>', 'vllm/<model>', 'lm_studio/<model>', 'llamacpp/<model>',\n"
+        "'openrouter/<model>', or 'openai-compat/<model>' for OpenAI-compatible endpoints.[/dim]"
     )
 
 
@@ -175,7 +175,8 @@ def print_invalid_id(arg: str, console) -> None:
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
         "  • anthropic/<model>\n"
         "  • openai/<model>\n"
-        "  • ollama/<model> | vllm/<model> | lm_studio/<model> | llamacpp/<model>[/dim]"
+        "  • ollama/<model> | vllm/<model> | lm_studio/<model> | llamacpp/<model>\n"
+        "  • openrouter/<model> | openai-compat/<model>[/dim]"
     )
 
 

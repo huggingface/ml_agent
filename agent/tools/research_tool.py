@@ -223,8 +223,20 @@ def _get_research_model(main_model: str) -> str:
     """Pick a cheaper model for research based on the main model."""
     if main_model.startswith("anthropic/"):
         return "anthropic/claude-sonnet-4-6"
+
     if main_model.startswith("bedrock/") and "anthropic" in main_model:
-        return "bedrock/us.anthropic.claude-sonnet-4-6"
+        # Extract region/profile prefix if present (e.g. "us.", "eu.")
+        # bedrock/us.anthropic... -> us.
+        # bedrock/anthropic...    -> ""
+        model_part = main_model.removeprefix("bedrock/")
+        prefix = ""
+        if "." in model_part:
+            first_part = model_part.split(".")[0]
+            if first_part != "anthropic":
+                prefix = f"{first_part}."
+
+        return f"bedrock/{prefix}anthropic.claude-sonnet-4-6"
+
     # For non-Anthropic models (HF router etc.), use the same model
     return main_model
 

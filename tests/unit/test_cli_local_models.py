@@ -9,6 +9,8 @@ def test_local_model_helper_accepts_supported_prefixes():
     assert is_local_model_id("vllm/meta-llama/Llama-3.1-8B-Instruct")
     assert is_local_model_id("lm_studio/google/gemma-3-4b")
     assert is_local_model_id("llamacpp/unsloth/Qwen3.5-2B")
+    assert is_local_model_id("openrouter/anthropic/claude-3.5-sonnet")
+    assert is_local_model_id("openai-compat/my-model")
 
 
 def test_model_switcher_accepts_supported_local_prefixes():
@@ -16,6 +18,8 @@ def test_model_switcher_accepts_supported_local_prefixes():
     assert model_switcher.is_valid_model_id("vllm/meta-llama/Llama-3.1-8B")
     assert model_switcher.is_valid_model_id("lm_studio/google/gemma-3-4b")
     assert model_switcher.is_valid_model_id("llamacpp/llama-3.1-8b")
+    assert model_switcher.is_valid_model_id("openrouter/google/gemini-pro-1.5")
+    assert model_switcher.is_valid_model_id("openai-compat/some-custom-model")
 
 
 def test_model_switcher_rejects_empty_or_whitespace_local_ids():
@@ -23,11 +27,13 @@ def test_model_switcher_rejects_empty_or_whitespace_local_ids():
     assert not model_switcher.is_valid_model_id("vllm/")
     assert not model_switcher.is_valid_model_id("lm_studio/")
     assert not model_switcher.is_valid_model_id("llamacpp/")
+    assert not model_switcher.is_valid_model_id("openrouter/")
+    assert not model_switcher.is_valid_model_id("openai-compat/")
     assert not model_switcher.is_valid_model_id("ollama/llama 3.1")
 
 
-def test_openai_compat_prefix_is_not_supported():
-    assert not model_switcher.is_valid_model_id("openai-compat/custom-model")
+def test_openai_compat_prefix_is_now_supported():
+    assert model_switcher.is_valid_model_id("openai-compat/custom-model")
 
 
 def test_local_models_skip_hf_router_catalog_output():
