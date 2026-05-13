@@ -63,6 +63,7 @@ ml-intern --model anthropic/claude-opus-4-7 "your prompt"   # requires ANTHROPIC
 ml-intern --model openai/gpt-5.5 "your prompt"              # requires OPENAI_API_KEY
 ml-intern --model ollama/llama3.1:8b "your prompt"
 ml-intern --model vllm/meta-llama/Llama-3.1-8B-Instruct "your prompt"
+ml-intern --sandbox-tools "your prompt"                         # use HF Space sandbox tools
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
@@ -96,6 +97,30 @@ one shared local endpoint, or override a specific provider with its matching
 `*_BASE_URL` / `*_API_KEY` variable, such as `OLLAMA_BASE_URL` or
 `VLLM_API_KEY`. Provider-specific variables take precedence over the shared
 local variables. Base URLs may include or omit `/v1`.
+
+**CLI tool runtime:**
+
+By default, the CLI runs `bash`, `read`, `write`, and `edit` on your local
+filesystem. To use HF Space sandbox tools instead, including `sandbox_create`,
+opt in with `--sandbox-tools`:
+
+```bash
+ml-intern --sandbox-tools "test this training script in a GPU sandbox"
+ml-intern --model llamacpp/ggml-org/gemma-3-1b-it-GGUF --sandbox-tools
+```
+
+Sandbox tool runtime requires `HF_TOKEN`, even when the selected model is local,
+because it creates private HF Spaces. You can also make sandbox tools your CLI
+default in `~/.config/ml-intern/cli_agent_config.json`:
+
+```json
+{ "tool_runtime": "sandbox" }
+```
+
+Use the default local runtime when you want tools to inspect or edit files in
+your checkout. Use sandbox runtime when you want the agent to create or replace
+an HF Space sandbox, test code remotely, or request GPU sandbox hardware before
+launching larger HF Jobs.
 
 ## Sharing Traces
 

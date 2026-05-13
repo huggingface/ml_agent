@@ -30,9 +30,7 @@ export default function ClaudeCapDialog({
   onUseFreeModel,
   onUpgrade,
 }: ClaudeCapDialogProps) {
-  // plan not surfaced in copy right now — Pro users see the same dialog and
-  // can upgrade their org if they're also capped.
-  void plan;
+  const isFreePlan = plan === 'free';
 
   return (
     <Dialog
@@ -62,62 +60,68 @@ export default function ClaudeCapDialog({
           sx={{ color: 'var(--muted-text)', fontSize: '0.85rem', lineHeight: 1.6 }}
         >
           Opus and GPT-5.5 are expensive to run, so we cap premium models at {cap}{' '}
-          {cap === 1 ? 'session' : 'sessions'} a day. Give Kimi, MiniMax, GLM,
-          or DeepSeek a spin instead.
+          {cap === 1 ? 'session' : 'sessions'} a day. {isFreePlan
+            ? 'HF Pro raises the daily premium-model limit.'
+            : 'Your plan has used today’s premium-model allowance.'}{' '}
+          Give Kimi, MiniMax, GLM, or DeepSeek a spin instead.
         </DialogContentText>
-        <Box
-          sx={{
-            mt: 2,
-            p: 1.5,
-            borderRadius: '8px',
-            bgcolor: 'var(--accent-yellow-weak)',
-            border: '1px solid var(--border)',
-          }}
-        >
-          <Typography
-            variant="caption"
+        {isFreePlan && (
+          <Box
             sx={{
-              display: 'block',
-              fontWeight: 700,
-              color: 'var(--text)',
-              fontSize: '0.78rem',
-              mb: 0.5,
-              letterSpacing: '0.02em',
+              mt: 2,
+              p: 1.5,
+              borderRadius: '8px',
+              bgcolor: 'var(--accent-yellow-weak)',
+              border: '1px solid var(--border)',
             }}
           >
-            HF Pro ($9/mo) — more premium model sessions
-          </Typography>
-          <Typography
-            variant="caption"
-            sx={{ display: 'block', color: 'var(--muted-text)', fontSize: '0.78rem', lineHeight: 1.55 }}
-          >
-            {PRO_CAP} premium model sessions/day here, 20× HF Inference credits,
-            ZeroGPU access, and priority on Spaces hardware.
-          </Typography>
-        </Box>
+            <Typography
+              variant="caption"
+              sx={{
+                display: 'block',
+                fontWeight: 700,
+                color: 'var(--text)',
+                fontSize: '0.78rem',
+                mb: 0.5,
+                letterSpacing: '0.02em',
+              }}
+            >
+              HF Pro ($9/mo) — more premium model sessions
+            </Typography>
+            <Typography
+              variant="caption"
+              sx={{ display: 'block', color: 'var(--muted-text)', fontSize: '0.78rem', lineHeight: 1.55 }}
+            >
+              {PRO_CAP} premium model sessions/day here, 20× HF Inference credits,
+              ZeroGPU access, and priority on Spaces hardware.
+            </Typography>
+          </Box>
+        )}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5, pt: 2, gap: 1 }}>
-        <Button
-          component="a"
-          href={HF_PRICING_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={onUpgrade}
-          variant="contained"
-          size="small"
-          sx={{
-            fontSize: '0.82rem',
-            px: 2.5,
-            bgcolor: 'var(--accent-yellow)',
-            color: '#000',
-            textTransform: 'none',
-            fontWeight: 700,
-            boxShadow: 'none',
-            '&:hover': { bgcolor: '#FFB340', boxShadow: 'none' },
-          }}
-        >
-          Upgrade to Pro
-        </Button>
+        {isFreePlan && (
+          <Button
+            component="a"
+            href={HF_PRICING_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={onUpgrade}
+            variant="contained"
+            size="small"
+            sx={{
+              fontSize: '0.82rem',
+              px: 2.5,
+              bgcolor: 'var(--accent-yellow)',
+              color: '#000',
+              textTransform: 'none',
+              fontWeight: 700,
+              boxShadow: 'none',
+              '&:hover': { bgcolor: '#FFB340', boxShadow: 'none' },
+            }}
+          >
+            Upgrade to Pro
+          </Button>
+        )}
         <Button
           onClick={onUseFreeModel}
           size="small"

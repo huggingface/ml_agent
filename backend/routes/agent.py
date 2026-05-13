@@ -12,7 +12,6 @@ from typing import Any
 from dependencies import (
     INTERNAL_HF_TOKEN_KEY,
     get_current_user,
-    require_huggingface_org_member,
 )
 from fastapi import (
     APIRouter,
@@ -22,10 +21,18 @@ from fastapi import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
-from litellm import acompletion
+from huggingface_hub.errors import HfHubHTTPError
+from litellm import Message, acompletion
 from pydantic import ValidationError
+from starlette.datastructures import FormData, UploadFile
+from dataset_uploads import (
+    MAX_DATASET_UPLOAD_BYTES,
+    dataset_context_note,
+    push_dataset_upload_to_hub,
+)
 from models import (
     ApprovalRequest,
+    DatasetUploadResponse,
     HealthResponse,
     LLMHealthResponse,
     SessionInfo,
@@ -55,10 +62,11 @@ _background_teardown_tasks: set[asyncio.Task] = set()
 
 DEFAULT_CLAUDE_MODEL_ID = "bedrock/us.anthropic.claude-opus-4-6-v1"
 DEFAULT_FREE_MODEL_ID = "moonshotai/Kimi-K2.6"
-GATED_MODEL_IDS = {
+PREMIUM_MODEL_IDS = {
     DEFAULT_CLAUDE_MODEL_ID,
     "openai/gpt-5.5",
 }
+DATASET_UPLOAD_MULTIPART_SLACK_BYTES = 1024 * 1024
 
 
 def _claude_picker_model_id() -> str:
@@ -120,35 +128,8 @@ def _available_models() -> list[dict[str, Any]]:
 AVAILABLE_MODELS = _available_models()
 
 
-def _is_gated_model(model_id: str) -> bool:
-    return model_id in GATED_MODEL_IDS
-
-
-def _premium_model_restricted_error() -> HTTPException:
-    return HTTPException(
-        status_code=403,
-        detail={
-            "error": "premium_model_restricted",
-            "message": (
-                "Premium models are gated to HF staff. Pick a free model — "
-                "Kimi K2.6, MiniMax M2.7, GLM 5.1, or DeepSeek V4 Pro — "
-                "instead."
-            ),
-        },
-    )
-
-
-async def _require_hf_for_gated_model(request: Request, model_id: str) -> None:
-    """403 if a non-``huggingface``-org user tries to select a gated model.
-
-    Gated models are deployed paid endpoints backed by service-owned
-    credentials. The gate only fires for deployed paid models so non-HF users
-    can still freely switch between the free models.
-    """
-    if not _is_gated_model(model_id):
-        return
-    if not await require_huggingface_org_member(request):
-        raise _premium_model_restricted_error()
+def _is_premium_model(model_id: str) -> bool:
+    return model_id in PREMIUM_MODEL_IDS
 
 
 async def _model_override_for_new_session(
@@ -157,21 +138,19 @@ async def _model_override_for_new_session(
 ) -> str | None:
     """Return the model override to use when creating a new session.
 
-    Explicit gated-model requests keep the hard membership gate. Implicit
-    default sessions are more forgiving: when the configured default is gated
-    and the user lacks access, start them on the first free model instead of
-    blocking session creation.
+    Explicit premium model requests are allowed and charged at message-submit
+    time. Implicit default sessions are more forgiving: when the configured
+    default is premium, start them on the first free model instead of spending
+    premium quota accidentally.
     """
     resolved_model = requested_model or session_manager.config.model_name
-    if not _is_gated_model(resolved_model):
-        return requested_model
-    if await require_huggingface_org_member(request):
+    if not _is_premium_model(resolved_model):
         return requested_model
     if requested_model:
-        raise _premium_model_restricted_error()
+        return requested_model
 
     logger.info(
-        "Default gated model %s is unavailable to this user; "
+        "Default premium model %s would spend quota; "
         "creating session with free fallback %s",
         resolved_model,
         DEFAULT_FREE_MODEL_ID,
@@ -179,40 +158,48 @@ async def _model_override_for_new_session(
     return DEFAULT_FREE_MODEL_ID
 
 
-async def _enforce_gated_model_quota(
+async def _enforce_premium_model_quota(
     user: dict[str, Any],
     agent_session: AgentSession,
 ) -> None:
-    """Charge the user's daily gated-model quota on first use in a session.
+    """Charge the user's daily premium-model quota on first use in a session.
 
     Runs at *message-submit* time, not session-create time — so spinning up a
-    gated-model session to look around doesn't burn quota. The
+    premium-model session to look around doesn't burn quota. The
     ``claude_counted`` flag on ``AgentSession`` guards against re-counting the
     same session; the stored field name is kept for persistence compatibility.
 
-    No-ops when the session's current model isn't gated, or when this
+    No-ops when the session's current model isn't premium, or when this
     session has already been charged. Raises 429 when the user has hit
     their daily cap.
     """
     if agent_session.claude_counted:
         return
     model_name = agent_session.session.config.model_name
-    if not _is_gated_model(model_name):
+    if not _is_premium_model(model_name):
         return
     user_id = user["user_id"]
-    cap = user_quotas.daily_cap_for(user.get("plan"))
+    plan = user.get("plan", "free")
+    cap = user_quotas.daily_cap_for(plan)
     new_count = await user_quotas.try_increment_claude(user_id, cap)
     if new_count is None:
+        if plan == "pro":
+            message = (
+                "Daily premium model limit reached. Use a free model and try "
+                "premium models again tomorrow."
+            )
+        else:
+            message = (
+                "Daily premium model limit reached. Upgrade to HF Pro for "
+                f"{user_quotas.CLAUDE_PRO_DAILY}/day or use a free model."
+            )
         raise HTTPException(
             status_code=429,
             detail={
                 "error": "premium_model_daily_cap",
-                "plan": user.get("plan", "free"),
+                "plan": plan,
                 "cap": cap,
-                "message": (
-                    "Daily premium model limit reached. Upgrade to HF Pro for "
-                    f"{user_quotas.CLAUDE_PRO_DAILY}/day or use a free model."
-                ),
+                "message": message,
             },
         )
     agent_session.claude_counted = True
@@ -223,6 +210,63 @@ def _user_hf_token(user: dict[str, Any] | None) -> str | None:
     if not isinstance(user, dict):
         return None
     return user.get(INTERNAL_HF_TOKEN_KEY)
+
+
+def _reject_oversize_dataset_upload(request: Request) -> None:
+    raw_content_length = request.headers.get("content-length")
+    if raw_content_length is None:
+        return
+    try:
+        content_length = int(raw_content_length)
+    except (TypeError, ValueError):
+        return
+    if content_length > MAX_DATASET_UPLOAD_BYTES + DATASET_UPLOAD_MULTIPART_SLACK_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Dataset upload exceeds the 100 MB limit.",
+        )
+
+
+def _dataset_upload_file_from_form(form: FormData) -> UploadFile:
+    uploaded_files = [
+        (key, value)
+        for key, value in form.multi_items()
+        if isinstance(value, UploadFile)
+    ]
+    if len(uploaded_files) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload exactly one dataset file.",
+        )
+    field_name, upload = uploaded_files[0]
+    if field_name != "file":
+        raise HTTPException(
+            status_code=400,
+            detail="Missing 'file' upload field.",
+        )
+    return upload
+
+
+def _dataset_upload_hub_http_exception(error: HfHubHTTPError) -> HTTPException:
+    status_code = getattr(error.response, "status_code", None)
+    if status_code == 401:
+        detail = "Hugging Face rejected the token used for the dataset upload."
+        return HTTPException(status_code=401, detail=detail)
+    if status_code == 403:
+        detail = (
+            "Hugging Face denied permission to create or write to the dataset repo."
+        )
+        return HTTPException(status_code=403, detail=detail)
+    if status_code == 404:
+        detail = "Could not find the Hugging Face namespace or dataset repo."
+        return HTTPException(status_code=404, detail=detail)
+    if status_code == 429:
+        detail = "Hugging Face Hub rate limit reached while uploading the dataset."
+        return HTTPException(status_code=429, detail=detail)
+    return HTTPException(
+        status_code=502,
+        detail="Hugging Face Hub upload failed. Please try again.",
+    )
 
 
 async def _check_session_access(
@@ -405,7 +449,7 @@ async def create_session(
     behalf of the user.
 
     Optional body ``{"model"?: <id>}`` selects the session's LLM; unknown
-    ids are rejected (400). The gated-model quota runs at message-submit
+    ids are rejected (400). The premium-model quota runs at message-submit
     time, not here — spinning up a session to look around is free.
 
     Returns 503 if the server or user has reached the session limit.
@@ -426,8 +470,8 @@ async def create_session(
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
-    # Explicit premium selections remain gated. If the implicit configured
-    # default is unavailable, start the session on a free model instead.
+    # Explicit premium selections are allowed. If the implicit configured
+    # default is premium, start the session on a free model instead.
     model = await _model_override_for_new_session(request, model)
 
     try:
@@ -458,7 +502,7 @@ async def restore_session_summary(
     session's context as a user-role system note.
 
     Optional ``"model"`` in the body overrides the session's LLM. The
-    gated-model quota runs at message-submit time, not here.
+    premium-model quota runs at message-submit time, not here.
     """
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -524,10 +568,7 @@ async def set_session_model(
 
     Takes effect on the next LLM call in that session — other sessions
     (including other browser tabs) are unaffected. Model switches don't
-    charge quota — the gated-model quota only fires at message-submit time.
-
-    Switching TO a gated deployed model requires HF org membership; free-model
-    and local-dev direct provider switches are unrestricted.
+    charge quota — the premium-model quota only fires at message-submit time.
     """
     agent_session = await _check_session_access(session_id, user, request)
     model_id = body.get("model")
@@ -536,7 +577,6 @@ async def set_session_model(
     valid_ids = {m["id"] for m in AVAILABLE_MODELS}
     if model_id not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
-    await _require_hf_for_gated_model(request, model_id)
     if not agent_session:
         raise HTTPException(status_code=404, detail="Session not found")
     await session_manager.update_session_model(session_id, model_id)
@@ -566,6 +606,86 @@ async def set_session_notifications(
         "session_id": session_id,
         "notification_destinations": destinations,
     }
+
+
+@router.post("/session/{session_id}/datasets", response_model=DatasetUploadResponse)
+async def upload_session_dataset(
+    session_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> DatasetUploadResponse:
+    """Upload a CSV/JSON dataset file to a private Hub dataset for this session."""
+    file: UploadFile | None = None
+    try:
+        _reject_oversize_dataset_upload(request)
+        agent_session = await _check_session_access(session_id, user, request)
+        if not agent_session or not agent_session.is_active:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if agent_session.is_processing:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot upload a dataset while the agent is processing.",
+            )
+        if agent_session.session.pending_approval:
+            raise HTTPException(
+                status_code=409,
+                detail="Approve or reject pending tools before uploading a dataset.",
+            )
+
+        hf_token = (
+            resolve_hf_request_token(request, include_env_fallback=False)
+            or _user_hf_token(user)
+            or resolve_hf_request_token(request)
+        )
+        if not hf_token:
+            raise HTTPException(
+                status_code=401,
+                detail="A Hugging Face token is required to upload datasets.",
+            )
+
+        form = await request.form(
+            max_files=1,
+            max_fields=1,
+            max_part_size=MAX_DATASET_UPLOAD_BYTES,
+        )
+        file = _dataset_upload_file_from_form(form)
+        hf_username = user.get("username") or agent_session.hf_username
+        uploaded = await push_dataset_upload_to_hub(
+            upload=file,
+            session_id=session_id,
+            hf_username=hf_username,
+            hf_token=hf_token,
+        )
+        agent_session.session.context_manager.add_message(
+            Message(role="user", content=dataset_context_note(uploaded))
+        )
+        await session_manager.persist_session_snapshot(agent_session)
+        logger.info(
+            "Uploaded dataset file %s to %s for session %s",
+            uploaded.filename,
+            uploaded.repo_id,
+            session_id,
+        )
+        return DatasetUploadResponse(**uploaded.response_payload())
+    except HTTPException:
+        raise
+    except HfHubHTTPError as e:
+        logger.warning(
+            "Hub rejected dataset upload for session %s: status=%s request_id=%s",
+            session_id,
+            getattr(e.response, "status_code", None),
+            getattr(e, "request_id", None),
+        )
+        raise _dataset_upload_hub_http_exception(e)
+    except Exception:
+        logger.exception("Dataset upload failed for session %s", session_id)
+        raise HTTPException(
+            status_code=502,
+            detail="Dataset upload failed. Please try again.",
+        )
+    finally:
+        if file is not None:
+            await file.close()
 
 
 @router.patch("/session/{session_id}/yolo")
@@ -686,7 +806,7 @@ async def submit_input(
         body = SubmitRequest(**payload)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors()) from exc
-    await _enforce_gated_model_quota(user, agent_session)
+    await _enforce_premium_model_quota(user, agent_session)
     success = await session_manager.submit_user_input(body.session_id, body.text)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
@@ -738,12 +858,12 @@ async def chat_sse(
     text = body.get("text")
     approvals = body.get("approvals")
 
-    # Gate user-message sends against the daily gated-model quota. Approvals are
+    # Gate user-message sends against the daily premium-model quota. Approvals are
     # continuations of an in-progress turn — the session was already charged
     # on its first message, so we skip the gate there.
     if text is not None and not approvals:
         try:
-            await _enforce_gated_model_quota(user, agent_session)
+            await _enforce_premium_model_quota(user, agent_session)
         except HTTPException:
             broadcaster.unsubscribe(sub_id)
             raise

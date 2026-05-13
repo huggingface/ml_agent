@@ -631,10 +631,11 @@ class HfJobsTool:
                         "formatted": (
                             f"Hugging Face Jobs rejected this run because the "
                             f"namespace `{self.namespace}` has no available credits. "
-                            "Tell the user to add credits at "
-                            "https://huggingface.co/settings/billing — once topped up, "
-                            "re-run this same job. (Switching namespaces is fine if "
-                            "another wallet has credits.)"
+                            "HF Jobs are billed with namespace credits, which are "
+                            "separate from HF Pro membership. Tell the user to add "
+                            "credits at https://huggingface.co/settings/billing — "
+                            "once topped up, re-run this same job. (Switching "
+                            "namespaces is fine if another wallet has credits.)"
                         ),
                         "totalResults": 0,
                         "resultsShared": 0,
@@ -1111,11 +1112,14 @@ HF_JOBS_TOOL_SPEC = {
         "- You MUST have called github_find_examples + github_read_file to find a working reference implementation. "
         "Scripts based on your internal knowledge WILL use outdated APIs and fail.\n"
         "- You MUST have validated dataset format via hf_inspect_dataset or hub_repo_details.\n"
+        "- If the job runs on GPU, or the script loads a model, uses CUDA, bf16/fp16, quantization, flash attention, "
+        "or torch.compile, you MUST create a GPU sandbox with sandbox_create first, run a tiny smoke test there, "
+        "and fix failures before submitting. If skipped, state why before calling hf_jobs.\n"
         "- Training config MUST include push_to_hub=True and hub_model_id. "
         "Job storage is EPHEMERAL — all files are deleted when the job ends. Without push_to_hub, trained models are lost permanently.\n"
         "- Include trackio monitoring and provide the dashboard URL to the user. "
         "When the script uses report_to='trackio', also pass `trackio_space_id` "
-        "(e.g. '<username>/mlintern-<8char>') and `trackio_project` as tool args — "
+        "(e.g. '<username>/ml-intern-<8char>') and `trackio_project` as tool args — "
         "they are injected as TRACKIO_SPACE_ID/TRACKIO_PROJECT env vars and let the UI embed the live dashboard.\n\n"
         "BATCH/ABLATION JOBS: Submit ONE job first. Check logs to confirm it starts training successfully. "
         "Only then submit the remaining jobs. Never submit all at once — if there's a bug, all jobs fail.\n\n"
@@ -1156,8 +1160,9 @@ HF_JOBS_TOOL_SPEC = {
             "script": {
                 "type": "string",
                 "description": (
-                    "Python code or sandbox file path (e.g. '/app/train.py') or URL. "
+                    "Python code, sandbox file path (e.g. '/app/train.py', './train.py', or bare 'train.py'), or URL. "
                     "Triggers Python mode. For ML training: base this on a working example found via github_find_examples, not on internal knowledge. "
+                    "For GPU/model-loading training scripts, smoke-test in a GPU sandbox before submission. "
                     "Mutually exclusive with 'command'."
                 ),
             },
@@ -1203,7 +1208,7 @@ HF_JOBS_TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Optional. The HF Space hosting the trackio dashboard for this run "
-                    "(e.g. '<username>/mlintern-<8char>', under YOUR HF namespace). "
+                    "(e.g. '<username>/ml-intern-<8char>', under YOUR HF namespace). "
                     "Injected as TRACKIO_SPACE_ID env var and used by the UI to embed "
                     "the live dashboard. Set this whenever the script uses "
                     "report_to='trackio'. The Space is auto-created and seeded with the "
