@@ -223,6 +223,23 @@ def _resolve_llm_params(
                 params["output_config"] = {"effort": level}
         return params
 
+    if model_name.startswith("azure/"):
+        # LiteLLM routes ``azure/<deployment-name>`` through the Azure OpenAI
+        # adapter. Credentials are read from standard env vars:
+        #   AZURE_API_KEY      — your Azure AI Foundry API key
+        #   AZURE_API_BASE     — your endpoint URL, e.g.
+        #                        https://<resource>.openai.azure.com/
+        #   AZURE_API_VERSION  — API version, e.g. 2024-02-01
+        import os
+        params: dict = {"model": model_name}
+        if api_base := os.environ.get("AZURE_API_BASE"):
+            params["api_base"] = api_base
+        if api_key := os.environ.get("AZURE_API_KEY"):
+            params["api_key"] = api_key
+        if api_version := os.environ.get("AZURE_API_VERSION"):
+            params["api_version"] = api_version
+        return params
+
     if model_name.startswith("bedrock/"):
         # LiteLLM routes ``bedrock/...`` through the Converse adapter, which
         # picks up AWS credentials from the standard env vars
