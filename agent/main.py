@@ -31,7 +31,7 @@ from agent.core.local_models import is_local_model_id
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.messaging.gateway import NotificationGateway
-from agent.utils.reliability_checks import check_training_script_save_pattern
+from agent.utils.reliability_checks import format_finding, run_preflight_checks
 from agent.utils.terminal_display import (
     get_console,
     print_approval_header,
@@ -562,10 +562,6 @@ async def event_listener(
                             if script_args:
                                 print(f"Script args: {' '.join(script_args)}")
 
-                            # Run reliability checks on the full script (not truncated)
-                            check_message = check_training_script_save_pattern(script)
-                            if check_message:
-                                print(check_message)
                         elif command:
                             # Docker mode
                             image = arguments.get("image", "python:3.12")
@@ -592,6 +588,9 @@ async def event_listener(
 
                         if schedule:
                             print(f"Schedule: {schedule}")
+
+                        for finding in run_preflight_checks(arguments):
+                            print(format_finding(finding))
 
                     elif tool_name == "hf_private_repos":
                         # Handle private repo operations
