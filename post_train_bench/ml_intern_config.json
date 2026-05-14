@@ -1,0 +1,31 @@
+{
+  "model_name": "${ML_INTERN_AGENT_MODEL:-anthropic/claude-opus-4-6}",
+  "save_sessions": true,
+  "upload_sessions": false,
+  "auto_save_interval": 1,
+  "heartbeat_interval_s": 60,
+  "yolo_mode": true,
+  "max_iterations": 300,
+  "reasoning_effort": "max",
+  "confirm_cpu_jobs": false,
+  "auto_file_upload": false,
+  "system_prompt_file": "/ml-intern-src/post_train_bench/system_prompt.yaml",
+  "disabled_tools": [
+    "hf_jobs",
+    "hf_repo_files",
+    "hf_repo_git",
+    "notify",
+    "sandbox_create"
+  ],
+  "messaging": {
+    "enabled": false,
+    "auto_event_types": ["approval_required", "error", "turn_complete"],
+    "destinations": {}
+  },
+  "mcpServers": {
+    "hf-mcp-server": {
+      "transport": "http",
+      "url": "https://huggingface.co/mcp?login"
+    }
+  }
+}

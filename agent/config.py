@@ -27,6 +27,7 @@ class Config(BaseModel):
     mcpServers: dict[str, MCPServerConfig] = {}
     save_sessions: bool = True
     session_dataset_repo: str = "smolagents/ml-intern-sessions"
+    upload_sessions: bool = True
     # Per-user private dataset that mirrors each session in Claude Code JSONL
     # format so the HF Agent Trace Viewer auto-renders it
     # (https://huggingface.co/changelog/agent-trace-viewer). Created private
@@ -42,6 +43,10 @@ class Config(BaseModel):
     heartbeat_interval_s: int = 60
     yolo_mode: bool = False  # Auto-approve all tool calls without confirmation
     max_iterations: int = 300  # Max LLM calls per agent turn (-1 = unlimited)
+    # Bare filenames resolve under agent/prompts/. Absolute paths and relative
+    # paths with directory components are used exactly as configured.
+    system_prompt_file: str = "system_prompt_v3.yaml"
+    disabled_tools: list[str] = []
 
     # Permission control parameters
     confirm_cpu_jobs: bool = True

@@ -71,5 +71,6 @@ datasets/
 models/
 checkpoint-*/
 runs/
+post_train_bench/runs/
 wandb/
 frontend/tsconfig.tsbuildinfo

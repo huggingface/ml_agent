@@ -70,6 +70,15 @@ def test_timeout_is_transient_but_not_rate_limit():
     assert not _is_rate_limit_error(err)
 
 
+def test_anthropic_overloaded_midstream_is_transient():
+    err = Exception(
+        "litellm.exceptions.MidStreamFallbackError: "
+        "litellm.InternalServerError: AnthropicError - Overloaded"
+    )
+    assert _is_transient_error(err)
+    assert not _is_rate_limit_error(err)
+
+
 # ── retry schedule selection ────────────────────────────────────────────
 
 

@@ -300,3 +300,126 @@ async def test_streaming_call_skips_chunk_rebuild_for_non_anthropic(monkeypatch)
     assert result.content == "done"
     assert result.thinking_blocks is None
     assert result.reasoning_content is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_retry_resets_after_emitted_assistant_chunk(monkeypatch):
+    calls = 0
+
+    async def failing_stream():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="stale", tool_calls=None),
+                    finish_reason=None,
+                )
+            ],
+        )
+        raise Exception("litellm.InternalServerError: AnthropicError - Overloaded")
+
+    async def success_stream():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="fresh", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+        )
+        yield SimpleNamespace(choices=[], usage=SimpleNamespace(total_tokens=3))
+
+    async def fake_acompletion(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return failing_stream()
+        return success_stream()
+
+    events = []
+
+    async def send_event(event):
+        events.append(event)
+
+    session = SimpleNamespace(
+        config=SimpleNamespace(model_name="anthropic/claude-opus-4-6"),
+        is_cancelled=False,
+        send_event=send_event,
+    )
+    monkeypatch.setattr(agent_loop, "acompletion", fake_acompletion)
+    monkeypatch.setattr(agent_loop, "_retry_delay_with_jitter", lambda _delay: 0)
+
+    result = await _call_llm_streaming(
+        session,
+        messages=[Message(role="user", content="hi")],
+        tools=[],
+        llm_params={"model": "anthropic/claude-opus-4-6"},
+    )
+
+    assert result.content == "fresh"
+    assert calls == 2
+    event_types = [event.event_type for event in events]
+    assert event_types.count("assistant_stream_reset") == 1
+    assert event_types.index("assistant_stream_reset") < event_types.index("tool_log")
+    chunk_contents = [
+        event.data["content"]
+        for event in events
+        if event.event_type == "assistant_chunk"
+    ]
+    assert chunk_contents == ["stale", "fresh"]
+
+    reset = next(
+        event for event in events if event.event_type == "assistant_stream_reset"
+    )
+    assert reset.data == {
+        "attempt": 1,
+        "next_attempt": 2,
+        "max_attempts": agent_loop._MAX_LLM_RETRIES,
+        "reason": "transient_error_retry",
+        "delay_s": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_streaming_retry_does_not_reset_before_assistant_chunk(monkeypatch):
+    calls = 0
+
+    async def success_stream():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="fresh", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+        )
+
+    async def fake_acompletion(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise Exception("litellm.InternalServerError: AnthropicError - Overloaded")
+        return success_stream()
+
+    events = []
+
+    async def send_event(event):
+        events.append(event)
+
+    session = SimpleNamespace(
+        config=SimpleNamespace(model_name="anthropic/claude-opus-4-6"),
+        is_cancelled=False,
+        send_event=send_event,
+    )
+    monkeypatch.setattr(agent_loop, "acompletion", fake_acompletion)
+    monkeypatch.setattr(agent_loop, "_retry_delay_with_jitter", lambda _delay: 0)
+
+    result = await _call_llm_streaming(
+        session,
+        messages=[Message(role="user", content="hi")],
+        tools=[],
+        llm_params={"model": "anthropic/claude-opus-4-6"},
+    )
+
+    assert result.content == "fresh"
+    assert calls == 2
+    assert "assistant_stream_reset" not in [event.event_type for event in events]

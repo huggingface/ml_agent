@@ -126,6 +126,32 @@ def test_slack_user_defaults_can_be_disabled(tmp_path, monkeypatch):
     assert config.messaging.destinations == {}
 
 
+def test_post_train_bench_config_knobs_load(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    prompt_path = tmp_path / "system_prompt_posttrain.yaml"
+    prompt_path.write_text("system_prompt: test\n", encoding="utf-8")
+    _write_json(
+        config_path,
+        {
+            "model_name": "${ML_INTERN_AGENT_MODEL}",
+            "save_sessions": True,
+            "upload_sessions": False,
+            "system_prompt_file": str(prompt_path),
+            "disabled_tools": ["hf_jobs", "notify"],
+            "mcpServers": {},
+        },
+    )
+    monkeypatch.setenv("ML_INTERN_AGENT_MODEL", "anthropic/claude-opus-4-6")
+
+    config = config_module.load_config(str(config_path))
+
+    assert config.model_name == "anthropic/claude-opus-4-6"
+    assert config.save_sessions is True
+    assert config.upload_sessions is False
+    assert config.system_prompt_file == str(prompt_path)
+    assert config.disabled_tools == ["hf_jobs", "notify"]
+
+
 def test_tool_runtime_defaults_to_local(tmp_path):
     config_path = tmp_path / "config.json"
     _write_json(config_path, {"model_name": "moonshotai/Kimi-K2.6"})

@@ -5,6 +5,7 @@ Main agent implementation with integrated tool system and MCP support
 import asyncio
 import json
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -403,9 +404,9 @@ async def _record_manual_approved_spend_if_needed(
 
 
 # -- LLM retry constants --------------------------------------------------
-_MAX_LLM_RETRIES = 3
-_LLM_RETRY_DELAYS = [5, 15, 30]  # seconds between retries
-_LLM_RATE_LIMIT_RETRY_DELAYS = [30, 60]  # exceed Bedrock's ~60s TPM bucket window
+_MAX_LLM_RETRIES = 8
+_LLM_RETRY_DELAYS = [15, 30, 60, 120, 300, 600, 600]  # seconds between retries
+_LLM_RATE_LIMIT_RETRY_DELAYS = [60, 120, 300, 600, 600, 600, 600]
 
 
 def _is_rate_limit_error(error: Exception) -> bool:
@@ -453,6 +454,12 @@ def _retry_delay_for(error: Exception, attempt_index: int) -> int | None:
     if attempt_index >= len(schedule):
         return None
     return schedule[attempt_index]
+
+
+def _retry_delay_with_jitter(delay: int) -> int:
+    """Add bounded jitter to avoid synchronized retry bursts."""
+    jitter = random.randint(0, max(1, min(60, delay // 5)))
+    return delay + jitter
 
 
 def _is_transient_error(error: Exception) -> bool:
@@ -852,12 +859,39 @@ async def _call_llm_streaming(
     session: Session, messages, tools, llm_params
 ) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
-    response = None
     _healed_effort = False  # one-shot safety net per call
     _healed_thinking_signature = False
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
+
+    async def _send_stream_reset_if_needed(
+        emitted_assistant_chunk: bool,
+        *,
+        attempt_index: int,
+        delay_s: int | None = None,
+        reason: str,
+    ) -> None:
+        if not emitted_assistant_chunk:
+            return
+        data = {
+            "attempt": attempt_index + 1,
+            "next_attempt": attempt_index + 2,
+            "max_attempts": _MAX_LLM_RETRIES,
+            "reason": reason,
+        }
+        if delay_s is not None:
+            data["delay_s"] = delay_s
+        await session.send_event(Event(event_type="assistant_stream_reset", data=data))
+
     for _llm_attempt in range(_MAX_LLM_RETRIES):
+        full_content = ""
+        emitted_assistant_chunk = False
+        tool_calls_acc: dict[int, dict] = {}
+        token_count = 0
+        finish_reason = None
+        final_usage_chunk = None
+        chunks = []
+        should_replay_thinking = _should_replay_thinking_state(llm_params.get("model"))
         try:
             response = await acompletion(
                 messages=messages,
@@ -868,7 +902,90 @@ async def _call_llm_streaming(
                 timeout=600,
                 **llm_params,
             )
-            break
+
+            async for chunk in response:
+                chunks.append(chunk)
+                if session.is_cancelled:
+                    tool_calls_acc.clear()
+                    break
+
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        token_count = chunk.usage.total_tokens
+                        final_usage_chunk = chunk
+                    continue
+
+                delta = choice.delta
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+                if delta.content:
+                    full_content += delta.content
+                    emitted_assistant_chunk = True
+                    await session.send_event(
+                        Event(
+                            event_type="assistant_chunk",
+                            data={"content": delta.content},
+                        )
+                    )
+
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc_delta.id:
+                            tool_calls_acc[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_calls_acc[idx]["function"]["name"] += (
+                                    tc_delta.function.name
+                                )
+                            if tc_delta.function.arguments:
+                                tool_calls_acc[idx]["function"]["arguments"] += (
+                                    tc_delta.function.arguments
+                                )
+
+                if hasattr(chunk, "usage") and chunk.usage:
+                    token_count = chunk.usage.total_tokens
+                    final_usage_chunk = chunk
+
+            usage = await telemetry.record_llm_call(
+                session,
+                model=llm_params.get("model", session.config.model_name),
+                response=final_usage_chunk,
+                latency_ms=int((time.monotonic() - t_start) * 1000),
+                finish_reason=finish_reason,
+            )
+            thinking_blocks = None
+            reasoning_content = None
+            if chunks and should_replay_thinking:
+                try:
+                    rebuilt = stream_chunk_builder(chunks, messages=messages)
+                    if rebuilt and getattr(rebuilt, "choices", None):
+                        rebuilt_msg = rebuilt.choices[0].message
+                        thinking_blocks, reasoning_content = _extract_thinking_state(
+                            rebuilt_msg
+                        )
+                except Exception:
+                    logger.debug(
+                        "Failed to rebuild streaming thinking state", exc_info=True
+                    )
+
+            return LLMResult(
+                content=full_content or None,
+                tool_calls_acc=tool_calls_acc,
+                token_count=token_count,
+                finish_reason=finish_reason,
+                usage=usage,
+                thinking_blocks=thinking_blocks,
+                reasoning_content=reasoning_content,
+            )
         except ContextWindowExceededError:
             raise
         except Exception as e:
@@ -878,6 +995,11 @@ async def _call_llm_streaming(
                 _healed_effort = True
                 llm_params = await _heal_effort_and_rebuild_params(
                     session, e, llm_params
+                )
+                await _send_stream_reset_if_needed(
+                    emitted_assistant_chunk,
+                    attempt_index=_llm_attempt,
+                    reason="effort_config_retry",
                 )
                 await session.send_event(
                     Event(
@@ -896,114 +1018,40 @@ async def _call_llm_streaming(
                 already_healed=_healed_thinking_signature,
             ):
                 _healed_thinking_signature = True
+                await _send_stream_reset_if_needed(
+                    emitted_assistant_chunk,
+                    attempt_index=_llm_attempt,
+                    reason="thinking_signature_retry",
+                )
                 continue
             _delay = _retry_delay_for(e, _llm_attempt)
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
+                _sleep_delay = _retry_delay_with_jitter(_delay)
                 logger.warning(
-                    "Transient LLM error (attempt %d/%d): %s — retrying in %ds",
+                    "Transient LLM streaming error (attempt %d/%d): %s — retrying in %ds",
                     _llm_attempt + 1,
                     _MAX_LLM_RETRIES,
                     e,
-                    _delay,
+                    _sleep_delay,
+                )
+                await _send_stream_reset_if_needed(
+                    emitted_assistant_chunk,
+                    attempt_index=_llm_attempt,
+                    delay_s=_sleep_delay,
+                    reason="transient_error_retry",
                 )
                 await session.send_event(
                     Event(
                         event_type="tool_log",
                         data={
                             "tool": "system",
-                            "log": f"LLM connection error, retrying in {_delay}s...",
+                            "log": f"LLM stream error, retrying in {_sleep_delay}s...",
                         },
                     )
                 )
-                await asyncio.sleep(_delay)
+                await asyncio.sleep(_sleep_delay)
                 continue
             raise
-
-    full_content = ""
-    tool_calls_acc: dict[int, dict] = {}
-    token_count = 0
-    finish_reason = None
-    final_usage_chunk = None
-    chunks = []
-    should_replay_thinking = _should_replay_thinking_state(llm_params.get("model"))
-
-    async for chunk in response:
-        chunks.append(chunk)
-        if session.is_cancelled:
-            tool_calls_acc.clear()
-            break
-
-        choice = chunk.choices[0] if chunk.choices else None
-        if not choice:
-            if hasattr(chunk, "usage") and chunk.usage:
-                token_count = chunk.usage.total_tokens
-                final_usage_chunk = chunk
-            continue
-
-        delta = choice.delta
-        if choice.finish_reason:
-            finish_reason = choice.finish_reason
-
-        if delta.content:
-            full_content += delta.content
-            await session.send_event(
-                Event(event_type="assistant_chunk", data={"content": delta.content})
-            )
-
-        if delta.tool_calls:
-            for tc_delta in delta.tool_calls:
-                idx = tc_delta.index
-                if idx not in tool_calls_acc:
-                    tool_calls_acc[idx] = {
-                        "id": "",
-                        "type": "function",
-                        "function": {"name": "", "arguments": ""},
-                    }
-                if tc_delta.id:
-                    tool_calls_acc[idx]["id"] = tc_delta.id
-                if tc_delta.function:
-                    if tc_delta.function.name:
-                        tool_calls_acc[idx]["function"]["name"] += (
-                            tc_delta.function.name
-                        )
-                    if tc_delta.function.arguments:
-                        tool_calls_acc[idx]["function"]["arguments"] += (
-                            tc_delta.function.arguments
-                        )
-
-        if hasattr(chunk, "usage") and chunk.usage:
-            token_count = chunk.usage.total_tokens
-            final_usage_chunk = chunk
-
-    usage = await telemetry.record_llm_call(
-        session,
-        model=llm_params.get("model", session.config.model_name),
-        response=final_usage_chunk,
-        latency_ms=int((time.monotonic() - t_start) * 1000),
-        finish_reason=finish_reason,
-    )
-    thinking_blocks = None
-    reasoning_content = None
-    if chunks and should_replay_thinking:
-        try:
-            rebuilt = stream_chunk_builder(chunks, messages=messages)
-            if rebuilt and getattr(rebuilt, "choices", None):
-                rebuilt_msg = rebuilt.choices[0].message
-                thinking_blocks, reasoning_content = _extract_thinking_state(
-                    rebuilt_msg
-                )
-        except Exception:
-            logger.debug("Failed to rebuild streaming thinking state", exc_info=True)
-
-    return LLMResult(
-        content=full_content or None,
-        tool_calls_acc=tool_calls_acc,
-        token_count=token_count,
-        finish_reason=finish_reason,
-        usage=usage,
-        thinking_blocks=thinking_blocks,
-        reasoning_content=reasoning_content,
-    )
 
 
 async def _call_llm_non_streaming(
@@ -1056,23 +1104,24 @@ async def _call_llm_non_streaming(
                 continue
             _delay = _retry_delay_for(e, _llm_attempt)
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
+                _sleep_delay = _retry_delay_with_jitter(_delay)
                 logger.warning(
                     "Transient LLM error (attempt %d/%d): %s — retrying in %ds",
                     _llm_attempt + 1,
                     _MAX_LLM_RETRIES,
                     e,
-                    _delay,
+                    _sleep_delay,
                 )
                 await session.send_event(
                     Event(
                         event_type="tool_log",
                         data={
                             "tool": "system",
-                            "log": f"LLM connection error, retrying in {_delay}s...",
+                            "log": f"LLM connection error, retrying in {_sleep_delay}s...",
                         },
                     )
                 )
-                await asyncio.sleep(_delay)
+                await asyncio.sleep(_sleep_delay)
                 continue
             raise
 
@@ -2139,7 +2188,7 @@ async def submission_loop(
     # Retry any failed uploads from previous sessions (fire-and-forget).
     # Includes the personal trace repo when enabled so a session that failed
     # to publish to the user's HF dataset gets a fresh attempt on next run.
-    if config and config.save_sessions:
+    if config and config.save_sessions and config.upload_sessions:
         Session.retry_failed_uploads_detached(
             directory=str(DEFAULT_SESSION_LOG_DIR),
             repo_id=config.session_dataset_repo,

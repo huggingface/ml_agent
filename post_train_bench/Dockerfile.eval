@@ -1,0 +1,41 @@
+FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+COPY post_train_bench/requirements-direct.txt /opt/requirements-direct.txt
+
+RUN chmod 1777 /tmp && \
+    apt-get update && apt-get install -y \
+        software-properties-common git wget curl build-essential \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y \
+        python3.11 python3.11-dev python3.11-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+RUN uv pip install --system --no-cache torch torchvision --index-url https://download.pytorch.org/whl/cu128
+RUN uv pip install --system --no-cache vllm==0.11.0
+RUN uv pip install --system --no-cache -r /opt/requirements-direct.txt
+RUN uv pip install --system --no-cache wheel setuptools einops psutil && \
+    uv pip install --system --no-cache flash_attn==2.8.3 --no-build-isolation
+
+RUN mkdir -p /opt && \
+    cd /opt && \
+    git clone https://github.com/UKGovernmentBEIS/inspect_evals.git && \
+    cd inspect_evals && \
+    git checkout 06001a83e6d7c709c2ede0570dce7f1031a0bad8 && \
+    uv pip install --system --no-cache .
+
+RUN mkdir -p /opt && \
+    cd /opt && \
+    git clone https://github.com/rank-and-file/inspect_ai_vllm_stdout.git && \
+    cd inspect_ai_vllm_stdout && \
+    uv pip install --system --no-cache .
+
+ENV NO_PROXY="localhost,127.0.0.1"
+ENV no_proxy="localhost,127.0.0.1"

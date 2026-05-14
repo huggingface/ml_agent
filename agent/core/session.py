@@ -114,6 +114,7 @@ class Session:
             compact_size=0.1,
             untouched_messages=5,
             tool_specs=tool_specs,
+            prompt_file_suffix=config.system_prompt_file,
             hf_token=hf_token,
             local_mode=local_mode,
         )
@@ -670,6 +671,10 @@ class Session:
         local_path = self.save_trajectory_local(upload_status="pending")
         if not local_path:
             return None
+
+        if not getattr(self.config, "upload_sessions", True):
+            self.update_local_save_status(local_path, "local-only")
+            return local_path
 
         self._spawn_uploader(
             "upload",

@@ -166,3 +166,18 @@ def test_web_search_is_registered_for_llm():
 
     assert "web_search" in specs
     assert specs["web_search"].parameters["required"] == ["query"]
+
+
+def test_disabled_tools_are_not_registered_for_llm():
+    tools = create_builtin_tools(
+        local_mode=True,
+        disabled_tools={"hf_jobs", "notify", "hf_repo_files", "hf_repo_git"},
+    )
+    specs = {tool.name: tool for tool in tools}
+
+    assert "bash" in specs
+    assert "web_search" in specs
+    assert "hf_jobs" not in specs
+    assert "notify" not in specs
+    assert "hf_repo_files" not in specs
+    assert "hf_repo_git" not in specs
