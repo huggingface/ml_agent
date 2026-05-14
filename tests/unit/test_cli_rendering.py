@@ -100,9 +100,10 @@ def test_subagent_display_does_not_spawn_background_redraw(monkeypatch):
 def test_cli_forwards_model_flag_to_interactive_main(monkeypatch):
     seen: dict[str, object] = {}
 
-    async def fake_main(*, model=None, sandbox_tools=False):
+    async def fake_main(*, model=None, sandbox_tools=False, config_path=None):
         seen["model"] = model
         seen["sandbox_tools"] = sandbox_tools
+        seen["config_path"] = config_path
 
     monkeypatch.setattr(sys, "argv", ["ml-intern", "--model", "openai/gpt-5.5"])
     monkeypatch.setattr(main_mod, "main", fake_main)
@@ -111,21 +112,27 @@ def test_cli_forwards_model_flag_to_interactive_main(monkeypatch):
 
     assert seen["model"] == "openai/gpt-5.5"
     assert seen["sandbox_tools"] is False
+    assert seen["config_path"] == str(main_mod.CLI_CONFIG_PATH)
 
 
 def test_cli_forwards_sandbox_flag_to_interactive_main(monkeypatch):
     seen: dict[str, object] = {}
 
-    async def fake_main(*, model=None, sandbox_tools=False):
+    async def fake_main(*, model=None, sandbox_tools=False, config_path=None):
         seen["model"] = model
         seen["sandbox_tools"] = sandbox_tools
+        seen["config_path"] = config_path
 
     monkeypatch.setattr(sys, "argv", ["ml-intern", "--sandbox-tools"])
     monkeypatch.setattr(main_mod, "main", fake_main)
 
     main_mod.cli()
 
-    assert seen == {"model": None, "sandbox_tools": True}
+    assert seen == {
+        "model": None,
+        "sandbox_tools": True,
+        "config_path": str(main_mod.CLI_CONFIG_PATH),
+    }
 
 
 def test_cli_forwards_sandbox_flag_to_headless_main(monkeypatch):
@@ -138,6 +145,7 @@ def test_cli_forwards_sandbox_flag_to_headless_main(monkeypatch):
         max_iterations=None,
         stream=True,
         sandbox_tools=False,
+        config_path=None,
     ):
         seen.update(
             {
@@ -146,6 +154,7 @@ def test_cli_forwards_sandbox_flag_to_headless_main(monkeypatch):
                 "max_iterations": max_iterations,
                 "stream": stream,
                 "sandbox_tools": sandbox_tools,
+                "config_path": config_path,
             }
         )
 
@@ -164,6 +173,7 @@ def test_cli_forwards_sandbox_flag_to_headless_main(monkeypatch):
         "max_iterations": None,
         "stream": False,
         "sandbox_tools": True,
+        "config_path": str(main_mod.CLI_CONFIG_PATH),
     }
 
 
@@ -286,10 +296,18 @@ async def test_interactive_main_passes_sandbox_runtime_to_tool_router(monkeypatc
             pass
 
     class FakeToolRouter:
-        def __init__(self, mcp_servers, *, hf_token=None, local_mode=True):
+        def __init__(
+            self,
+            mcp_servers,
+            *,
+            hf_token=None,
+            local_mode=True,
+            disabled_tools=None,
+        ):
             seen["mcp_servers"] = mcp_servers
             seen["hf_token"] = hf_token
             seen["local_mode"] = local_mode
+            seen["disabled_tools"] = disabled_tools
             raise StopAfterToolRouter
 
     from agent.core import hf_router_catalog
@@ -308,6 +326,7 @@ async def test_interactive_main_passes_sandbox_runtime_to_tool_router(monkeypatc
             mcpServers={"server": object()},
             messaging=SimpleNamespace(default_auto_destinations=lambda: []),
             tool_runtime="local",
+            disabled_tools=[],
         ),
     )
     monkeypatch.setattr(main_mod, "NotificationGateway", FakeGateway)
@@ -318,6 +337,7 @@ async def test_interactive_main_passes_sandbox_runtime_to_tool_router(monkeypatc
 
     assert seen["hf_token"] == "hf-token"
     assert seen["local_mode"] is False
+    assert seen["disabled_tools"] == []
 
 
 @pytest.mark.asyncio
