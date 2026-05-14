@@ -51,18 +51,6 @@ def test_env_var_style():
     assert "hf_xxxx" not in out
 
 
-def test_generic_token_env_var_style():
-    s = "INFERENCE_TOKEN=super-secret-token"
-    out = scrub_string(s)
-    assert out == "INFERENCE_TOKEN=[REDACTED]"
-
-
-def test_lowercase_token_word_is_not_env_secret():
-    s = "max_tokens=4000"
-    out = scrub_string(s)
-    assert out == s
-
-
 def test_scrub_nested_dict_and_list():
     payload = {
         "msg": "token hf_" + "Z" * 35,

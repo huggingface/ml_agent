@@ -43,6 +43,8 @@ class Config(BaseModel):
     heartbeat_interval_s: int = 60
     yolo_mode: bool = False  # Auto-approve all tool calls without confirmation
     max_iterations: int = 300  # Max LLM calls per agent turn (-1 = unlimited)
+    # Bare filenames resolve under agent/prompts/. Absolute paths and relative
+    # paths with directory components are used exactly as configured.
     system_prompt_file: str = "system_prompt_v3.yaml"
     disabled_tools: list[str] = []
 

@@ -238,7 +238,11 @@ class ContextManager:
         hf_token: str | None = None,
         local_mode: bool = False,
     ):
-        """Load and render the system prompt from YAML file with Jinja2"""
+        """Load and render the system prompt YAML file with Jinja2.
+
+        Bare prompt filenames are looked up under ``agent/prompts/``. Absolute
+        paths and relative paths with directory components are explicit paths.
+        """
         configured_path = Path(prompt_file_suffix)
         if configured_path.is_absolute() or configured_path.parent != Path("."):
             prompt_file = configured_path

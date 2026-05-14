@@ -863,8 +863,29 @@ async def _call_llm_streaming(
     _healed_thinking_signature = False
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
+
+    async def _send_stream_reset_if_needed(
+        emitted_assistant_chunk: bool,
+        *,
+        attempt_index: int,
+        delay_s: int | None = None,
+        reason: str,
+    ) -> None:
+        if not emitted_assistant_chunk:
+            return
+        data = {
+            "attempt": attempt_index + 1,
+            "next_attempt": attempt_index + 2,
+            "max_attempts": _MAX_LLM_RETRIES,
+            "reason": reason,
+        }
+        if delay_s is not None:
+            data["delay_s"] = delay_s
+        await session.send_event(Event(event_type="assistant_stream_reset", data=data))
+
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         full_content = ""
+        emitted_assistant_chunk = False
         tool_calls_acc: dict[int, dict] = {}
         token_count = 0
         finish_reason = None
@@ -901,6 +922,7 @@ async def _call_llm_streaming(
 
                 if delta.content:
                     full_content += delta.content
+                    emitted_assistant_chunk = True
                     await session.send_event(
                         Event(
                             event_type="assistant_chunk",
@@ -974,6 +996,11 @@ async def _call_llm_streaming(
                 llm_params = await _heal_effort_and_rebuild_params(
                     session, e, llm_params
                 )
+                await _send_stream_reset_if_needed(
+                    emitted_assistant_chunk,
+                    attempt_index=_llm_attempt,
+                    reason="effort_config_retry",
+                )
                 await session.send_event(
                     Event(
                         event_type="tool_log",
@@ -991,6 +1018,11 @@ async def _call_llm_streaming(
                 already_healed=_healed_thinking_signature,
             ):
                 _healed_thinking_signature = True
+                await _send_stream_reset_if_needed(
+                    emitted_assistant_chunk,
+                    attempt_index=_llm_attempt,
+                    reason="thinking_signature_retry",
+                )
                 continue
             _delay = _retry_delay_for(e, _llm_attempt)
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
@@ -1001,6 +1033,12 @@ async def _call_llm_streaming(
                     _MAX_LLM_RETRIES,
                     e,
                     _sleep_delay,
+                )
+                await _send_stream_reset_if_needed(
+                    emitted_assistant_chunk,
+                    attempt_index=_llm_attempt,
+                    delay_s=_sleep_delay,
+                    reason="transient_error_retry",
                 )
                 await session.send_event(
                     Event(

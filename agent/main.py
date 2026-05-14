@@ -416,6 +416,9 @@ async def event_listener(
                     # at the end of the whole response.
                     shimmer.stop()
                     await stream_buf.flush_ready(cancel_event=_cancel_event())
+            elif event.event_type == "assistant_stream_reset":
+                shimmer.stop()
+                stream_buf.discard()
             elif event.event_type == "assistant_stream_end":
                 shimmer.stop()
                 await stream_buf.finish(cancel_event=_cancel_event())
@@ -1559,6 +1562,8 @@ async def headless_main(
                 if content:
                     stream_buf.add_chunk(content)
                     await stream_buf.flush_ready(instant=True)
+            elif event.event_type == "assistant_stream_reset":
+                stream_buf.discard()
             elif event.event_type == "assistant_stream_end":
                 await stream_buf.finish(instant=True)
             elif event.event_type == "assistant_message":

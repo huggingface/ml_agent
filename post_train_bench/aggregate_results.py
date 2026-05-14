@@ -146,7 +146,10 @@ def load_expected_cells(
     expected = set()
     model_by_safe_name = {}
     if not matrix_path.exists():
-        return expected, model_by_safe_name
+        raise FileNotFoundError(
+            f"PTB aggregation requires {matrix_path}; matrix.jsonl is needed "
+            "to determine expected benchmark/model cells."
+        )
 
     with matrix_path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -256,7 +259,7 @@ def summarize_run(
     summaries = []
     metadata = load_json(run_root / "run_metadata.json")
     for method in sorted(set(cells_by_method) | set(status_counts) | set(task_counts)):
-        method_expected_cells = expected_cells or set(cells_by_method[method])
+        method_expected_cells = expected_cells
         cell_scores = {}
         fallback_cells = []
         for benchmark, model in sorted(method_expected_cells):

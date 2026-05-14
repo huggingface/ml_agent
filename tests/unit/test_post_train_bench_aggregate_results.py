@@ -108,6 +108,21 @@ def test_aggregate_fills_missing_expected_cells_from_baseline(tmp_path):
     assert summary["fallback_cells"][0]["reason"] == "missing_run"
 
 
+def test_aggregate_requires_matrix_jsonl(tmp_path):
+    factors = {"gsm8k": 1.0}
+    run_root = tmp_path / "run1"
+    write_json(run_root / "run_metadata.json", {"run_id": "run1"})
+    make_task(run_root, "method", "gsm8k_Qwen_Qwen3-1.7B-Base_0", "clean", 0.8)
+
+    with pytest.raises(FileNotFoundError, match="matrix.jsonl"):
+        aggregate_results.summarize_run(
+            run_root,
+            factors,
+            "accuracy",
+            {"Qwen3-1.7B-Base": {"gsm8k": 0.1}},
+        )
+
+
 def test_aggregate_reports_multi_run_variance(tmp_path):
     summaries = [
         {"method": "method", "weighted_score": 0.2},

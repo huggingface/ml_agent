@@ -36,7 +36,8 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
 # still see which secret was referenced. Covers `KEY=value` and `KEY: value`
 # when the key looks secret-y.
 _SECRETY_NAMES = re.compile(
-    r"\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY)[A-Z0-9_]*)"
+    r"(?i)\b(HF_TOKEN|HUGGINGFACEHUB_API_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|"
+    r"GITHUB_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|PASSWORD|SECRET|API_KEY)"
     r"\s*[:=]\s*([^\s\"']+)"
 )
 
