@@ -53,7 +53,7 @@ Environment:
                                Prompt rendering agent. Default: claude.
   POST_TRAIN_BENCH_SLURM_TIME  Slurm walltime. Default: 01:00:00 for smoke,
                                03:00:00 for validation/model-validation,
-                               14:00:00 for full.
+                               18:00:00 for full.
   POST_TRAIN_BENCH_RUN_ID      Optional explicit run id. Overrides the default
                                YYYY-MM-DD_HH-MM-SS_{slurm_job_id} format.
   POST_TRAIN_BENCH_BASELINE_FINAL_MODEL
@@ -369,13 +369,13 @@ case "$MODE" in
         DEFAULT_SLURM_TIME="03:00:00"
         ;;
     rerun-failed-22112222)
-        DEFAULT_SLURM_TIME="14:00:00"
+        DEFAULT_SLURM_TIME="18:00:00"
         ;;
     rerun-overload-22112543)
-        DEFAULT_SLURM_TIME="14:00:00"
+        DEFAULT_SLURM_TIME="18:00:00"
         ;;
     full)
-        DEFAULT_SLURM_TIME="14:00:00"
+        DEFAULT_SLURM_TIME="18:00:00"
         ;;
 esac
 SLURM_TIME="${POST_TRAIN_BENCH_SLURM_TIME:-$DEFAULT_SLURM_TIME}"

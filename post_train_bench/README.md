@@ -223,7 +223,7 @@ To inspect the generated full matrix without submitting:
 bash post_train_bench/submit_eval_set.sh full --dry-run
 ```
 
-Full mode requests a 14-hour Slurm allocation by default. Set
+Full mode requests an 18-hour Slurm allocation by default. Set
 `POST_TRAIN_BENCH_SLURM_TIME` before submission if the cluster queue or a
 specific benchmark needs a different ceiling.
 

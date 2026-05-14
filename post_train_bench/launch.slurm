@@ -5,7 +5,7 @@
 #SBATCH --partition=hopper-prod
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
-#SBATCH --time=14:00:00
+#SBATCH --time=18:00:00
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
