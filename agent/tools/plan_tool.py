@@ -9,6 +9,13 @@ from .types import ToolResult
 _current_plan: List[Dict[str, str]] = []
 
 
+def reset_current_plan() -> None:
+    """Clear the CLI-visible in-memory plan."""
+    global _current_plan
+
+    _current_plan = []
+
+
 class PlanTool:
     """Tool for managing a list of todos with status tracking."""
 

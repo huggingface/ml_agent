@@ -184,9 +184,13 @@ class ContextManager:
         hf_token: str | None = None,
         local_mode: bool = False,
     ):
+        self.prompt_file_suffix = prompt_file_suffix
+        self.tool_specs = tool_specs or []
+        self.hf_token = hf_token
+        self.local_mode = local_mode
         self.system_prompt = self._load_system_prompt(
-            tool_specs or [],
-            prompt_file_suffix="system_prompt_v3.yaml",
+            self.tool_specs,
+            prompt_file_suffix=self.prompt_file_suffix,
             hf_token=hf_token,
             local_mode=local_mode,
         )
@@ -202,6 +206,30 @@ class ContextManager:
         self.untouched_messages = untouched_messages
         self.items: list[Message] = [Message(role="system", content=self.system_prompt)]
         self.on_message_added = None
+
+    def refresh_system_prompt(
+        self,
+        *,
+        tool_specs: list[dict[str, Any]] | None = None,
+        hf_token: str | None = None,
+        local_mode: bool | None = None,
+    ) -> Message:
+        """Re-render the system prompt and return it as a system message."""
+        if tool_specs is not None:
+            self.tool_specs = tool_specs
+        if hf_token is not None:
+            self.hf_token = hf_token
+        if local_mode is not None:
+            self.local_mode = local_mode
+        self.system_prompt = self._load_system_prompt(
+            self.tool_specs,
+            prompt_file_suffix=getattr(
+                self, "prompt_file_suffix", "system_prompt_v3.yaml"
+            ),
+            hf_token=getattr(self, "hf_token", None),
+            local_mode=getattr(self, "local_mode", False),
+        )
+        return Message(role="system", content=self.system_prompt)
 
     def _load_system_prompt(
         self,
