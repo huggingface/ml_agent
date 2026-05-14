@@ -1768,6 +1768,19 @@ class Handlers:
         await session.send_event(Event(event_type="undo_complete"))
 
     @staticmethod
+    async def new_conversation(session: Session, *, clear_screen: bool = False) -> None:
+        """Start a fresh conversation inside the active runtime."""
+        try:
+            result = session.start_new_conversation()
+        except Exception as e:
+            await session.send_event(
+                Event(event_type="error", data={"error": f"New chat failed: {e}"})
+            )
+            return
+        result["clear_screen"] = clear_screen
+        await session.send_event(Event(event_type="new_complete", data=result))
+
+    @staticmethod
     async def resume(session: Session, path: str) -> None:
         """Reload context from a saved session log into the active session."""
         from agent.core.session_resume import restore_session_from_log
@@ -2067,6 +2080,11 @@ async def process_submission(session: Session, submission) -> bool:
 
     if op.op_type == OpType.UNDO:
         await Handlers.undo(session)
+        return True
+
+    if op.op_type == OpType.NEW:
+        clear_screen = bool((op.data or {}).get("clear_screen"))
+        await Handlers.new_conversation(session, clear_screen=clear_screen)
         return True
 
     if op.op_type == OpType.RESUME:
