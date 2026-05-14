@@ -241,13 +241,17 @@ Aggregate completed runs with the checked-in factor-weighted reporter:
 ```bash
 uv run python post_train_bench/aggregate_results.py \
   post_train_bench/runs/${ML_INTERN_AGENT_MODEL}/{RUN_ID} \
+  --baseline-scores-json scratch/ptb_reports/posttrainbench_scores.json \
   --output-json post_train_bench/runs/${ML_INTERN_AGENT_MODEL}/{RUN_ID}/aggregate_report.json \
   --output-csv post_train_bench/runs/${ML_INTERN_AGENT_MODEL}/{RUN_ID}/aggregate_report.csv
 ```
 
 Pass multiple run roots to report multi-run mean, standard deviation, standard
-error, min, and max for each method. Non-clean integrity statuses are reported
-explicitly and are not silently converted into benchmark scores.
+error, min, and max for each method. The reporter follows PTB final scoring:
+the run matrix defines the expected benchmark/model cells, and failed, missing,
+or nonnumeric cells are filled from the zero-shot baseline before computing the
+weighted average. Non-clean integrity statuses and fallback cells are still
+reported explicitly.
 
 ## Rebuilding The Docker Image
 
