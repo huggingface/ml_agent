@@ -16,7 +16,9 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def make_task(run_root: Path, method: str, task_name: str, status: str, accuracy: float | None):
+def make_task(
+    run_root: Path, method: str, task_name: str, status: str, accuracy: float | None
+):
     task_dir = run_root / "results" / method / task_name
     write_json(task_dir / "integrity_status.json", {"status": status})
     if accuracy is not None:

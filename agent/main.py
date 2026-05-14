@@ -1567,9 +1567,7 @@ async def headless_main(
                         buf = _hl_research_buffers.pop(aid, None)
                         if buf is not None:
                             f = get_console().file
-                            f.write(
-                                f"  \033[38;2;255;200;80m▸ {buf['label']}\033[0m\n"
-                            )
+                            f.write(f"  \033[38;2;255;200;80m▸ {buf['label']}\033[0m\n")
                             for call in buf["calls"]:
                                 f.write(f"    \033[2m{call}\033[0m\n")
                             f.flush()
@@ -1623,7 +1621,9 @@ async def headless_main(
                 return event.event_type
             elif event.event_type in ("turn_complete", "interrupted"):
                 stream_buf.discard()
-                history_size = event.data.get("history_size", "?") if event.data else "?"
+                history_size = (
+                    event.data.get("history_size", "?") if event.data else "?"
+                )
                 print(
                     f"\n--- Agent {event.event_type} (history_size={history_size}) ---",
                     file=sys.stderr,

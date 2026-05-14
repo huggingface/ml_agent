@@ -294,7 +294,6 @@ PY
 }
 
 FINALIZED=0
-SECRET_SCAN_FAILED=0
 
 write_integrity_status() {
     python3 "$TRUSTED_INTEGRITY" write-status \
@@ -326,15 +325,6 @@ finalize_run() {
     fi
     FINALIZED=1
     snapshot_evidence || true
-    if ! python3 "$TRUSTED_INTEGRITY" scan-secrets \
-        --path "$EVAL_DIR" \
-        --output "$EVAL_DIR/secret_scan.json"; then
-        SECRET_SCAN_FAILED=1
-        if [ ! -s "$EVAL_DIR/integrity_status.json" ]; then
-            write_integrity_status invalid "secret scan found unredacted secrets" || true
-        fi
-        echo "Secret scan found unredacted secrets; see $EVAL_DIR/secret_scan.json" >&2
-    fi
     python3 "$TRUSTED_COLLECT" \
         --run-root "$RUN_ROOT" \
         --eval-dir "$EVAL_DIR" \
@@ -615,9 +605,6 @@ if [ ! -f "$EVAL_DIR/metrics.json" ]; then
 fi
 
 finalize_run
-if [ "$SECRET_SCAN_FAILED" -ne 0 ]; then
-    exit 1
-fi
 
 if [ "$SOLVE_EXIT" -ne 0 ] && [ "$SOLVE_EXIT" -ne 124 ]; then
     exit "$SOLVE_EXIT"

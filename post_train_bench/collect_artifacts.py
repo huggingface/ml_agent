@@ -98,7 +98,12 @@ def main() -> int:
     run_root = Path(args.run_root)
     eval_dir = Path(args.eval_dir)
     model_safe = args.model_to_train.replace("/", "_").replace(":", "_")
-    dest = run_root / "artifacts" / args.method / f"{args.benchmark}_{model_safe}_{args.task_run_id}"
+    dest = (
+        run_root
+        / "artifacts"
+        / args.method
+        / f"{args.benchmark}_{model_safe}_{args.task_run_id}"
+    )
     dest.mkdir(parents=True, exist_ok=True)
 
     manifest = {
@@ -129,7 +134,6 @@ def main() -> int:
         "protected_files_manifest.json",
         "evidence_snapshot.json",
         "metrics.json",
-        "secret_scan.json",
         "contamination_judgement.txt",
         "disallowed_model_judgement.txt",
         "judge_output.txt",

@@ -38,11 +38,12 @@ def test_ensure_codex_auth_preserves_existing_auth_file(tmp_path):
         encoding="utf-8",
     )
 
-    ensure_codex_auth(
-        {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "replacement"}
-    )
+    ensure_codex_auth({"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "replacement"})
 
-    assert json.loads(auth_file.read_text(encoding="utf-8"))["OPENAI_API_KEY"] == "existing"
+    assert (
+        json.loads(auth_file.read_text(encoding="utf-8"))["OPENAI_API_KEY"]
+        == "existing"
+    )
 
 
 def test_resolve_codex_command_prefers_codex_cli(tmp_path, monkeypatch):

@@ -185,7 +185,6 @@ post_train_bench/runs/{ML_INTERN_AGENT_MODEL}/{RUN_ID}
 |           |-- solve_out.txt           # raw ml-intern agent trace
 |           |-- solve_out_*.txt         # timestamped raw ml-intern agent trace
 |           |-- solve_exit.txt          # solve command exit status
-|           |-- secret_scan.json        # unredacted-secret scan result
 |           |-- system_monitor.log      # host CPU/GPU/disk monitor samples
 |           |-- task/                   # task workspace captured after solve
 |           |`-- time_taken.txt         # wall time for the solve phase

@@ -91,7 +91,9 @@ def main() -> int:
     parser.add_argument("--task-dir", required=True)
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--model", default=os.environ.get("PTB_JUDGE_MODEL", DEFAULT_MODEL))
+    parser.add_argument(
+        "--model", default=os.environ.get("PTB_JUDGE_MODEL", DEFAULT_MODEL)
+    )
     args = parser.parse_args()
 
     task_dir = Path(args.task_dir).resolve()

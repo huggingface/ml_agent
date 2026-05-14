@@ -22,7 +22,9 @@ def test_record_final_model_tree_hashes_reproducibility_files(tmp_path):
 
     collect_artifacts.record_optional_tree(final_model, manifest, "referenced_files")
 
-    entries = {Path(entry["path"]).name: entry for entry in manifest["referenced_files"]}
+    entries = {
+        Path(entry["path"]).name: entry for entry in manifest["referenced_files"]
+    }
     assert "sha256" in entries["config.json"]
     assert "sha256" in entries["tokenizer.model"]
     assert "sha256" in entries["adapter_config.json"]

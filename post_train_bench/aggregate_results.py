@@ -34,13 +34,17 @@ def metric_value(metrics: dict, preferred_key: str) -> float | None:
 
 
 def parse_task_name(name: str, benchmarks: set[str]) -> str | None:
-    matches = [benchmark for benchmark in benchmarks if name.startswith(f"{benchmark}_")]
+    matches = [
+        benchmark for benchmark in benchmarks if name.startswith(f"{benchmark}_")
+    ]
     if not matches:
         return None
     return max(matches, key=len)
 
 
-def summarize_run(run_root: Path, factors: dict[str, float], metric_key: str) -> list[dict]:
+def summarize_run(
+    run_root: Path, factors: dict[str, float], metric_key: str
+) -> list[dict]:
     results_dir = run_root / "results"
     by_method = defaultdict(lambda: defaultdict(list))
     status_counts = defaultdict(Counter)
@@ -108,7 +112,9 @@ def summarize_variance(run_summaries: list[dict]) -> dict:
             "n": len(values),
             "mean": statistics.fmean(values),
             "stddev": statistics.stdev(values) if len(values) > 1 else 0.0,
-            "stderr": statistics.stdev(values) / math.sqrt(len(values)) if len(values) > 1 else 0.0,
+            "stderr": statistics.stdev(values) / math.sqrt(len(values))
+            if len(values) > 1
+            else 0.0,
             "min": min(values),
             "max": max(values),
         }
@@ -141,7 +147,9 @@ def write_csv(path: Path, run_summaries: list[dict]) -> None:
                     "present_weight": summary["present_weight"],
                     "coverage": summary["coverage"],
                     "task_count": summary["task_count"],
-                    "status_counts": json.dumps(summary["status_counts"], sort_keys=True),
+                    "status_counts": json.dumps(
+                        summary["status_counts"], sort_keys=True
+                    ),
                     "missing_benchmarks": ",".join(summary["missing_benchmarks"]),
                 }
             )
@@ -149,7 +157,9 @@ def write_csv(path: Path, run_summaries: list[dict]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("run_roots", nargs="+", help="One or more post_train_bench/runs/... run roots")
+    parser.add_argument(
+        "run_roots", nargs="+", help="One or more post_train_bench/runs/... run roots"
+    )
     parser.add_argument(
         "--factors",
         default="scratch/PostTrainBench/scripts/factors.json",
@@ -160,7 +170,9 @@ def main() -> int:
     parser.add_argument("--output-csv")
     args = parser.parse_args()
 
-    factors = {key: float(value) for key, value in load_json(Path(args.factors)).items()}
+    factors = {
+        key: float(value) for key, value in load_json(Path(args.factors)).items()
+    }
     if not factors:
         raise SystemExit(f"No benchmark factors found in {args.factors}")
 
@@ -178,7 +190,9 @@ def main() -> int:
 
     output_json = Path(args.output_json)
     output_json.parent.mkdir(parents=True, exist_ok=True)
-    output_json.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output_json.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     if args.output_csv:
         write_csv(Path(args.output_csv), run_summaries)
     return 0

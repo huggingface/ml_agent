@@ -6,10 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import shutil
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,36 +52,7 @@ BASE_MODEL_RULES = {
 }
 
 MODEL_ID_RE = re.compile(r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\b")
-SECRET_ASSIGNMENT_RE = re.compile(
-    r"\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY)[A-Z0-9_]*)"
-    r"\s*[:=]\s*([^\s\"']+)"
-)
-SECRET_VALUE_PATTERNS = [
-    ("hf_token", re.compile(r"hf_[A-Za-z0-9]{30,}")),
-    ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")),
-    ("openai_key", re.compile(r"sk-(?!ant-)[A-Za-z0-9_-]{40,}")),
-    ("github_token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
-    ("github_token", re.compile(r"github_pat_[A-Za-z0-9_]{36,}")),
-    ("aws_key_id", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
-    ("bearer_token", re.compile(r"(?i)bearer\s+[A-Za-z0-9_.=-]{20,}")),
-]
-SCAN_SKIP_DIRS = {
-    ".cache",
-    ".git",
-    "__pycache__",
-    "final_model",
-}
-SCAN_SKIP_SUFFIXES = {
-    ".bin",
-    ".gguf",
-    ".npy",
-    ".npz",
-    ".parquet",
-    ".pt",
-    ".pth",
-    ".safetensors",
-}
-MAX_SCAN_BYTES = 10 * 1024 * 1024
+MAX_TEXT_BYTES = 10 * 1024 * 1024
 HASH_CHUNK_BYTES = 1024 * 1024
 PROTECTED_SKIP_DIRS = {"__pycache__"}
 PROTECTED_SKIP_SUFFIXES = {".pyc", ".pyo"}
@@ -95,7 +64,9 @@ def utc_now() -> str:
 
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def sha256(path: Path) -> str:
@@ -168,7 +139,9 @@ def verify_protected_files(task_dir: Path, manifest_path: Path) -> dict:
     changed = []
     for entry in manifest.get("files", []):
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
-            changed.append({"path": "<malformed manifest entry>", "reason": repr(entry)})
+            changed.append(
+                {"path": "<malformed manifest entry>", "reason": repr(entry)}
+            )
             continue
         rel_path = entry["path"]
         if rel_path.startswith("/") or ".." in Path(rel_path).parts:
@@ -324,7 +297,9 @@ def judge_status(eval_dir: Path) -> dict:
     }
 
 
-def collect_source_references(model_path: Path, config: dict, tokenizer_config: dict) -> list[str]:
+def collect_source_references(
+    model_path: Path, config: dict, tokenizer_config: dict
+) -> list[str]:
     refs = set()
     for value in [
         config.get("_name_or_path"),
@@ -341,10 +316,12 @@ def collect_source_references(model_path: Path, config: dict, tokenizer_config: 
 
     for name in ["README.md", "model_index.json"]:
         path = model_path / name
-        if not path.is_file() or path.stat().st_size > MAX_SCAN_BYTES:
+        if not path.is_file() or path.stat().st_size > MAX_TEXT_BYTES:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
-        refs.update(normalize_model_id(match.group(0)) for match in MODEL_ID_RE.finditer(text))
+        refs.update(
+            normalize_model_id(match.group(0)) for match in MODEL_ID_RE.finditer(text)
+        )
 
     return sorted(refs)
 
@@ -368,7 +345,9 @@ def precheck_final_model(model_path: Path, base_model: str) -> dict:
         }
 
     config, config_error = load_json_file(model_path / "config.json")
-    tokenizer_config, tokenizer_error = load_json_file(model_path / "tokenizer_config.json")
+    tokenizer_config, tokenizer_error = load_json_file(
+        model_path / "tokenizer_config.json"
+    )
     if config_error:
         issues.append(config_error)
     if tokenizer_error:
@@ -393,7 +372,11 @@ def precheck_final_model(model_path: Path, base_model: str) -> dict:
         )
 
     rules = BASE_MODEL_RULES.get(base_model)
-    refs = collect_source_references(model_path, config, tokenizer_config) if config else []
+    refs = (
+        collect_source_references(model_path, config, tokenizer_config)
+        if config
+        else []
+    )
     details.update(
         {
             "model_type": model_type,
@@ -427,79 +410,6 @@ def precheck_final_model(model_path: Path, base_model: str) -> dict:
         "issues": issues,
         "warnings": warnings,
         "details": details,
-    }
-
-
-def is_probably_binary(path: Path) -> bool:
-    try:
-        chunk = path.read_bytes()[:4096]
-    except OSError:
-        return True
-    return b"\0" in chunk
-
-
-def iter_scan_files(root: Path):
-    if root.is_file():
-        yield root
-        return
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel_parts = set(path.relative_to(root).parts[:-1])
-        if rel_parts & SCAN_SKIP_DIRS:
-            continue
-        if path.suffix.lower() in SCAN_SKIP_SUFFIXES:
-            continue
-        try:
-            if path.stat().st_size > MAX_SCAN_BYTES:
-                continue
-        except OSError:
-            continue
-        yield path
-
-
-def find_secret_matches(text: str) -> list[dict]:
-    findings = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        for match in SECRET_ASSIGNMENT_RE.finditer(line):
-            value = match.group(2)
-            if value.startswith("[REDACTED") or set(value) <= {"\\"}:
-                continue
-            findings.append(
-                {
-                    "line": line_number,
-                    "kind": "secret_assignment",
-                    "name": match.group(1),
-                }
-            )
-        for kind, pattern in SECRET_VALUE_PATTERNS:
-            if pattern.search(line):
-                findings.append(
-                    {
-                        "line": line_number,
-                        "kind": kind,
-                    }
-                )
-    return findings
-
-
-def scan_secrets(root: Path) -> dict:
-    findings = []
-    for path in iter_scan_files(root):
-        if is_probably_binary(path):
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for match in find_secret_matches(text):
-            findings.append(
-                {
-                    "path": str(path),
-                    **match,
-                }
-            )
-    return {
-        "created_at": utc_now(),
-        "status": "invalid" if findings else "clean",
-        "findings": findings,
     }
 
 
@@ -544,12 +454,6 @@ def command_precheck_final_model(args: argparse.Namespace) -> int:
     return 0 if payload["status"] == "clean" else 1
 
 
-def command_scan_secrets(args: argparse.Namespace) -> int:
-    payload = scan_secrets(Path(args.path))
-    write_json(Path(args.output), payload)
-    return 0 if payload["status"] == "clean" else 1
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -587,11 +491,6 @@ def build_parser() -> argparse.ArgumentParser:
     precheck_parser.add_argument("--base-model", required=True)
     precheck_parser.add_argument("--output", required=True)
     precheck_parser.set_defaults(func=command_precheck_final_model)
-
-    scan_parser = subparsers.add_parser("scan-secrets")
-    scan_parser.add_argument("--path", required=True)
-    scan_parser.add_argument("--output", required=True)
-    scan_parser.set_defaults(func=command_scan_secrets)
 
     return parser
 

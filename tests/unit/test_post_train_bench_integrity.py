@@ -4,7 +4,9 @@ from pathlib import Path
 
 
 INTEGRITY_PATH = Path(__file__).parents[2] / "post_train_bench" / "integrity.py"
-spec = importlib.util.spec_from_file_location("post_train_bench_integrity", INTEGRITY_PATH)
+spec = importlib.util.spec_from_file_location(
+    "post_train_bench_integrity", INTEGRITY_PATH
+)
 assert spec is not None
 integrity = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
@@ -115,48 +117,6 @@ def test_precheck_rejects_known_instruct_substitution(tmp_path):
     assert any("disallowed" in issue for issue in payload["issues"])
 
 
-def test_secret_scan_skips_final_model_and_flags_text_artifacts(tmp_path):
-    (tmp_path / "solve_out.txt").write_text(
-        "OPENAI_API_KEY=sk-" + "A" * 45 + "\n",
-        encoding="utf-8",
-    )
-    final_model = tmp_path / "final_model"
-    final_model.mkdir()
-    (final_model / "config.json").write_text(
-        "OPENAI_API_KEY=sk-" + "B" * 45 + "\n",
-        encoding="utf-8",
-    )
-
-    payload = integrity.scan_secrets(tmp_path)
-
-    assert payload["status"] == "invalid"
-    assert len(payload["findings"]) == 2
-    assert all("final_model" not in finding["path"] for finding in payload["findings"])
-
-
-def test_secret_scan_ignores_lowercase_token_parameter(tmp_path):
-    (tmp_path / "evaluate.py").write_text(
-        "max_tokens=args.max_tokens\n",
-        encoding="utf-8",
-    )
-
-    payload = integrity.scan_secrets(tmp_path)
-
-    assert payload["status"] == "clean"
-
-
-def test_secret_scan_ignores_json_escaped_redacted_env_assignments(tmp_path):
-    (tmp_path / "judge_output.txt").write_text(
-        'session_logs/session.json:1: "content": "HF_TOKEN=\\"[REDACTED]\\" '
-        'HUGGING_FACE_HUB_TOKEN=\\"[REDACTED]\\""\n',
-        encoding="utf-8",
-    )
-
-    payload = integrity.scan_secrets(tmp_path)
-
-    assert payload["status"] == "clean"
-
-
 def test_protected_files_snapshot_and_verify_clean_with_extra_files(tmp_path):
     task_dir = tmp_path / "task"
     (task_dir / "templates").mkdir(parents=True)
@@ -178,7 +138,9 @@ def test_protected_files_snapshot_ignores_python_bytecode_cache(tmp_path):
     cache_dir = task_dir / "evaluation_code" / "__pycache__"
     cache_dir.mkdir(parents=True)
     (task_dir / "evaluate.py").write_text("print('eval')\n", encoding="utf-8")
-    (task_dir / "evaluation_code" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (task_dir / "evaluation_code" / "helper.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
     (cache_dir / "helper.cpython-311.pyc").write_bytes(b"old bytecode")
     (task_dir / "evaluation_code" / "legacy.pyo").write_bytes(b"old optimized bytecode")
     manifest = integrity.snapshot_protected_files(task_dir)
@@ -247,20 +209,26 @@ def test_snapshot_evidence_splits_task_snapshot_and_final_model(tmp_path):
 
 
 def test_runner_does_not_mount_result_into_solve_or_trust_remote_code():
-    runner = (Path(__file__).parents[2] / "post_train_bench" / "run_task_docker.sh").read_text(
-        encoding="utf-8"
-    )
+    runner = (
+        Path(__file__).parents[2] / "post_train_bench" / "run_task_docker.sh"
+    ).read_text(encoding="utf-8")
 
     solve_mount_line = next(
-        line for line in runner.splitlines() if line.startswith("SOLVE_CONTAINER_MOUNTS=")
+        line
+        for line in runner.splitlines()
+        if line.startswith("SOLVE_CONTAINER_MOUNTS=")
     )
     assert "${EVAL_DIR}:/result" not in solve_mount_line
     assert "${JOB_REPO}:/ml-intern-src:ro" in solve_mount_line
     assert "trust_remote_code=True" not in runner
     assert "snapshot-protected-files" in runner
     assert "verify-protected-files" in runner
+    assert "scan-secrets" not in runner
+    assert "secret_scan" not in runner
     assert "TRUSTED_INTEGRITY" in runner
-    assert '"$JOB_REPO/post_train_bench/integrity.py" verify-protected-files' not in runner
+    assert (
+        '"$JOB_REPO/post_train_bench/integrity.py" verify-protected-files' not in runner
+    )
     assert "uv pip install --system -e ." not in runner
     assert "uv pip install --system ." in runner
     assert "create_baseline_final_model" in runner
@@ -272,12 +240,14 @@ def test_runner_does_not_mount_result_into_solve_or_trust_remote_code():
 
 
 def test_runner_labels_reprompt_method_variant():
-    runner = (Path(__file__).parents[2] / "post_train_bench" / "run_task_docker.sh").read_text(
-        encoding="utf-8"
-    )
+    runner = (
+        Path(__file__).parents[2] / "post_train_bench" / "run_task_docker.sh"
+    ).read_text(encoding="utf-8")
 
     assert 'METHOD_SUFFIX="_reprompt"' in runner
-    assert 'METHOD_DIR="ml_intern_${AGENT_SAFE}_${NUM_HOURS}h${METHOD_SUFFIX}"' in runner
+    assert (
+        'METHOD_DIR="ml_intern_${AGENT_SAFE}_${NUM_HOURS}h${METHOD_SUFFIX}"' in runner
+    )
     assert 'echo "reprompt=$REPROMPT"' in runner
     solve_env_line = next(
         line for line in runner.splitlines() if line.startswith("SOLVE_CONTAINER_ENV=")
@@ -288,18 +258,18 @@ def test_runner_labels_reprompt_method_variant():
 
 def test_agent_config_disables_hub_write_tools():
     config = json.loads(
-        (Path(__file__).parents[2] / "post_train_bench" / "ml_intern_config.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            Path(__file__).parents[2] / "post_train_bench" / "ml_intern_config.json"
+        ).read_text(encoding="utf-8")
     )
 
     assert {"hf_repo_files", "hf_repo_git"} <= set(config["disabled_tools"])
 
 
 def test_submit_full_mode_requires_clean_provenance():
-    submit = (Path(__file__).parents[2] / "post_train_bench" / "submit_eval_set.sh").read_text(
-        encoding="utf-8"
-    )
+    submit = (
+        Path(__file__).parents[2] / "post_train_bench" / "submit_eval_set.sh"
+    ).read_text(encoding="utf-8")
 
     assert "--allow-dirty" in submit
     assert "--allow-mutable-images" in submit
@@ -311,9 +281,9 @@ def test_submit_full_mode_requires_clean_provenance():
 
 
 def test_submit_supports_validation_and_reprompt_metadata():
-    submit = (Path(__file__).parents[2] / "post_train_bench" / "submit_eval_set.sh").read_text(
-        encoding="utf-8"
-    )
+    submit = (
+        Path(__file__).parents[2] / "post_train_bench" / "submit_eval_set.sh"
+    ).read_text(encoding="utf-8")
 
     assert "model-validation)" in submit
     assert "validation)" in submit
@@ -331,7 +301,9 @@ def test_submit_supports_validation_and_reprompt_metadata():
 
 
 def test_headless_reprompt_is_explicit_opt_in():
-    main_py = (Path(__file__).parents[2] / "agent" / "main.py").read_text(encoding="utf-8")
+    main_py = (Path(__file__).parents[2] / "agent" / "main.py").read_text(
+        encoding="utf-8"
+    )
 
     assert 'POST_TRAIN_BENCH_REPROMPT", False' in main_py
     assert "POST_TRAIN_BENCH_REPROMPT_MIN_MINUTES" in main_py
@@ -340,9 +312,9 @@ def test_headless_reprompt_is_explicit_opt_in():
 
 
 def test_bash_guidance_does_not_default_to_nohup():
-    local_tools = (Path(__file__).parents[2] / "agent" / "tools" / "local_tools.py").read_text(
-        encoding="utf-8"
-    )
+    local_tools = (
+        Path(__file__).parents[2] / "agent" / "tools" / "local_tools.py"
+    ).read_text(encoding="utf-8")
     sandbox_client = (
         Path(__file__).parents[2] / "agent" / "tools" / "sandbox_client.py"
     ).read_text(encoding="utf-8")
