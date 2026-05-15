@@ -138,6 +138,13 @@ class AgentSession:
     # token has been seen yet — in that case the field is left untouched
     # in Mongo (snapshot saves never blank an existing blob).
     encrypted_credential: str | None = None
+    # Wall-clock when ``encrypted_credential`` was last regenerated from
+    # a fresh ``hf_token``. The Worker uses this against
+    # ``CREDENTIAL_TTL_HOURS`` to decide whether to attempt decryption,
+    # so it must NOT bump on every snapshot save — only when the
+    # underlying token actually rotates via ``_update_hf_identity`` or
+    # ``create_session``.
+    credential_set_at: datetime | None = None
 
 
 class SessionCapacityError(Exception):
@@ -732,6 +739,7 @@ class SessionManager:
             encrypted = _encrypt_credential(hf_token)
             if encrypted is not None:
                 agent_session.encrypted_credential = encrypted
+                agent_session.credential_set_at = datetime.now(UTC)
         if hf_username:
             agent_session.hf_username = hf_username
             agent_session.session.hf_username = hf_username
@@ -777,11 +785,16 @@ class SessionManager:
                     )
                     or 0.0
                 ),
-                # Pass-through the current ciphertext. ``upsert_session``
-                # treats ``None`` as "leave the field alone", so snapshot
-                # saves on a Worker that has no token won't blank the
-                # blob — only Main with a fresh token (re)writes it.
+                # Pass-through the current ciphertext + its issue time.
+                # ``upsert_session`` treats ``None`` as "leave the field
+                # alone", so snapshot saves on a Worker that has no token
+                # won't blank the blob — only Main with a fresh token
+                # (re)writes it. ``credential_set_at`` is the stable
+                # issue time, NOT the snapshot time, so the TTL clock
+                # tracks the underlying token's age, not how often we
+                # checkpoint state.
                 encrypted_credential=agent_session.encrypted_credential,
+                credential_set_at=agent_session.credential_set_at,
             )
         except Exception as e:
             logger.warning(
@@ -1048,11 +1061,17 @@ class SessionManager:
             hf_username=owner if recovered_token else None,
             owner=owner,
         )
-        # Make sure the rebuilt session keeps the same ciphertext so a
-        # later snapshot save (e.g. mid-turn) doesn't accidentally blank
-        # the field via a None default.
+        # Make sure the rebuilt session keeps the same ciphertext and
+        # its original issue time so a later snapshot save (e.g.
+        # mid-turn) doesn't accidentally blank the blob or reset the
+        # TTL clock.
         if ciphertext:
             agent_session.encrypted_credential = ciphertext
+            if isinstance(cred_set_at, datetime):
+                agent_session.credential_set_at = (
+                    cred_set_at if cred_set_at.tzinfo
+                    else cred_set_at.replace(tzinfo=UTC)
+                )
         logger.info(
             "Worker claimed dormant session %s (owner=%s, credential=%s)",
             session_id, owner,
@@ -1122,6 +1141,7 @@ class SessionManager:
         )
 
         # Create wrapper
+        _initial_ciphertext = _encrypt_credential(hf_token)
         agent_session = AgentSession(
             session_id=session_id,
             session=session,
@@ -1129,7 +1149,10 @@ class SessionManager:
             user_id=user_id,
             hf_username=hf_username,
             hf_token=hf_token,
-            encrypted_credential=_encrypt_credential(hf_token),
+            encrypted_credential=_initial_ciphertext,
+            credential_set_at=(
+                datetime.now(UTC) if _initial_ciphertext else None
+            ),
         )
 
         # Persist the session doc BEFORE the lease CAS so claim_lease has

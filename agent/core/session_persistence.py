@@ -294,9 +294,14 @@ class MongoSessionStore(NoopSessionStore):
         # Only overwrite the encrypted credential when the caller supplies
         # a fresh ciphertext. Snapshot saves (e.g. mid-turn) don't carry
         # the token and must not blank the field that Worker depends on.
+        # ``credential_set_at`` is only written when explicitly given —
+        # this preserves the original issue time across snapshot saves
+        # so the Worker's TTL check is against the token's real age,
+        # not against the most recent state-persistence write.
         if encrypted_credential is not None:
             set_fields["encrypted_credential"] = encrypted_credential
-            set_fields["credential_set_at"] = credential_set_at or now
+            if credential_set_at is not None:
+                set_fields["credential_set_at"] = credential_set_at
         await self.db.sessions.update_one(
             {"_id": session_id},
             {
