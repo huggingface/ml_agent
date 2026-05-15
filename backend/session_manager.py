@@ -101,7 +101,7 @@ class AgentSession:
     hf_username: str | None = None  # HF namespace used for personal trace uploads
     hf_token: str | None = None  # User's HF OAuth token for tool execution
     task: asyncio.Task | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     is_active: bool = True
     is_processing: bool = False  # True while a submission is being executed
     broadcaster: Any = None
@@ -1064,9 +1064,16 @@ class SessionManager:
             hf_token=hf_token,
         )
 
-        # Claim the lease before starting the runtime task — brand-new
-        # session_id, so this should always succeed; failure is treated as
-        # an internal error.
+        # Persist the session doc BEFORE the lease CAS so claim_lease has
+        # a row to update. upsert_session writes user_id / surface /
+        # schema_version via $setOnInsert; running it first guarantees
+        # those fields land in Mongo before any other writer touches the
+        # doc.
+        await self.persist_session_snapshot(agent_session, runtime_state="idle")
+
+        # Claim the lease before starting the runtime task — the doc was
+        # just persisted, so this should always succeed; failure is
+        # treated as an internal error.
         claimed = await self._store().claim_lease(
             session_id, self._holder_id, ttl_s=30
         )
@@ -1093,7 +1100,6 @@ class SessionManager:
             event_queue=event_queue,
             tool_router=tool_router,
         )
-        await self.persist_session_snapshot(agent_session, runtime_state="idle")
 
         if is_pro is not None and user_id and user_id != "dev":
             await self._track_pro_status(agent_session, is_pro=is_pro)

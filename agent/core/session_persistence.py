@@ -581,7 +581,11 @@ class MongoSessionStore(NoopSessionStore):
         """Atomic CAS claim. Succeeds iff lease missing or expired.
 
         Returns the updated session doc, or ``None`` if another holder
-        currently owns an unexpired lease.
+        currently owns an unexpired lease. Caller is responsible for
+        ensuring the session document exists (``upsert_session`` /
+        ``persist_session_snapshot`` writes it on first save) — this CAS
+        does not upsert because doing so would consume the ``$setOnInsert``
+        slot needed by ``upsert_session`` for ``user_id`` / ``surface``.
         """
         if not self._ready():
             return None
@@ -768,7 +772,7 @@ class MongoSessionStore(NoopSessionStore):
                 }
             }
         ]
-        async with self.db.pending_submissions.watch(pipeline=pipeline) as stream:
+        async with await self.db.pending_submissions.watch(pipeline=pipeline) as stream:
             async for change in stream:
                 full = change.get("fullDocument")
                 if full is not None:
@@ -787,7 +791,7 @@ class MongoSessionStore(NoopSessionStore):
                 }
             }
         ]
-        async with self.db.session_events.watch(pipeline=pipeline) as stream:
+        async with await self.db.session_events.watch(pipeline=pipeline) as stream:
             async for change in stream:
                 full = change.get("fullDocument")
                 if full is not None:
