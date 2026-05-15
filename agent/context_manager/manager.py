@@ -274,7 +274,12 @@ class ContextManager:
                 f"Working directory: {cwd}\n"
                 f"Use absolute paths or paths relative to the working directory. "
                 f"Do NOT use /app/ paths — that is a sandbox convention that does not apply here.\n"
-                f"The sandbox_create tool is NOT available. Run code directly with bash."
+                f"The sandbox_create tool is NOT available. Run code directly with bash.\n"
+                f"The gh and hf CLIs may be installed and authenticated on this machine. "
+                f"Use them through bash for live GitHub and Hugging Face operations. "
+                f"If authentication is missing, ask the user to authenticate their own "
+                f"account with gh auth login / hf auth login or set their own token; "
+                f"never ask for or use a maintainer/developer GitHub PAT."
             )
             static_prompt += local_context
 

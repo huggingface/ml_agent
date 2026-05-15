@@ -270,6 +270,11 @@ _LOCAL_TOOL_SPECS = {
             "  kill -0 <PID> 2>/dev/null && echo 'running' || echo 'done'\n"
             "  tail -n 50 /tmp/output.log\n"
             "\n"
+            "Use the gh and hf CLIs through bash for live GitHub and Hugging Face "
+            "operations when they are installed/authenticated on the user's machine. "
+            "If auth is missing, ask the user to authenticate their own account or "
+            "set their own token; never ask for or use a maintainer/developer GitHub PAT.\n"
+            "\n"
             "Timeout default 120s, max 36000s."
         ),
         "parameters": {

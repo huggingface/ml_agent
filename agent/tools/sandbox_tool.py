@@ -564,6 +564,9 @@ SANDBOX_CREATE_TOOL_SPEC = {
         "If you intend to run a training script in this sandbox that uses report_to='trackio', "
         "pass `trackio_space_id` (e.g. '<username>/ml-intern-<8char>') and `trackio_project` so they "
         "are set as TRACKIO_SPACE_ID/TRACKIO_PROJECT secrets in the sandbox and the UI can embed the live dashboard.\n\n"
+        "The sandbox has the `gh` and `hf` CLIs preinstalled. HF_TOKEN is injected automatically from the user's "
+        "Hugging Face session. To access private GitHub repos or higher GitHub API rate limits, pass `github_token` "
+        "with the user's own GitHub token; never use a maintainer/developer PAT.\n\n"
         "Hardware: " + ", ".join([e.value for e in SpaceHardware]) + ".\n"
     ),
     "parameters": {
@@ -596,6 +599,14 @@ SANDBOX_CREATE_TOOL_SPEC = {
                     "used by the UI to filter the embedded dashboard to this project."
                 ),
             },
+            "github_token": {
+                "type": "string",
+                "description": (
+                    "Optional. The user's own GitHub token for sandbox `gh` CLI and GitHub API access. "
+                    "Injected as GH_TOKEN and GITHUB_TOKEN. Ask the user for their own token when needed; "
+                    "do not use a maintainer or developer PAT."
+                ),
+            },
         },
     },
 }
@@ -608,6 +619,7 @@ async def sandbox_create_handler(
     hardware = args.get("hardware", DEFAULT_CPU_SANDBOX_HARDWARE)
     trackio_space_id = args.get("trackio_space_id") or None
     trackio_project = args.get("trackio_project") or None
+    github_token = args.get("github_token") or None
 
     async def _emit_trackio_state(sb: Sandbox) -> None:
         """Tell the frontend which trackio dashboard to embed for this sandbox."""
@@ -702,6 +714,9 @@ async def sandbox_create_handler(
         await _seed_trackio_dashboard_safe(session, trackio_space_id)
     if trackio_project:
         extra_secrets["TRACKIO_PROJECT"] = trackio_project
+    if github_token:
+        extra_secrets["GH_TOKEN"] = github_token
+        extra_secrets["GITHUB_TOKEN"] = github_token
 
     try:
         sb, error = await _ensure_sandbox(

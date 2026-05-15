@@ -82,12 +82,12 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 RUN apt-get update && \\
     apt-get install -y \\
-      bash git git-lfs wget curl procps \\
+      bash git git-lfs gh wget curl procps \\
       htop vim nano jq tmux \\
       build-essential && \\
     rm -rf /var/lib/apt/lists/*
 
-RUN uv pip install --system fastapi uvicorn python-multipart
+RUN uv pip install --system fastapi uvicorn python-multipart "huggingface_hub[cli]"
 
 RUN useradd -m -u 1000 user
 USER user
@@ -987,6 +987,12 @@ class Sandbox:
                 "Then check status:\n"
                 "  kill -0 <PID> 2>/dev/null && echo 'running' || echo 'done'\n"
                 "  tail -n 50 /app/output.log\n"
+                "\n"
+                "The gh and hf CLIs are preinstalled. Use them through bash for GitHub "
+                "and Hugging Face operations that are not covered by dedicated tools. "
+                "HF_TOKEN is available as the user's HF token. GH_TOKEN/GITHUB_TOKEN "
+                "are available only when the user supplied their own GitHub token to "
+                "sandbox_create.\n"
                 "\n"
                 "Timeout default 240s, max 1200s."
             ),
