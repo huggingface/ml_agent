@@ -307,7 +307,7 @@ export default function WelcomeScreen() {
             bgcolor: 'var(--surface)',
             border: '1px solid var(--border)',
             borderRadius: '12px',
-            overflow: 'hidden',
+            overflowY: 'auto',
             mx: 2,
           }}
         >
