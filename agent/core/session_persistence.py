@@ -269,10 +269,34 @@ class MongoSessionStore(NoopSessionStore):
         auto_approval_enabled: bool = False,
         auto_approval_cost_cap_usd: float | None = None,
         auto_approval_estimated_spend_usd: float = 0.0,
+        encrypted_credential: str | None = None,
+        credential_set_at: datetime | None = None,
     ) -> None:
         if not self._ready():
             return
         now = _now()
+        set_fields: dict[str, Any] = {
+            "title": title,
+            "model": model,
+            "status": status,
+            "runtime_state": runtime_state,
+            "updated_at": now,
+            "last_active_at": now,
+            "message_count": message_count,
+            "turn_count": turn_count,
+            "pending_approval": pending_approval or [],
+            "claude_counted": claude_counted,
+            "notification_destinations": notification_destinations or [],
+            "auto_approval_enabled": auto_approval_enabled,
+            "auto_approval_cost_cap_usd": auto_approval_cost_cap_usd,
+            "auto_approval_estimated_spend_usd": auto_approval_estimated_spend_usd,
+        }
+        # Only overwrite the encrypted credential when the caller supplies
+        # a fresh ciphertext. Snapshot saves (e.g. mid-turn) don't carry
+        # the token and must not blank the field that Worker depends on.
+        if encrypted_credential is not None:
+            set_fields["encrypted_credential"] = encrypted_credential
+            set_fields["credential_set_at"] = credential_set_at or now
         await self.db.sessions.update_one(
             {"_id": session_id},
             {
@@ -285,22 +309,7 @@ class MongoSessionStore(NoopSessionStore):
                     "schema_version": SCHEMA_VERSION,
                     "visibility": "live",
                 },
-                "$set": {
-                    "title": title,
-                    "model": model,
-                    "status": status,
-                    "runtime_state": runtime_state,
-                    "updated_at": now,
-                    "last_active_at": now,
-                    "message_count": message_count,
-                    "turn_count": turn_count,
-                    "pending_approval": pending_approval or [],
-                    "claude_counted": claude_counted,
-                    "notification_destinations": notification_destinations or [],
-                    "auto_approval_enabled": auto_approval_enabled,
-                    "auto_approval_cost_cap_usd": auto_approval_cost_cap_usd,
-                    "auto_approval_estimated_spend_usd": auto_approval_estimated_spend_usd,
-                },
+                "$set": set_fields,
             },
             upsert=True,
         )
@@ -323,6 +332,8 @@ class MongoSessionStore(NoopSessionStore):
         auto_approval_enabled: bool = False,
         auto_approval_cost_cap_usd: float | None = None,
         auto_approval_estimated_spend_usd: float = 0.0,
+        encrypted_credential: str | None = None,
+        credential_set_at: datetime | None = None,
     ) -> None:
         if not self._ready():
             return
@@ -343,6 +354,8 @@ class MongoSessionStore(NoopSessionStore):
             auto_approval_enabled=auto_approval_enabled,
             auto_approval_cost_cap_usd=auto_approval_cost_cap_usd,
             auto_approval_estimated_spend_usd=auto_approval_estimated_spend_usd,
+            encrypted_credential=encrypted_credential,
+            credential_set_at=credential_set_at,
         )
         ops: list[Any] = []
         for idx, raw in enumerate(messages):

@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,7 +18,16 @@ from agent.core.agent_loop import process_submission
 from agent.messaging.gateway import NotificationGateway
 from agent.core.session import Event, OpType, Session
 from agent.core.session_persistence import get_session_store, make_holder_id
+from agent.core.token_crypto import decrypt as _decrypt_credential
+from agent.core.token_crypto import encrypt as _encrypt_credential
 from agent.core.tools import ToolRouter
+
+# How long an encrypted user credential (HF access token) stays valid on a
+# session doc before the Worker treats it as too stale to use. Tuned to the
+# typical HF OAuth access-token lifetime; sessions older than this require
+# the user to reconnect to refresh the in-memory credential before any
+# user-scoped tool call can resume.
+CREDENTIAL_TTL_HOURS: float = 24.0
 
 # Get project root (parent of backend directory)
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -121,6 +130,14 @@ class AgentSession:
     # subscribe to the in-process broadcaster (this process holds it) or
     # tail the Mongo change stream (a different process holds it).
     holder_id: str | None = None
+    # Fernet ciphertext of the user's HF token, kept in sync with
+    # ``hf_token`` by ``_update_hf_identity`` and ``create_session``.
+    # ``persist_session_snapshot`` forwards this on every save so the
+    # Worker can decrypt + reuse the credential when it claims a dormant
+    # session. ``None`` means the encryption key isn't configured or no
+    # token has been seen yet — in that case the field is left untouched
+    # in Mongo (snapshot saves never blank an existing blob).
+    encrypted_credential: str | None = None
 
 
 class SessionCapacityError(Exception):
@@ -708,6 +725,13 @@ class SessionManager:
         if hf_token:
             agent_session.hf_token = hf_token
             agent_session.session.hf_token = hf_token
+            # Re-encrypt so the next snapshot save captures the fresh
+            # credential. ``_encrypt_credential`` returns ``None`` when
+            # the env key is missing; in that case the field stays None
+            # and the snapshot's $set will skip the credential field.
+            encrypted = _encrypt_credential(hf_token)
+            if encrypted is not None:
+                agent_session.encrypted_credential = encrypted
         if hf_username:
             agent_session.hf_username = hf_username
             agent_session.session.hf_username = hf_username
@@ -753,6 +777,11 @@ class SessionManager:
                     )
                     or 0.0
                 ),
+                # Pass-through the current ciphertext. ``upsert_session``
+                # treats ``None`` as "leave the field alone", so snapshot
+                # saves on a Worker that has no token won't blank the
+                # blob — only Main with a fresh token (re)writes it.
+                encrypted_credential=agent_session.encrypted_credential,
             )
         except Exception as e:
             logger.warning(
@@ -981,15 +1010,53 @@ class SessionManager:
 
         meta = loaded.get("metadata") or {}
         owner = str(meta.get("user_id") or "") or "dev"
+
+        # Recover the user's HF token from the encrypted blob, if present
+        # and fresh enough. A miss here doesn't fail the claim — the
+        # Worker still owns the session for inline ops (interrupt /
+        # shutdown / queue inspection); user-scoped tool calls just fall
+        # back to the "no token" path until the user reconnects.
+        recovered_token: str | None = None
+        ciphertext = meta.get("encrypted_credential")
+        cred_set_at = meta.get("credential_set_at")
+        if ciphertext:
+            stale = False
+            if isinstance(cred_set_at, datetime):
+                cred_set_at_utc = (
+                    cred_set_at if cred_set_at.tzinfo else cred_set_at.replace(tzinfo=UTC)
+                )
+                age = datetime.now(UTC) - cred_set_at_utc
+                stale = age > timedelta(hours=CREDENTIAL_TTL_HOURS)
+            if stale:
+                logger.info(
+                    "Worker: credential for %s is older than %.0fh; "
+                    "skipping decrypt — user must reconnect to refresh.",
+                    session_id, CREDENTIAL_TTL_HOURS,
+                )
+            else:
+                recovered_token = _decrypt_credential(ciphertext)
+                if recovered_token is None:
+                    logger.warning(
+                        "Worker: failed to decrypt credential for %s — "
+                        "key missing or ciphertext rejected.", session_id,
+                    )
+
         agent_session = await self._rebuild_agent_session_from_store(
             loaded=loaded,
             session_id=session_id,
-            hf_token=None,
-            hf_username=None,
+            hf_token=recovered_token,
+            hf_username=owner if recovered_token else None,
             owner=owner,
         )
+        # Make sure the rebuilt session keeps the same ciphertext so a
+        # later snapshot save (e.g. mid-turn) doesn't accidentally blank
+        # the field via a None default.
+        if ciphertext:
+            agent_session.encrypted_credential = ciphertext
         logger.info(
-            "Worker claimed dormant session %s (owner=%s)", session_id, owner
+            "Worker claimed dormant session %s (owner=%s, credential=%s)",
+            session_id, owner,
+            "recovered" if recovered_token else "absent",
         )
         return agent_session
 
@@ -1062,6 +1129,7 @@ class SessionManager:
             user_id=user_id,
             hf_username=hf_username,
             hf_token=hf_token,
+            encrypted_credential=_encrypt_credential(hf_token),
         )
 
         # Persist the session doc BEFORE the lease CAS so claim_lease has
