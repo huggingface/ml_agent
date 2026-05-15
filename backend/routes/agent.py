@@ -151,6 +151,12 @@ async def _enforce_gated_model_quota(
     session has already been charged. Raises 429 when the user has hit
     their daily cap.
     """
+    # Stub AgentSession (session=None) is returned by ensure_session_loaded
+    # for Worker-held sessions so route-level access checks pass. Quota was
+    # already charged on the holder process when the session was built; this
+    # invocation has nothing local to enforce against.
+    if agent_session.session is None:
+        return
     if agent_session.claude_counted:
         return
     model_name = agent_session.session.config.model_name
