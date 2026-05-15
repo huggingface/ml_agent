@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 _RESEARCH_CONTEXT_WARN = 170_000  # 85% of 200k
 _RESEARCH_CONTEXT_MAX = 190_000
 
+# N-turn goal anchor: re-inject the original task every N iterations so the
+# agent stays anchored even after long tool-call chains.
+_RESEARCH_FACT_INTERVAL = 10
+_RESEARCH_FACT_SUMMARY_MAX = 500
+
 # Tools the research agent can use (read-only subset)
 RESEARCH_TOOL_NAMES = {
     "read",
@@ -219,6 +224,29 @@ RESEARCH_TOOL_SPEC = {
 }
 
 
+def _should_inject_fact(iteration: int) -> bool:
+    """Return True if a goal anchor should be injected at this iteration."""
+    return iteration > 0 and iteration % _RESEARCH_FACT_INTERVAL == 0
+
+
+def _build_fact_anchor(task: str, thinking_text: str) -> str:
+    """Build the [SYSTEM: GOAL ANCHOR] message content for N-turn injection."""
+    if len(thinking_text) > _RESEARCH_FACT_SUMMARY_MAX:
+        progress = thinking_text[:_RESEARCH_FACT_SUMMARY_MAX] + "…"
+    else:
+        progress = thinking_text
+    parts = [
+        "[SYSTEM: GOAL ANCHOR]",
+        f"Your original research task is: {task}",
+    ]
+    if progress:
+        parts.append(f"Progress so far: {progress}")
+    parts.append(
+        "Stay focused on this goal. Do not repeat lookups you have already done."
+    )
+    return "\n".join(parts)
+
+
 def _get_research_model(main_model: str) -> str:
     """Pick a cheaper model for research based on the main model."""
     if main_model.startswith("anthropic/"):
@@ -306,6 +334,7 @@ async def research_handler(
     _tool_uses = 0
     _total_tokens = 0
     _warned_context = False
+    _thinking_text = ""  # last thinking text emitted alongside tool calls
 
     await _log("Starting research sub-agent...")
 
@@ -320,6 +349,16 @@ async def research_handler(
                 _iteration,
             )
             messages.append(Message(role="user", content=doom_prompt))
+
+        # ── N-turn goal anchor: re-state the original task every N iterations ──
+        if _should_inject_fact(_iteration):
+            messages.append(
+                Message(
+                    role="user",
+                    content=_build_fact_anchor(task, _thinking_text),
+                )
+            )
+            logger.debug("Research fact anchor injected at iteration %d", _iteration)
 
         # ── Context budget: warn at 75%, hard-stop at 95% ──
         if _total_tokens >= _RESEARCH_CONTEXT_MAX:
@@ -431,6 +470,10 @@ async def research_handler(
             await _log("Research complete.")
             content = msg.content or "Research completed but no summary generated."
             return content, True
+
+        # Capture thinking text alongside tool calls for the next goal anchor.
+        if msg.content:
+            _thinking_text = msg.content
 
         # Execute tool calls and add results.
         # Rebuild the assistant message with only the wire-safe fields —
