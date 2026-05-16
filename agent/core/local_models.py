@@ -27,7 +27,7 @@ LOCAL_MODEL_PREFIXES = tuple(LOCAL_MODEL_PROVIDERS)
 RESERVED_LOCAL_MODEL_PREFIXES = ("openai-compat/",)
 LOCAL_MODEL_BASE_URL_ENV = "LOCAL_LLM_BASE_URL"
 LOCAL_MODEL_API_KEY_ENV = "LOCAL_LLM_API_KEY"
-LOCAL_MODEL_API_KEY_DEFAULT = "sk-local-no-key-required"
+LOCAL_MODEL_API_KEY_DEFAULT = None
 
 
 def local_model_provider(model_id: str) -> dict[str, str] | None:
