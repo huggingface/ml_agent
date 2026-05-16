@@ -12,10 +12,5 @@
     "auto_event_types": ["approval_required", "error", "turn_complete"],
     "destinations": {}
   },
-  "mcpServers": {
-    "hf-mcp-server": {
-      "transport": "http",
-      "url": "https://huggingface.co/mcp?login"
-    }
-  }
+  "mcpServers": {}
 }
