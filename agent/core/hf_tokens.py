@@ -66,7 +66,7 @@ def bearer_token_from_header(auth_header: str | None) -> str | None:
 def resolve_hf_request_token(
     request: Any,
     *,
-    include_env_fallback: bool = True,
+    include_env_fallback: bool = False,
 ) -> str | None:
     """Resolve a user token from a FastAPI request.
 
