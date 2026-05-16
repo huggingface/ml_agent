@@ -1970,7 +1970,11 @@ class Handlers:
                 tc, tool_name, output, success, was_edited = result
 
                 if was_edited:
-                    output = f"[Note: The user edited the script before execution. The output below reflects the user-modified version, not your original script.]\n\n{output}"
+                    note = "[Note: The user edited the script before execution. The output below reflects the user-modified version, not your original script.]"
+                    if isinstance(output, list):
+                        output = [{"type": "text", "text": note}, *output]
+                    else:
+                        output = f"{note}\n\n{output}"
 
                 # Add tool result to context
                 tool_msg = Message(
