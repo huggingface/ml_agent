@@ -67,52 +67,59 @@ logger = logging.getLogger(__name__)
 NOT_ALLOWED_TOOL_NAMES = ["hf_jobs", "hf_doc_search", "hf_doc_fetch", "hf_whoami"]
 
 
-def convert_mcp_content_to_string(content: list) -> str:
+def convert_mcp_content_to_llm_content(content: list) -> str | list[dict]:
     """
-    Convert MCP content blocks to a string format compatible with LLM messages.
+    Convert MCP content blocks to a format compatible with LiteLLM messages.
+
+    Returns a plain string when content contains only text (backward-compatible
+    with text-only tool results). Returns a list of OpenAI-style content blocks
+    when any ImageContent is present, so vision-capable models receive the actual
+    image data instead of a placeholder.
 
     Based on FastMCP documentation, content can be:
     - TextContent: has .text field
-    - ImageContent: has .data and .mimeType fields
+    - ImageContent: has .data (base64) and .mimeType fields
     - EmbeddedResource: has .resource field with .text or .blob
-
-    Args:
-        content: List of MCP content blocks
-
-    Returns:
-        String representation of the content suitable for LLM consumption
     """
     if not content:
         return ""
 
-    parts = []
+    blocks: list[dict] = []
+    has_image = False
+
     for item in content:
         if isinstance(item, TextContent):
-            # Extract text from TextContent blocks
-            parts.append(item.text)
+            blocks.append({"type": "text", "text": item.text})
         elif isinstance(item, ImageContent):
-            # TODO: Handle images
-            # For images, include a description with MIME type
-            parts.append(f"[Image: {item.mimeType}]")
+            has_image = True
+            blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{item.mimeType};base64,{item.data}"
+                    },
+                }
+            )
         elif isinstance(item, EmbeddedResource):
-            # TODO: Handle embedded resources
-            # For embedded resources, try to extract text
             resource = item.resource
             if hasattr(resource, "text") and resource.text:
-                parts.append(resource.text)
+                blocks.append({"type": "text", "text": resource.text})
             elif hasattr(resource, "blob") and resource.blob:
-                parts.append(
-                    f"[Binary data: {resource.mimeType if hasattr(resource, 'mimeType') else 'unknown'}]"
+                mime = (
+                    resource.mimeType
+                    if hasattr(resource, "mimeType")
+                    else "unknown"
                 )
+                blocks.append({"type": "text", "text": f"[Binary data: {mime}]"})
             else:
-                parts.append(
-                    f"[Resource: {resource.uri if hasattr(resource, 'uri') else 'unknown'}]"
-                )
+                uri = resource.uri if hasattr(resource, "uri") else "unknown"
+                blocks.append({"type": "text", "text": f"[Resource: {uri}]"})
         else:
-            # Fallback: try to convert to string
-            parts.append(str(item))
+            blocks.append({"type": "text", "text": str(item)})
 
-    return "\n".join(parts)
+    if not has_image:
+        return "\n".join(b["text"] for b in blocks)
+    return blocks
 
 
 @dataclass
@@ -248,12 +255,14 @@ class ToolRouter:
         arguments: dict[str, Any],
         session: Any = None,
         tool_call_id: str | None = None,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str | list[dict], bool]:
         """
-        Call a tool and return (output_string, success_bool).
+        Call a tool and return (output, success_bool).
 
-        For MCP tools, converts the CallToolResult content blocks to a string.
-        For built-in tools, calls their handler directly.
+        For MCP tools, converts the CallToolResult content blocks via
+        convert_mcp_content_to_llm_content — plain str for text-only results,
+        list of OpenAI content blocks when images are present.
+        For built-in tools, calls their handler directly (always returns str).
         """
         # Check if this is a built-in tool with a handler
         tool = self.tools.get(tool_name)
@@ -275,7 +284,7 @@ class ToolRouter:
         if self._mcp_initialized:
             try:
                 result = await self.mcp_client.call_tool(tool_name, arguments)
-                output = convert_mcp_content_to_string(result.content)
+                output = convert_mcp_content_to_llm_content(result.content)
                 return output, not result.is_error
             except ToolError as e:
                 # Catch MCP tool errors and return them to the agent
