@@ -59,6 +59,8 @@ litellm.suppress_debug_info = True
 CLI_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cli_agent_config.json"
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 
 def _apply_tool_runtime_override(config: Any, *, sandbox_tools: bool) -> str:
     if sandbox_tools:
@@ -128,6 +130,7 @@ def _get_hf_user(token: str | None) -> str | None:
 
         return HfApi(token=token).whoami().get("name")
     except Exception:
+        logger.exception("HF whoami failed while resolving username for token")
         return None
 
 
